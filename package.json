@@ -1,0 +1,17 @@
+{
+  "name": "tz-opti",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MVP-портал для оптимизации работы инженера тендерного отдела по анализу ТЗ на СМР",
+  "scripts": {
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently -n server,client -c blue,green \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "seed": "npm --prefix server run seed",
+    "build": "npm --prefix client run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

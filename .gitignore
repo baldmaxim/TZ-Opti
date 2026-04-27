@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+*.log
+server/uploads/
+server/db/tender.db
+server/db/tender.db-journal
+server/db/*.db-shm
+server/db/*.db-wal
+.vite/
+.DS_Store
+.idea/
+.vscode/
+
+# локальные настройки и memory Claude Code
+.claude/settings.local.json
+memory.md
+memory/

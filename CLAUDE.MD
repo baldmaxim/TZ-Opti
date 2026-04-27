@@ -1,71 +1,60 @@
 # CLAUDE.md
 
-Этот файл — инструкция для Claude Code (claude.ai/code) при работе с кодом в этом репозитории.
+Инструкция для Claude Code при работе с этим репозиторием.
 
 ## Обзор проекта
 
-TenderHUB by SU_10 — портал управления тендерами в строительстве для BOQ (Bill of Quantities, ведомости объёмов работ) и биржевых процессов.
+**TZ-Opti** — MVP-портал для инженера тендерного отдела строительной компании. Анализ ТЗ на СМР через 4-стадийный последовательный пайплайн с экспортом исходного ТЗ в `.docx` с правками и комментариями в логике Word Review.
 
-- **Языковые конвенции**: русский UI, английский код, русские сообщения коммитов
-- **Стек**: React 18 + Ant Design + Vite + TypeScript на фронте. Go BFF (chi + pgx/v5 + coder/websocket) перед Supabase (Postgres 17 + Auth + JWKS). Supabase Realtime постепенно вытесняется WebSocket-хабом Go BFF.
-- **Брендинг**: дизайн-система описана в BRANDING.md
-- **Состояние миграции**: pre-prod Supabase-проект `ocauafggjrqvopxjihas`; старый live-prod `wkywhjljrhewfpedbjzx` в режиме read-only до финального cutover. Полный план — в `C:\Users\Usrr\.claude\plans\keen-toasting-iverson.md`.
+## Стек
 
-## Команды разработки
+- **client**: Vite + React 18 + JS (без TypeScript) + React Router + Tailwind CSS + Zustand
+- **server**: Node.js + Express + better-sqlite3 + Multer
+- **docx-экспорт**: pizzip + @xmldom/xmldom + xpath (модификация оригинального .docx, не генерация с нуля)
+
+## Команды
 
 ```bash
-npm install          # установить зависимости
-npm run dev          # dev-сервер (http://localhost:5185, автоматически откроется)
-npm run build        # TypeScript-проверка + production-сборка Vite
-npm run lint         # ESLint в режиме zero-warning (max-warnings: 0)
-npm run preview      # превью production-сборки
-npm run gen:types    # перегенерировать src/lib/supabase/database.types.ts из pre-prod
-npm run gen:schema   # обновить supabase/schemas/prod.sql
-
-## Критические правила
-
-### Секреты не должны начинаться с VITE_
-Vite инлайнит каждую `VITE_*`-переменную в клиентский бандл. НИКОГДА не добавляй префикс `VITE_` к секрету:
-- ✅ `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` (anon-ключ публичен по дизайну)
-- ❌ `VITE_SUPABASE_SERVICE_ROLE_KEY`, `VITE_DATABASE_URL`, любой JWT-ключ подписи, пароль БД
-- Серверные переменные (dev-скрипты в `scripts/`, Go-бэкенд) используют обычные имена: `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL` и т.д.
-- Шаблон — в `.env.example`.
-
-### Лимит на размер файла
-**СТРОГО**: все файлы должны быть ≤ 600 строк. Разбивай на `components/`, `hooks/`, `utils/`, `types.ts` по необходимости.
-
-### Git-конвенции
-- **Коммиты**: русский, повелительное наклонение (например, «Добавить валидацию форм», «Исправить ошибку в расчётах»)
-- **Ветки**: префиксы `feature/`, `fix/`, `refactor/`
+npm run install:all   # установить зависимости root/server/client
+npm run dev           # запустить server (:4000) и client (:5173) одновременно
+npm run seed          # пересоздать SQLite БД с демо-данными
+npm run build         # production-сборка клиента
+```
 
 ## Архитектура
 
-## Технологический стек
+```
+TZ-Opti/
+├── client/    Vite + React + Tailwind + Zustand
+├── server/    Express + SQLite + Multer
+└── README.md  главный документ — содержит "что работает / что mock / что следующая задача"
+```
 
+Бизнес-логика — в `server/services/`. UI на русском, код на английском.
 
-## Адаптивность (обязательно)
+## Конвенции
 
-Все UI компоненты адаптированы под:
-- **iPhone 15 Pro Max** (430 × 932 px)
-- **iPhone 12** (390 × 844 px)
-- **iPad** (768 × 1024 px и больше)
+- Без TypeScript на клиенте
+- Tailwind для стилей (один источник правды)
+- Zustand вместо Redux
+- Тексты UI — на русском
+- Имена файлов / переменных / функций — английский
+- Один файл ≤ 600 строк (разбивать)
 
-CSS media queries для всех целевых устройств.
+## Главный артефакт
 
-## КРАТКОСТЬ
+Экспорт `/api/tenders/:id/export/docx` собирает исходный ТЗ.docx с комментариями (Word Comments API) и визуальным вычёркиванием для решений `delete` / `remove_from_scope`. Настоящий Track Changes (`w:ins` / `w:del`) — следующая задача, архитектура готова (`server/services/reviewDocx/trackChangesWriter.js` — stub).
 
-- Отвечай максимально сжато. Без пояснений и предисловий.
-- Код — только рабочие фрагменты в блоках, без текста.
-- Изменения — *минимальный diff/patch* или *конкретные вставки*.
-- Не перечисляй «что было сделано», если не попросили.
-- Текст — не более 5 пунктов, каждый ≤ 12 слов.
+## Анализатор
+
+4 стадии (последовательно), rule-based:
+1. ТЗ + Чек-лист + ВОР
+2. ТЗ + Q&A форма + Таблица характеристик (Q&A загружается xlsx)
+3. ТЗ + Типовые риски
+4. Самоанализ ТЗ (скрытые работы / двусмыслия / срок)
+
+После каждой стадии решения с действием `delete` / `remove_from_scope` исключают фрагменты из активного текста для следующих стадий.
 
 ## .env
 
-- НИКОГДА не изменять `.env` файлы
-- Ключи и URL добавляет только пользователь вручную
-
-## Git
-
-- Коммиты на русском, кратко (1-2 предложения)
-- Без приписок "Generated with Claude Code" и "Co-Authored-By"
+Шаблон в корневом `.env.example`. Серверный `.env` — в `server/.env`.

@@ -7,24 +7,25 @@ function splitParagraphs(text) {
   return text.split(/\r?\n/).map((s, idx) => ({ index: idx, text: s }));
 }
 
-function getTzDocument(tenderId) {
-  return db
-    .prepare(`SELECT * FROM documents WHERE tender_id = ? AND doc_type = 'tz' ORDER BY uploaded_at DESC LIMIT 1`)
-    .get(tenderId);
+async function getTzDocument(tenderId) {
+  return db.queryOne(
+    `SELECT * FROM documents WHERE tender_id = ? AND doc_type = 'tz' ORDER BY uploaded_at DESC LIMIT 1`,
+    tenderId,
+  );
 }
 
-function getDocumentByType(tenderId, docType) {
-  return db
-    .prepare(`SELECT * FROM documents WHERE tender_id = ? AND doc_type = ? ORDER BY uploaded_at DESC LIMIT 1`)
-    .get(tenderId, docType);
+async function getDocumentByType(tenderId, docType) {
+  return db.queryOne(
+    `SELECT * FROM documents WHERE tender_id = ? AND doc_type = ? ORDER BY uploaded_at DESC LIMIT 1`,
+    tenderId,
+    docType,
+  );
 }
 
 function applyExclusions(paragraphs, ranges) {
   if (!ranges || !ranges.length) return paragraphs;
   return paragraphs.map((p) => {
-    const localRanges = ranges
-      .filter((r) => r.paragraph_index === p.index)
-      .sort((a, b) => a.char_start - b.char_start);
+    const localRanges = ranges.filter((r) => r.paragraph_index === p.index).sort((a, b) => a.char_start - b.char_start);
     if (!localRanges.length) return p;
     let result = '';
     let cursor = 0;
@@ -39,13 +40,15 @@ function applyExclusions(paragraphs, ranges) {
   });
 }
 
-function getActiveTzText(tenderId, beforeStage) {
-  const doc = getTzDocument(tenderId);
+async function getActiveTzText(tenderId, beforeStage) {
+  const doc = await getTzDocument(tenderId);
   if (!doc) return { document: null, paragraphs: [], rawText: '', activeText: '' };
   const paragraphs = splitParagraphs(doc.extracted_text || '');
-  const ranges = db
-    .prepare(`SELECT * FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage < ?`)
-    .all(tenderId, beforeStage || 99);
+  const ranges = await db.queryAll(
+    `SELECT * FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage < ?`,
+    tenderId,
+    beforeStage || 99,
+  );
   const filtered = applyExclusions(paragraphs, ranges);
   const activeText = filtered.map((p) => p.text).join('\n');
   return {

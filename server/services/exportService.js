@@ -9,16 +9,17 @@ const CSV_HEADERS = [
   'review_comment', 'review_status', 'decision', 'final_comment', 'confidence',
 ];
 
-function exportIssuesCsv(tenderId) {
-  const rows = db
-    .prepare(`
+async function exportIssuesCsv(tenderId) {
+  const rows = await db.queryAll(
+    `
       SELECT i.*, d.decision as decision, d.final_comment as final_comment
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ?
       ORDER BY i.analysis_stage ASC, i.criticality DESC, i.paragraph_index ASC
-    `)
-    .all(tenderId);
+    `,
+    tenderId,
+  );
   const lines = [CSV_HEADERS.join(';')];
   for (const r of rows) {
     lines.push(CSV_HEADERS.map((h) => csvCell(r[h])).join(';'));
@@ -27,32 +28,37 @@ function exportIssuesCsv(tenderId) {
   return '﻿' + lines.join('\r\n');
 }
 
-function exportIssuesJson(tenderId) {
-  const tender = db.prepare('SELECT * FROM tenders WHERE id = ?').get(tenderId);
-  const runs = db.prepare('SELECT * FROM analysis_runs WHERE tender_id = ? ORDER BY stage ASC, started_at ASC').all(tenderId);
-  const issues = db
-    .prepare(`
+async function exportIssuesJson(tenderId) {
+  const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
+  const runs = await db.queryAll(
+    'SELECT * FROM analysis_runs WHERE tender_id = ? ORDER BY stage ASC, started_at ASC',
+    tenderId,
+  );
+  const issues = await db.queryAll(
+    `
       SELECT i.*, d.decision as decision, d.final_comment as final_comment, d.edited_redaction as decision_redaction
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ?
       ORDER BY i.analysis_stage ASC, i.criticality DESC
-    `)
-    .all(tenderId);
+    `,
+    tenderId,
+  );
   return JSON.stringify({ tender, runs: runs.map(parseSummary), issues }, null, 2);
 }
 
-function exportSummaryMd(tenderId) {
-  const tender = db.prepare('SELECT * FROM tenders WHERE id = ?').get(tenderId);
+async function exportSummaryMd(tenderId) {
+  const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!tender) return '# Тендер не найден';
-  const issues = db
-    .prepare(`
+  const issues = await db.queryAll(
+    `
       SELECT i.*, d.decision as decision FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ?
-    `)
-    .all(tenderId);
-  const checklist = db.prepare('SELECT * FROM work_checklist_items WHERE tender_id = ?').all(tenderId);
+    `,
+    tenderId,
+  );
+  const checklist = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ?', tenderId);
 
   const accepted = issues.filter((i) => i.review_status === 'accepted' || i.review_status === 'edited');
   const rejected = issues.filter((i) => i.review_status === 'rejected');

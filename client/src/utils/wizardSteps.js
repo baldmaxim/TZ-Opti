@@ -11,7 +11,7 @@ export const STEPS = [
   { id: 'risks', section: 'setup', label: 'База рисков', sub: 'risks', countKey: 'risks' },
   { id: 'qa', section: 'setup', label: 'Q&A форма', sub: 'qa' },
   { id: 'stage1', section: 'analysis', label: 'Стадия 1: ТЗ + Чек-лист + ВОР', shortLabel: 'Стадия 1', stage: 1 },
-  { id: 'stage2', section: 'analysis', label: 'Стадия 2: Q&A + Характеристики', shortLabel: 'Стадия 2', stage: 2 },
+  { id: 'stage2', section: 'analysis', label: 'Стадия 2: Q&A → правки в ТЗ', shortLabel: 'Стадия 2', stage: 2 },
   { id: 'stage3', section: 'analysis', label: 'Стадия 3: Типовые риски', shortLabel: 'Стадия 3', stage: 3 },
   { id: 'stage4', section: 'analysis', label: 'Стадия 4: Самоанализ ТЗ', shortLabel: 'Стадия 4', stage: 4 },
   { id: 'review', section: 'result', label: 'Рецензия', tail: 'review' },

@@ -10,25 +10,26 @@ const {
 } = require('../services/conditionsRenderer');
 const { PARAMS_SCHEMA } = require('../db/conditionsTemplate');
 
-function getTender(tenderId) {
-  return db.prepare('SELECT id, type FROM tenders WHERE id = ?').get(tenderId);
+async function getTender(tenderId) {
+  return db.queryOne('SELECT id, type FROM tenders WHERE id = ?', tenderId);
 }
 
-function getStored(tenderId) {
-  return db.prepare('SELECT * FROM tender_setup_params WHERE tender_id = ?').get(tenderId);
+async function getStored(tenderId) {
+  return db.queryOne('SELECT * FROM tender_setup_params WHERE tender_id = ?', tenderId);
 }
 
-function getOrCreate(tenderId) {
-  const tender = getTender(tenderId);
+async function getOrCreate(tenderId) {
+  const tender = await getTender(tenderId);
   if (!tender) throw notFound('Тендер не найден');
   const kind = tenderTypeToContractKind(tender.type);
-  let row = getStored(tenderId);
+  let row = await getStored(tenderId);
   if (!row) {
     const def = defaultsFor(kind);
-    db.prepare(`
+    await db.queryRun(
+      `
       INSERT INTO tender_setup_params (tender_id, contract_kind, escalation, advance, build_months, transfer_months, kp_date, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
       tenderId,
       kind,
       def.escalation || null,
@@ -36,32 +37,39 @@ function getOrCreate(tenderId) {
       def.build_months || null,
       def.transfer_months || null,
       def.kp_date || null,
-      nowIso()
+      nowIso(),
     );
-    row = getStored(tenderId);
+    row = await getStored(tenderId);
   } else if (row.contract_kind !== kind) {
     // Тип тендера сменили — пересинхронизируем kind, но сохраняем введённые числа/даты.
     const def = defaultsFor(kind);
     const allowedEsc = PARAMS_SCHEMA[kind].find((f) => f.key === 'escalation').options;
     const newEsc = allowedEsc.includes(row.escalation) ? row.escalation : def.escalation;
-    const newAdvance = kind === 'gen' ? (row.advance || def.advance) : null;
-    db.prepare(`
+    const newAdvance = kind === 'gen' ? row.advance || def.advance : null;
+    await db.queryRun(
+      `
       UPDATE tender_setup_params
       SET contract_kind = ?, escalation = ?, advance = ?, updated_at = ?
       WHERE tender_id = ?
-    `).run(kind, newEsc, newAdvance, nowIso(), tenderId);
-    row = getStored(tenderId);
+    `,
+      kind,
+      newEsc,
+      newAdvance,
+      nowIso(),
+      tenderId,
+    );
+    row = await getStored(tenderId);
   }
   return { tender, kind, row };
 }
 
-exports.getParams = (req, res) => {
-  const { kind, row } = getOrCreate(req.params.id);
+exports.getParams = async (req, res) => {
+  const { kind, row } = await getOrCreate(req.params.id);
   res.json({ kind, params: row });
 };
 
-exports.updateParams = (req, res) => {
-  const { kind } = getOrCreate(req.params.id);
+exports.updateParams = async (req, res) => {
+  const { kind } = await getOrCreate(req.params.id);
   const body = req.body || {};
   const schema = getParamsSchema(kind);
   const fields = ['escalation', 'advance', 'build_months', 'transfer_months', 'kp_date'];
@@ -107,15 +115,15 @@ exports.updateParams = (req, res) => {
     updates.push('updated_at = ?');
     values.push(nowIso());
     values.push(req.params.id);
-    db.prepare(`UPDATE tender_setup_params SET ${updates.join(', ')} WHERE tender_id = ?`).run(...values);
+    await db.queryRun(`UPDATE tender_setup_params SET ${updates.join(', ')} WHERE tender_id = ?`, ...values);
   }
 
-  const row = getStored(req.params.id);
+  const row = await getStored(req.params.id);
   res.json({ kind, params: row });
 };
 
-exports.getSchema = (req, res) => {
-  const { kind } = getOrCreate(req.params.id);
+exports.getSchema = async (req, res) => {
+  const { kind } = await getOrCreate(req.params.id);
   res.json({ kind, schema: getParamsSchema(kind) });
 };
 

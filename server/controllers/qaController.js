@@ -3,37 +3,88 @@
 const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
 const { importQaXlsx } = require('../services/qaImportService');
+const { autoLinkAll } = require('../services/qaTzLinkService');
 
-exports.import = (req, res) => {
+exports.import = async (req, res) => {
   if (!req.file) throw badRequest('Файл не передан');
   const tenderId = req.params.id;
-  const tender = db.prepare('SELECT id FROM tenders WHERE id = ?').get(tenderId);
+  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
   if (!tender) throw notFound('Тендер не найден');
-  const result = importQaXlsx(tenderId, req.file.path);
+  const result = await importQaXlsx(tenderId, req.file.path);
   res.status(201).json({ ok: true, ...result });
 };
 
-exports.listQa = (req, res) => {
-  const items = db.prepare('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC').all(req.params.id);
+exports.listQa = async (req, res) => {
+  const items = await db.queryAll('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC', req.params.id);
   res.json({ items });
 };
 
-exports.listCharacteristics = (req, res) => {
-  const items = db.prepare('SELECT * FROM characteristics WHERE tender_id = ? ORDER BY rowid ASC').all(req.params.id);
+exports.listCharacteristics = async (req, res) => {
+  const items = await db.queryAll('SELECT * FROM characteristics WHERE tender_id = ? ORDER BY name ASC', req.params.id);
   res.json({ items });
 };
 
-exports.patchCharacteristic = (req, res) => {
+const QA_PATCH_FIELDS = [
+  'tz_clause',
+  'tz_reflected',
+  'tz_contradicts',
+  'affects_calc',
+  'affects_kp',
+  'affects_contract',
+  'affects_schedule',
+  'accepted_decision',
+];
+
+exports.autoLink = async (req, res) => {
+  const tenderId = req.params.id;
+  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
+  if (!tender) throw notFound('Тендер не найден');
+  const overwrite = !!(req.body && req.body.overwrite);
+  const result = await autoLinkAll(tenderId, { overwrite });
+  if (result.reason === 'no_tz') {
+    throw badRequest('В тендере не загружен ТЗ (doc_type=tz). Авто-привязка невозможна.');
+  }
+  res.json(result);
+};
+
+exports.patchQaEntry = async (req, res) => {
+  const { id, entryId } = req.params;
+  const existing = await db.queryOne('SELECT id FROM qa_entries WHERE id = ? AND tender_id = ?', entryId, id);
+  if (!existing) throw notFound('Запись Q&A не найдена');
+  const data = {};
+  for (const f of QA_PATCH_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, f)) {
+      const v = req.body[f];
+      if (f === 'tz_clause' || f === 'accepted_decision') {
+        data[f] = v == null ? null : String(v);
+      } else {
+        data[f] = v ? 1 : 0;
+      }
+    }
+  }
+  if (!Object.keys(data).length) {
+    return res.json(await db.queryOne('SELECT * FROM qa_entries WHERE id = ?', entryId));
+  }
+  const sets = Object.keys(data)
+    .map((k) => `${k} = ?`)
+    .join(', ');
+  await db.queryRun(`UPDATE qa_entries SET ${sets} WHERE id = ?`, ...Object.values(data), entryId);
+  res.json(await db.queryOne('SELECT * FROM qa_entries WHERE id = ?', entryId));
+};
+
+exports.patchCharacteristic = async (req, res) => {
   const id = req.params.charId;
-  const existing = db.prepare('SELECT id FROM characteristics WHERE id = ?').get(id);
+  const existing = await db.queryOne('SELECT id FROM characteristics WHERE id = ?', id);
   if (!existing) throw notFound('Характеристика не найдена');
   const fields = ['name', 'value', 'source', 'comment'];
   const data = {};
   for (const f of fields) if (Object.prototype.hasOwnProperty.call(req.body || {}, f)) data[f] = req.body[f];
   if (!Object.keys(data).length) {
-    return res.json(db.prepare('SELECT * FROM characteristics WHERE id = ?').get(id));
+    return res.json(await db.queryOne('SELECT * FROM characteristics WHERE id = ?', id));
   }
-  const sets = Object.keys(data).map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE characteristics SET ${sets} WHERE id = ?`).run(...Object.values(data), id);
-  res.json(db.prepare('SELECT * FROM characteristics WHERE id = ?').get(id));
+  const sets = Object.keys(data)
+    .map((k) => `${k} = ?`)
+    .join(', ');
+  await db.queryRun(`UPDATE characteristics SET ${sets} WHERE id = ?`, ...Object.values(data), id);
+  res.json(await db.queryOne('SELECT * FROM characteristics WHERE id = ?', id));
 };

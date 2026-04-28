@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
 const db = require('./connection');
 const { runMigration } = require('./migrate');
@@ -13,9 +13,9 @@ const { STANDARD_CHECKLIST } = require('./standardChecklist');
 
 const UPLOAD_ROOT = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
 
-function isEmpty() {
-  const c = db.prepare('SELECT COUNT(*) as c FROM tenders').get().c;
-  return c === 0;
+async function isEmpty() {
+  const r = await db.queryOne('SELECT COUNT(*) as c FROM tenders');
+  return r.c === 0;
 }
 
 function readFixture(fileName) {
@@ -30,12 +30,23 @@ function writeFile(tenderId, name, buffer) {
   return fp;
 }
 
-function insertDocument(tender, docType, name, filePath, mime, extractedText, comment = null) {
+async function insertDocument(tender, docType, name, filePath, mime, extractedText, comment = null) {
   const id = newId();
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO documents (id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, extracted_text, processing_status)
     VALUES (?, ?, ?, ?, ?, ?, '1', ?, ?, ?, 'extracted')
-  `).run(id, tender.id, docType, name, filePath, mime, nowIso(), comment, extractedText);
+  `,
+    id,
+    tender.id,
+    docType,
+    name,
+    filePath,
+    mime,
+    nowIso(),
+    comment,
+    extractedText,
+  );
   return id;
 }
 
@@ -43,12 +54,13 @@ function tzParagraphs(text) {
   return text.split(/\r?\n/).filter((s) => s.trim().length > 0);
 }
 
-function seedTenderSeverniy() {
+async function seedTenderSeverniy() {
   const tenderId = newId();
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO tenders (id, title, customer, type, stage, deadline, owner, status, description, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
     tenderId,
     'ЖК Северный — Корпус 5 (монолит + кладка)',
     'ООО «Стройсервис»',
@@ -58,25 +70,28 @@ function seedTenderSeverniy() {
     'Иванов И.И.',
     'in_progress',
     'Тендер на устройство монолитных конструкций и кладочные работы по корпусу 5.',
-    nowIso()
+    nowIso(),
   );
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO tender_stage_state (tender_id, current_stage, stage1_status, stage2_status, stage3_status, stage4_status)
     VALUES (?, 1, 'open', 'locked', 'locked', 'locked')
-  `).run(tenderId);
+  `,
+    tenderId,
+  );
 
   const tzText = readFixture('tz_severnyy.txt');
   const paragraphs = tzParagraphs(tzText);
   const tzDocx = buildMinimalDocx(paragraphs);
   const tzPath = writeFile(tenderId, 'TZ_Severnyy.docx', tzDocx);
-  insertDocument(
+  await insertDocument(
     { id: tenderId },
     'tz',
     'TZ_Severnyy.docx',
     tzPath,
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     paragraphs.join('\n'),
-    'Главный документ тендера'
+    'Главный документ тендера',
   );
 
   // ВОР
@@ -90,12 +105,21 @@ function seedTenderSeverniy() {
   const vorBuf = buildXlsxBuffer(vorRows, 'ВОР');
   const vorPath = writeFile(tenderId, 'VOR_Severnyy.xlsx', vorBuf);
   const vorText = vorRows.map((r) => Object.values(r).join(' | ')).join('\n');
-  insertDocument({ id: tenderId }, 'vor', 'VOR_Severnyy.xlsx', vorPath, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', vorText, 'ВОР заказчика');
+  await insertDocument(
+    { id: tenderId },
+    'vor',
+    'VOR_Severnyy.xlsx',
+    vorPath,
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    vorText,
+    'ВОР заказчика',
+  );
 
   // ПД (текстовая фикстура — упрощённо)
-  const pdText = 'Проектная документация по объекту ЖК Северный, корпус 5. Состав работ: монолитные работы, кладочные работы из газоблока, гидроизоляция фундаментов, армирование сетками. Дополнительно: устройство временных дорог.';
+  const pdText =
+    'Проектная документация по объекту ЖК Северный, корпус 5. Состав работ: монолитные работы, кладочные работы из газоблока, гидроизоляция фундаментов, армирование сетками. Дополнительно: устройство временных дорог.';
   const pdPath = writeFile(tenderId, 'PD_Severnyy.txt', Buffer.from(pdText, 'utf8'));
-  insertDocument({ id: tenderId }, 'pd_rd', 'PD_Severnyy.txt', pdPath, 'text/plain', pdText, 'Краткий выжимка ПД');
+  await insertDocument({ id: tenderId }, 'pd_rd', 'PD_Severnyy.txt', pdPath, 'text/plain', pdText, 'Краткий выжимка ПД');
 
   // Чек-лист — стандартный список с реалистичными ответами «коробочного» тендера.
   // Не учтено в КП: ПД/РД (делает Заказчик), демонтаж, вырубка, мониторинг.
@@ -108,49 +132,76 @@ function seedTenderSeverniy() {
     'Вырубка',
     'Геотехнический мониторинг',
   ]);
-  const stmtChk = db.prepare(`
-    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
   for (const it of STANDARD_CHECKLIST) {
     const status = NOT_ACCOUNTED.has(it.work_name) ? 0 : 1;
-    stmtChk.run(newId(), tenderId, it.section, it.work_name, status, null);
+    await db.queryRun(
+      `
+      INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+      newId(),
+      tenderId,
+      it.section,
+      it.work_name,
+      status,
+      null,
+    );
   }
 
   // Условия компании теперь — параметрический шаблон (28 пунктов).
   // Заполняем только tender_setup_params; конкретные условия рендерятся
   // на лету сервисом conditionsRenderer.
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO tender_setup_params (tender_id, contract_kind, escalation, advance, build_months, transfer_months, kp_date, updated_at)
     VALUES (?, 'shell', 'БСМ5%', NULL, 24, 3, '2026-07-30', ?)
-  `).run(tenderId, nowIso());
+  `,
+    tenderId,
+    nowIso(),
+  );
 
   // Риски — вся библиотека лежит в коде (server/db/standardRisks.js).
   // Для тендера нужно только overlay (tender_risk_state) — оставляем пустым,
   // пользователь сам выберет «Да/Нет/Авто» по умолчанию.
 
-  // Q&A xlsx-фикстура
+  // Q&A — заполняем напрямую в qa_entries (имитируем результат импорта реальной формы).
   const qaRows = [
-    { 'Вопрос': 'Бетон давальческий?', 'Ответ': 'Нет, поставка генподрядчиком', 'Принятое решение': 'Поставка ГП', 'Источник характеристики': 'Бетон', 'Значение': 'поставка генподрядчиком' },
-    { 'Вопрос': 'Арматура давальческая?', 'Ответ': 'Да, давальческая', 'Принятое решение': 'Заказчик поставляет', 'Источник характеристики': 'Арматура', 'Значение': 'давальческая' },
-    { 'Вопрос': 'Башенный кран?', 'Ответ': 'Нет', 'Принятое решение': 'Кран ГП', 'Источник характеристики': 'Башенный кран', 'Значение': 'силами генподрядчика' },
-    { 'Вопрос': 'Вывоз грунта?', 'Ответ': 'Силами Заказчика', 'Принятое решение': 'Заказчик', 'Источник характеристики': 'Вывоз грунта', 'Значение': 'силами заказчика' },
-    { 'Вопрос': 'Лабораторные испытания?', 'Ответ': 'По графику ГП', 'Принятое решение': 'ГП график', 'Источник характеристики': 'Лаборатория', 'Значение': 'по графику генподрядчика' },
+    { section: 'Бетон', q: 'Бетон давальческий?', a: 'Нет, поставка генподрядчиком', d: 'Принято к сведению. Учтено по ВОР' },
+    { section: 'Арматура', q: 'Арматура давальческая?', a: 'Да, давальческая', d: 'Принято к сведению. Учтено как давальческая' },
+    { section: 'Башенный кран', q: 'Башенный кран?', a: 'Нет', d: 'Учтено: кран ГП' },
+    { section: 'Земляные работы', q: 'Вывоз грунта?', a: 'Силами Заказчика', d: 'Не учтено — на стороне Заказчика' },
+    { section: 'Лаборатория', q: 'Лабораторные испытания?', a: 'По графику ГП', d: 'Учтено по графику ГП' },
   ];
-  const qaBuf = buildXlsxBuffer(qaRows, 'Q&A');
-  const qaPath = writeFile(tenderId, 'QA_Severnyy.xlsx', qaBuf);
-  // Сохраняем файл в documents (для удобства повторного скачивания)
-  insertDocument({ id: tenderId }, 'qa', 'QA_Severnyy.xlsx', qaPath, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', qaRows.map((r) => Object.values(r).join(' | ')).join('\n'), 'Демо Q&A форма');
+  for (let i = 0; i < qaRows.length; i++) {
+    const r = qaRows[i];
+    await db.queryRun(
+      `
+      INSERT INTO qa_entries
+        (id, tender_id, source_file_path, section, sent_at, answer_at, round_label, question, answer, accepted_decision, order_idx, imported_at)
+      VALUES (?, ?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+    `,
+      newId(),
+      tenderId,
+      r.section,
+      'Направлено (демо)',
+      r.q,
+      r.a,
+      r.d,
+      i,
+      nowIso(),
+    );
+  }
 
   return tenderId;
 }
 
-function seedTenderZarechnyy() {
+async function seedTenderZarechnyy() {
   const tenderId = newId();
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO tenders (id, title, customer, type, stage, deadline, owner, status, description, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
     tenderId,
     'ЖК Заречный — генподряд полного цикла',
     'АО «Девелопер-Регион»',
@@ -160,51 +211,65 @@ function seedTenderZarechnyy() {
     'Петров П.П.',
     'draft',
     'Тендер на полный цикл строительства жилого комплекса.',
-    nowIso()
+    nowIso(),
   );
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO tender_stage_state (tender_id, current_stage, stage1_status, stage2_status, stage3_status, stage4_status)
     VALUES (?, 1, 'open', 'locked', 'locked', 'locked')
-  `).run(tenderId);
+  `,
+    tenderId,
+  );
 
   const tzText = readFixture('tz_zarechnyy.txt');
   const paragraphs = tzParagraphs(tzText);
   const tzDocx = buildMinimalDocx(paragraphs);
   const tzPath = writeFile(tenderId, 'TZ_Zarechnyy.docx', tzDocx);
-  insertDocument(
+  await insertDocument(
     { id: tenderId },
     'tz',
     'TZ_Zarechnyy.docx',
     tzPath,
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     paragraphs.join('\n'),
-    'Главный документ тендера'
+    'Главный документ тендера',
   );
 
   // Стандартный чек-лист, статусы не заполнены — пользователь ответит сам.
-  const stmtChk = db.prepare(`
-    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
-    VALUES (?, ?, ?, ?, NULL, NULL)
-  `);
-  for (const it of STANDARD_CHECKLIST) stmtChk.run(newId(), tenderId, it.section, it.work_name);
+  for (const it of STANDARD_CHECKLIST) {
+    await db.queryRun(
+      `
+      INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
+      VALUES (?, ?, ?, ?, NULL, NULL)
+    `,
+      newId(),
+      tenderId,
+      it.section,
+      it.work_name,
+    );
+  }
 
   // Параметры тендера для шаблона существенных условий (Генподряд)
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO tender_setup_params (tender_id, contract_kind, escalation, advance, build_months, transfer_months, kp_date, updated_at)
     VALUES (?, 'gen', 'БСМ5%', 'Аванс 30%', 24, 3, '2026-07-29', ?)
-  `).run(tenderId, nowIso());
+  `,
+    tenderId,
+    nowIso(),
+  );
 
   return tenderId;
 }
 
-function runSeed(force = false) {
-  runMigration();
-  if (!force && !isEmpty()) {
+async function runSeed(force = false) {
+  await runMigration();
+  if (!force && (await isEmpty())) {
     console.log('[seed] tenders already exist, skipping');
     return;
   }
   if (force) {
-    db.exec(`
+    await db.exec(`
       DELETE FROM review_decisions;
       DELETE FROM tz_excluded_ranges;
       DELETE FROM issues;
@@ -223,19 +288,24 @@ function runSeed(force = false) {
       DELETE FROM tenders;
     `);
   }
-  const id1 = seedTenderSeverniy();
-  const id2 = seedTenderZarechnyy();
+  const id1 = await seedTenderSeverniy();
+  const id2 = await seedTenderZarechnyy();
   console.log('[seed] inserted demo tenders:', id1, id2);
 }
 
-function runSeedIfEmpty() {
-  if (isEmpty()) runSeed(false);
+async function runSeedIfEmpty() {
+  if (await isEmpty()) await runSeed(false);
 }
 
 if (require.main === module) {
   const force = process.argv.includes('--force') || process.argv.includes('-f');
-  runSeed(force);
-  process.exit(0);
+  runSeed(force)
+    .then(() => db.close())
+    .then(() => process.exit(0))
+    .catch((err) => {
+      console.error('[seed] failed:', err);
+      process.exit(1);
+    });
 }
 
 module.exports = { runSeed, runSeedIfEmpty, isEmpty };

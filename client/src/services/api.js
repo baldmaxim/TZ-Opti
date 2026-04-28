@@ -81,6 +81,8 @@ export const api = {
     return request(`/tenders/${tenderId}/qa/import`, { method: 'POST', body: fd, isForm: true });
   },
   listQa: (tenderId) => request(`/tenders/${tenderId}/qa`),
+  patchQaEntry: (tenderId, entryId, data) => request(`/tenders/${tenderId}/qa/${entryId}`, { method: 'PATCH', body: data }),
+  autoLinkQa: (tenderId, opts = {}) => request(`/tenders/${tenderId}/qa/auto-link`, { method: 'POST', body: opts }),
   listCharacteristics: (tenderId) => request(`/tenders/${tenderId}/characteristics`),
   updateCharacteristic: (id, data) => request(`/characteristics/${id}`, { method: 'PATCH', body: data }),
 

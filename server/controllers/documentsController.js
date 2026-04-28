@@ -9,18 +9,19 @@ const { extractFromFile } = require('../services/textExtractionService');
 
 const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
 
-exports.listForTender = (req, res) => {
+exports.listForTender = async (req, res) => {
   const tenderId = req.params.id;
-  const rows = db
-    .prepare('SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status FROM documents WHERE tender_id = ? ORDER BY uploaded_at DESC')
-    .all(tenderId);
+  const rows = await db.queryAll(
+    'SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status FROM documents WHERE tender_id = ? ORDER BY uploaded_at DESC',
+    tenderId,
+  );
   res.json({ items: rows });
 };
 
 exports.upload = async (req, res) => {
   const tenderId = req.params.id;
   if (!req.file) throw badRequest('Файл не передан');
-  const tenderRow = db.prepare('SELECT id FROM tenders WHERE id = ?').get(tenderId);
+  const tenderRow = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
   if (!tenderRow) throw notFound('Тендер не найден');
 
   const docType = (req.body.doc_type || 'other').toString();
@@ -31,10 +32,11 @@ exports.upload = async (req, res) => {
   const version = (req.body.version || '1').toString();
   const comment = (req.body.comment || '').toString();
 
-  db.prepare(`
+  await db.queryRun(
+    `
     INSERT INTO documents (id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-  `).run(
+  `,
     id,
     tenderId,
     docType,
@@ -43,49 +45,45 @@ exports.upload = async (req, res) => {
     req.file.mimetype || null,
     version,
     uploaded_at,
-    comment
+    comment,
   );
 
   const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
-  db.prepare('UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?').run(
-    text,
-    status,
-    id
-  );
+  await db.queryRun('UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?', text, status, id);
 
-  const row = db.prepare('SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status FROM documents WHERE id = ?').get(id);
+  const row = await db.queryOne(
+    'SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status FROM documents WHERE id = ?',
+    id,
+  );
   res.status(201).json({ ...row, extraction_reason: reason || null });
 };
 
-exports.download = (req, res) => {
+exports.download = async (req, res) => {
   const id = req.params.id;
-  const row = db.prepare('SELECT name, file_path, mime_type FROM documents WHERE id = ?').get(id);
+  const row = await db.queryOne('SELECT name, file_path, mime_type FROM documents WHERE id = ?', id);
   if (!row) throw notFound('Документ не найден');
   if (!fs.existsSync(row.file_path)) throw notFound('Файл отсутствует на диске');
   res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
-  res.setHeader(
-    'Content-Disposition',
-    `attachment; filename="${encodeURIComponent(row.name)}"`
-  );
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.name)}"`);
   fs.createReadStream(row.file_path).pipe(res);
 };
 
-exports.remove = (req, res) => {
+exports.remove = async (req, res) => {
   const id = req.params.id;
-  const row = db.prepare('SELECT file_path FROM documents WHERE id = ?').get(id);
+  const row = await db.queryOne('SELECT file_path FROM documents WHERE id = ?', id);
   if (!row) throw notFound('Документ не найден');
   try {
     if (row.file_path && fs.existsSync(row.file_path)) fs.unlinkSync(row.file_path);
   } catch (_e) {
     /* swallow disk errors so DB stays consistent */
   }
-  db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+  await db.queryRun('DELETE FROM documents WHERE id = ?', id);
   res.json({ ok: true });
 };
 
-exports.getExtracted = (req, res) => {
+exports.getExtracted = async (req, res) => {
   const id = req.params.id;
-  const row = db.prepare('SELECT id, name, doc_type, extracted_text, processing_status FROM documents WHERE id = ?').get(id);
+  const row = await db.queryOne('SELECT id, name, doc_type, extracted_text, processing_status FROM documents WHERE id = ?', id);
   if (!row) throw notFound('Документ не найден');
   res.json(row);
 };

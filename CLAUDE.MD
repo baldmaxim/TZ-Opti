@@ -9,15 +9,20 @@
 ## Стек
 
 - **client**: Vite + React 18 + JS (без TypeScript) + React Router + Tailwind CSS + Zustand
-- **server**: Node.js + Express + better-sqlite3 + Multer
+- **server**: Node.js + Express + pg (PostgreSQL/Supabase) + Multer
 - **docx-экспорт**: pizzip + @xmldom/xmldom + xpath (модификация оригинального .docx, не генерация с нуля)
+
+## БД
+
+Postgres-обёртка в `server/db/connection.js` экспортирует **асинхронный** API:
+`queryOne / queryAll / queryRun / exec / transaction`. Плейсхолдеры пишутся в стиле SQLite (`?`), конвертер автоматически превращает их в `$1, $2, ...`. Транзакции — `await db.transaction(async (tx) => { await tx.queryRun(...) })`. **Не использовать** `db.prepare(...)` (better-sqlite3 API) и `db.queryTransaction` — таких функций нет.
 
 ## Команды
 
 ```bash
 npm run install:all   # установить зависимости root/server/client
 npm run dev           # запустить server (:4000) и client (:5173) одновременно
-npm run seed          # пересоздать SQLite БД с демо-данными
+npm run seed          # пересеять Postgres-БД демо-данными (--force чтобы перезаписать)
 npm run build         # production-сборка клиента
 ```
 
@@ -26,7 +31,7 @@ npm run build         # production-сборка клиента
 ```
 TZ-Opti/
 ├── client/    Vite + React + Tailwind + Zustand
-├── server/    Express + SQLite + Multer
+├── server/    Express + pg (Supabase Postgres) + Multer
 └── README.md  главный документ — содержит "что работает / что mock / что следующая задача"
 ```
 
@@ -57,4 +62,4 @@ TZ-Opti/
 
 ## .env
 
-Шаблон в корневом `.env.example`. Серверный `.env` — в `server/.env`.
+Один `.env` в корне репозитория. Шаблон рядом — `.env.example`. Сервер подгружает из корня через `dotenv.config({ path: '../../.env' })` (относительно `server/app.js` и `server/db/seed.js`).

@@ -8,16 +8,16 @@ const ALLOWED_DECISIONS = ['accept', 'reject', 'edit', 'delete', 'remove_from_sc
 
 const PATCHABLE = ['review_status', 'edited_redaction', 'manually_edited', 'selected_for_export', 'review_comment'];
 
-function getIssue(id) {
-  return db.prepare('SELECT * FROM issues WHERE id = ?').get(id);
+async function getIssue(id) {
+  return db.queryOne('SELECT * FROM issues WHERE id = ?', id);
 }
 
-function getDecision(issueId) {
-  return db.prepare('SELECT * FROM review_decisions WHERE issue_id = ? ORDER BY decided_at DESC LIMIT 1').get(issueId);
+async function getDecision(issueId) {
+  return db.queryOne('SELECT * FROM review_decisions WHERE issue_id = ? ORDER BY decided_at DESC LIMIT 1', issueId);
 }
 
-exports.patchIssue = (req, res) => {
-  const issue = getIssue(req.params.id);
+exports.patchIssue = async (req, res) => {
+  const issue = await getIssue(req.params.id);
   if (!issue) throw notFound('Issue не найден');
   const body = req.body || {};
   const updates = {};
@@ -30,14 +30,16 @@ exports.patchIssue = (req, res) => {
       }
     }
   }
-  if (!Object.keys(updates).length) return res.json({ ...issue, decision: getDecision(issue.id) });
-  const sets = Object.keys(updates).map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE issues SET ${sets} WHERE id = ?`).run(...Object.values(updates), issue.id);
-  res.json({ ...getIssue(issue.id), decision: getDecision(issue.id) });
+  if (!Object.keys(updates).length) return res.json({ ...issue, decision: await getDecision(issue.id) });
+  const sets = Object.keys(updates)
+    .map((k) => `${k} = ?`)
+    .join(', ');
+  await db.queryRun(`UPDATE issues SET ${sets} WHERE id = ?`, ...Object.values(updates), issue.id);
+  res.json({ ...(await getIssue(issue.id)), decision: await getDecision(issue.id) });
 };
 
-exports.makeDecision = (req, res) => {
-  const issue = getIssue(req.params.id);
+exports.makeDecision = async (req, res) => {
+  const issue = await getIssue(req.params.id);
   if (!issue) throw notFound('Issue не найден');
   const { decision, edited_redaction, final_comment } = req.body || {};
   if (!ALLOWED_DECISIONS.includes(decision)) {
@@ -50,29 +52,31 @@ exports.makeDecision = (req, res) => {
     return 'accepted';
   })();
 
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM review_decisions WHERE issue_id = ?').run(issue.id);
-    db.prepare(`
+  await db.transaction(async (tx) => {
+    await tx.queryRun('DELETE FROM review_decisions WHERE issue_id = ?', issue.id);
+    await tx.queryRun(
+      `
       INSERT INTO review_decisions (id, issue_id, decision, edited_redaction, final_comment, decided_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
       newId(),
       issue.id,
       decision,
       edited_redaction || null,
       final_comment || null,
-      nowIso()
+      nowIso(),
     );
     const updates = ['review_status = ?'];
     const params = [reviewStatus];
     if (edited_redaction !== undefined) {
-      updates.push('edited_redaction = ?'); params.push(edited_redaction);
-      updates.push('manually_edited = ?'); params.push(edited_redaction ? 1 : 0);
+      updates.push('edited_redaction = ?');
+      params.push(edited_redaction);
+      updates.push('manually_edited = ?');
+      params.push(edited_redaction ? 1 : 0);
     }
     params.push(issue.id);
-    db.prepare(`UPDATE issues SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    await tx.queryRun(`UPDATE issues SET ${updates.join(', ')} WHERE id = ?`, ...params);
   });
-  tx();
 
-  res.json({ ...getIssue(issue.id), decision: getDecision(issue.id) });
+  res.json({ ...(await getIssue(issue.id)), decision: await getDecision(issue.id) });
 };

@@ -12,24 +12,25 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
-function renderReviewHtml(tenderId) {
-  const tender = db.prepare('SELECT * FROM tenders WHERE id = ?').get(tenderId);
+async function renderReviewHtml(tenderId) {
+  const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!tender) return '<h1>Тендер не найден</h1>';
-  const tzDoc = getTzDocument(tenderId);
+  const tzDoc = await getTzDocument(tenderId);
   if (!tzDoc) {
     return wrap(`<h1>${escapeHtml(tender.title)}</h1><p>В тендер не загружен документ типа «ТЗ».</p>`);
   }
 
   const paragraphs = splitParagraphs(tzDoc.extracted_text || '');
-  const issues = db
-    .prepare(`
+  const issues = await db.queryAll(
+    `
       SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.review_status IN ('accepted', 'edited', 'pending')
       ORDER BY i.paragraph_index ASC, i.char_start ASC
-    `)
-    .all(tenderId);
+    `,
+    tenderId,
+  );
 
   const byParagraph = new Map();
   for (const issue of issues) {

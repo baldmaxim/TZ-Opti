@@ -1,9 +1,10 @@
 'use strict';
 
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const express = require('express');
+require('express-async-errors');
 const cors = require('cors');
 const morgan = require('morgan');
 
@@ -61,8 +62,8 @@ app.use(errorHandler);
 
 (async () => {
   try {
-    runMigration();
-    runSeedIfEmpty();
+    await runMigration();
+    await runSeedIfEmpty();
     app.listen(PORT, () => {
       console.log(`[tz-opti-server] listening on http://localhost:${PORT}`);
     });

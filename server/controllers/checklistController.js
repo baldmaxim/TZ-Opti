@@ -6,8 +6,17 @@ const { notFound, badRequest } = require('../utils/errors');
 const { populateStandardChecklist } = require('./tendersController');
 
 const FIELDS = [
-  'section', 'work_name', 'in_tz', 'in_pd_rd', 'in_vor',
-  'in_calc', 'in_kp', 'in_contract', 'affects_schedule', 'decision', 'comment',
+  'section',
+  'work_name',
+  'in_tz',
+  'in_pd_rd',
+  'in_vor',
+  'in_calc',
+  'in_kp',
+  'in_contract',
+  'affects_schedule',
+  'decision',
+  'comment',
 ];
 const BOOL_FIELDS = ['in_tz', 'in_pd_rd', 'in_vor', 'in_kp', 'in_contract', 'affects_schedule'];
 // in_calc — тристат: 1 (учтено) / 0 (не учтено) / null (не указано).
@@ -30,14 +39,12 @@ function normalize(body) {
   return out;
 }
 
-exports.list = (req, res) => {
-  const rows = db
-    .prepare('SELECT * FROM work_checklist_items WHERE tender_id = ? ORDER BY rowid ASC')
-    .all(req.params.id);
+exports.list = async (req, res) => {
+  const rows = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ? ORDER BY section ASC, work_name ASC', req.params.id);
   res.json({ items: rows });
 };
 
-exports.create = (req, res) => {
+exports.create = async (req, res) => {
   const tenderId = req.params.id;
   const body = req.body || {};
   if (!body.work_name) throw badRequest('Поле work_name обязательно');
@@ -46,40 +53,39 @@ exports.create = (req, res) => {
   const cols = ['id', 'tender_id', ...Object.keys(data)];
   const placeholders = cols.map(() => '?').join(', ');
   const values = [id, tenderId, ...Object.values(data)];
-  db.prepare(`INSERT INTO work_checklist_items (${cols.join(', ')}) VALUES (${placeholders})`).run(...values);
-  res.status(201).json(db.prepare('SELECT * FROM work_checklist_items WHERE id = ?').get(id));
+  await db.queryRun(`INSERT INTO work_checklist_items (${cols.join(', ')}) VALUES (${placeholders})`, ...values);
+  res.status(201).json(await db.queryOne('SELECT * FROM work_checklist_items WHERE id = ?', id));
 };
 
-exports.update = (req, res) => {
+exports.update = async (req, res) => {
   const id = req.params.itemId;
-  const existing = db.prepare('SELECT id FROM work_checklist_items WHERE id = ?').get(id);
+  const existing = await db.queryOne('SELECT id FROM work_checklist_items WHERE id = ?', id);
   if (!existing) throw notFound('Запись не найдена');
   const data = normalize(req.body || {});
   if (!Object.keys(data).length) {
-    return res.json(db.prepare('SELECT * FROM work_checklist_items WHERE id = ?').get(id));
+    return res.json(await db.queryOne('SELECT * FROM work_checklist_items WHERE id = ?', id));
   }
-  const sets = Object.keys(data).map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE work_checklist_items SET ${sets} WHERE id = ?`).run(...Object.values(data), id);
-  res.json(db.prepare('SELECT * FROM work_checklist_items WHERE id = ?').get(id));
+  const sets = Object.keys(data)
+    .map((k) => `${k} = ?`)
+    .join(', ');
+  await db.queryRun(`UPDATE work_checklist_items SET ${sets} WHERE id = ?`, ...Object.values(data), id);
+  res.json(await db.queryOne('SELECT * FROM work_checklist_items WHERE id = ?', id));
 };
 
-exports.remove = (req, res) => {
-  const r = db.prepare('DELETE FROM work_checklist_items WHERE id = ?').run(req.params.itemId);
-  if (!r.changes) throw notFound('Запись не найдена');
+exports.remove = async (req, res) => {
+  const r = await db.queryRun('DELETE FROM work_checklist_items WHERE id = ?', req.params.itemId);
+  if (!r.rowCount) throw notFound('Запись не найдена');
   res.json({ ok: true });
 };
 
-exports.resetToStandard = (req, res) => {
+exports.resetToStandard = async (req, res) => {
   const tenderId = req.params.id;
-  const tender = db.prepare('SELECT id FROM tenders WHERE id = ?').get(tenderId);
+  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
   if (!tender) throw notFound('Тендер не найден');
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM work_checklist_items WHERE tender_id = ?').run(tenderId);
-    populateStandardChecklist(tenderId);
+  await db.transaction(async (tx) => {
+    await tx.queryRun('DELETE FROM work_checklist_items WHERE tender_id = ?', tenderId);
   });
-  tx();
-  const items = db
-    .prepare('SELECT * FROM work_checklist_items WHERE tender_id = ? ORDER BY rowid ASC')
-    .all(tenderId);
+  await populateStandardChecklist(tenderId);
+  const items = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ? ORDER BY section ASC, work_name ASC', tenderId);
   res.json({ items });
 };

@@ -6,19 +6,22 @@ const { notFound, badRequest } = require('../utils/errors');
 const { renderConditions } = require('../services/conditionsRenderer');
 const { getOrCreate } = require('./setupParamsController');
 
-function getOverlayMap(tenderId) {
-  const rows = db
-    .prepare(`SELECT condition_idx, text_override, comment, criticality FROM company_conditions WHERE tender_id = ? AND condition_idx IS NOT NULL`)
-    .all(tenderId);
+async function getOverlayMap(tenderId) {
+  const rows = await db.queryAll(
+    'SELECT condition_idx, text_override, comment, criticality FROM company_conditions WHERE tender_id = ? AND condition_idx IS NOT NULL',
+    tenderId,
+  );
   const out = new Map();
   for (const r of rows) out.set(r.condition_idx, r);
   return out;
 }
 
-function upsertOverlay(tenderId, idx, name, patch) {
-  const existing = db
-    .prepare('SELECT id FROM company_conditions WHERE tender_id = ? AND condition_idx = ?')
-    .get(tenderId, idx);
+async function upsertOverlay(tenderId, idx, name, patch) {
+  const existing = await db.queryOne(
+    'SELECT id FROM company_conditions WHERE tender_id = ? AND condition_idx = ?',
+    tenderId,
+    idx,
+  );
   if (existing) {
     const sets = [];
     const params = [];
@@ -36,13 +39,14 @@ function upsertOverlay(tenderId, idx, name, patch) {
     }
     if (sets.length) {
       params.push(existing.id);
-      db.prepare(`UPDATE company_conditions SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+      await db.queryRun(`UPDATE company_conditions SET ${sets.join(', ')} WHERE id = ?`, ...params);
     }
   } else {
-    db.prepare(`
+    await db.queryRun(
+      `
       INSERT INTO company_conditions (id, tender_id, condition_idx, condition, category, text_override, comment, criticality)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
       newId(),
       tenderId,
       idx,
@@ -50,15 +54,15 @@ function upsertOverlay(tenderId, idx, name, patch) {
       'template',
       patch.text_override ?? null,
       patch.comment ?? null,
-      patch.criticality ?? 'medium'
+      patch.criticality ?? 'medium',
     );
   }
 }
 
-exports.list = (req, res) => {
-  const { kind, row: params } = getOrCreate(req.params.id);
+exports.list = async (req, res) => {
+  const { kind, row: params } = await getOrCreate(req.params.id);
   const rendered = renderConditions(kind, params);
-  const overlay = getOverlayMap(req.params.id);
+  const overlay = await getOverlayMap(req.params.id);
   const items = rendered.map((c) => {
     const o = overlay.get(c.idx);
     return {
@@ -73,10 +77,10 @@ exports.list = (req, res) => {
   res.json({ kind, items });
 };
 
-exports.patch = (req, res) => {
+exports.patch = async (req, res) => {
   const idx = Number(req.params.idx);
   if (!Number.isFinite(idx) || idx <= 0) throw badRequest('Некорректный idx');
-  const { kind, row: params } = getOrCreate(req.params.id);
+  const { kind, row: params } = await getOrCreate(req.params.id);
   const rendered = renderConditions(kind, params);
   const tpl = rendered.find((c) => c.idx === idx);
   if (!tpl) throw notFound('Условие не найдено в шаблоне');
@@ -95,19 +99,22 @@ exports.patch = (req, res) => {
     return res.json({ ok: true });
   }
 
-  upsertOverlay(req.params.id, idx, tpl.name, patch);
+  await upsertOverlay(req.params.id, idx, tpl.name, patch);
   res.json({ ok: true });
 };
 
-exports.removeOverride = (req, res) => {
+exports.removeOverride = async (req, res) => {
   const idx = Number(req.params.idx);
   if (!Number.isFinite(idx) || idx <= 0) throw badRequest('Некорректный idx');
-  db.prepare(`UPDATE company_conditions SET text_override = NULL WHERE tender_id = ? AND condition_idx = ?`)
-    .run(req.params.id, idx);
+  await db.queryRun(
+    'UPDATE company_conditions SET text_override = NULL WHERE tender_id = ? AND condition_idx = ?',
+    req.params.id,
+    idx,
+  );
   res.json({ ok: true });
 };
 
-exports.reset = (req, res) => {
-  db.prepare(`DELETE FROM company_conditions WHERE tender_id = ?`).run(req.params.id);
+exports.reset = async (req, res) => {
+  await db.queryRun('DELETE FROM company_conditions WHERE tender_id = ?', req.params.id);
   res.json({ ok: true });
 };

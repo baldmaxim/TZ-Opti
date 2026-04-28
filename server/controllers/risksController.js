@@ -4,43 +4,43 @@ const db = require('../db/connection');
 const { notFound } = require('../utils/errors');
 const risksService = require('../services/risksService');
 
-function ensureTender(tenderId) {
-  const t = db.prepare('SELECT id FROM tenders WHERE id = ?').get(tenderId);
+async function ensureTender(tenderId) {
+  const t = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
   if (!t) throw notFound('Тендер не найден');
 }
 
-exports.list = (req, res) => {
-  ensureTender(req.params.id);
-  const items = risksService.listForTender(req.params.id);
+exports.list = async (req, res) => {
+  await ensureTender(req.params.id);
+  const items = await risksService.listForTender(req.params.id);
   res.json({ items });
 };
 
-exports.patchState = (req, res) => {
-  ensureTender(req.params.id);
-  risksService.patchState(req.params.id, req.params.key, req.body || {});
+exports.patchState = async (req, res) => {
+  await ensureTender(req.params.id);
+  await risksService.patchState(req.params.id, req.params.key, req.body || {});
   res.json({ ok: true });
 };
 
-exports.reset = (req, res) => {
-  ensureTender(req.params.id);
-  risksService.reset(req.params.id);
+exports.reset = async (req, res) => {
+  await ensureTender(req.params.id);
+  await risksService.reset(req.params.id);
   res.json({ ok: true });
 };
 
-exports.matches = (req, res) => {
-  ensureTender(req.params.id);
-  res.json({ matches: risksService.getMatches(req.params.id) });
+exports.matches = async (req, res) => {
+  await ensureTender(req.params.id);
+  res.json({ matches: await risksService.getMatches(req.params.id) });
 };
 
-exports.createCustom = (req, res) => {
-  ensureTender(req.params.id);
-  const id = risksService.createCustom(req.params.id, req.body || {});
+exports.createCustom = async (req, res) => {
+  await ensureTender(req.params.id);
+  const id = await risksService.createCustom(req.params.id, req.body || {});
   res.status(201).json({ id });
 };
 
-exports.removeCustom = (req, res) => {
-  ensureTender(req.params.id);
-  const ok = risksService.removeCustom(req.params.id, req.params.customId);
+exports.removeCustom = async (req, res) => {
+  await ensureTender(req.params.id);
+  const ok = await risksService.removeCustom(req.params.id, req.params.customId);
   if (!ok) throw notFound('Свой риск не найден');
   res.json({ ok: true });
 };

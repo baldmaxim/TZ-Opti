@@ -7,23 +7,25 @@ const { notFound, badRequest } = require('../utils/errors');
 const { exportReviewedDocx } = require('../services/reviewDocx');
 const exportSvc = require('../services/exportService');
 
-function getTzOriginal(tenderId) {
-  return db
-    .prepare(`SELECT * FROM documents WHERE tender_id = ? AND doc_type = 'tz' ORDER BY uploaded_at DESC LIMIT 1`)
-    .get(tenderId);
+async function getTzOriginal(tenderId) {
+  return db.queryOne(
+    `SELECT * FROM documents WHERE tender_id = ? AND doc_type = 'tz' ORDER BY uploaded_at DESC LIMIT 1`,
+    tenderId,
+  );
 }
 
-function loadDecisions(tenderId) {
-  const rows = db
-    .prepare(`
+async function loadDecisions(tenderId) {
+  const rows = await db.queryAll(
+    `
       SELECT i.*, d.decision as decision_kind, d.final_comment as final_comment, d.edited_redaction as edited_decision_redaction
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.selected_for_export = 1
         AND i.review_status IN ('accepted', 'edited')
       ORDER BY i.analysis_stage ASC, i.paragraph_index ASC, i.char_start ASC
-    `)
-    .all(tenderId);
+    `,
+    tenderId,
+  );
   return rows.map((r) => ({
     issue: r,
     decision_kind: r.decision_kind || (r.review_status === 'edited' ? 'edit' : 'accept'),
@@ -32,11 +34,11 @@ function loadDecisions(tenderId) {
   }));
 }
 
-exports.docx = (req, res) => {
+exports.docx = async (req, res) => {
   const tenderId = req.params.id;
-  const tender = db.prepare('SELECT * FROM tenders WHERE id = ?').get(tenderId);
+  const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!tender) throw notFound('Тендер не найден');
-  const tz = getTzOriginal(tenderId);
+  const tz = await getTzOriginal(tenderId);
   if (!tz) throw badRequest('В тендер не загружен документ типа «ТЗ» (.docx).');
   const ext = path.extname(tz.file_path).toLowerCase();
   if (ext !== '.docx') {
@@ -44,7 +46,7 @@ exports.docx = (req, res) => {
   }
   if (!fs.existsSync(tz.file_path)) throw notFound('Файл ТЗ отсутствует на диске');
 
-  const decisions = loadDecisions(tenderId);
+  const decisions = await loadDecisions(tenderId);
   const author = (req.query.author || tender.owner || 'TZ-Opti').toString();
   const { buffer, applied, skipped } = exportReviewedDocx(tz.file_path, decisions, { author, date: new Date() });
 
@@ -56,22 +58,22 @@ exports.docx = (req, res) => {
   res.send(buffer);
 };
 
-exports.csv = (req, res) => {
-  const csv = exportSvc.exportIssuesCsv(req.params.id);
+exports.csv = async (req, res) => {
+  const csv = await exportSvc.exportIssuesCsv(req.params.id);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="issues_${req.params.id}.csv"`);
   res.send(csv);
 };
 
-exports.json = (req, res) => {
-  const json = exportSvc.exportIssuesJson(req.params.id);
+exports.json = async (req, res) => {
+  const json = await exportSvc.exportIssuesJson(req.params.id);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="analysis_${req.params.id}.json"`);
   res.send(json);
 };
 
-exports.summary = (req, res) => {
-  const md = exportSvc.exportSummaryMd(req.params.id);
+exports.summary = async (req, res) => {
+  const md = await exportSvc.exportSummaryMd(req.params.id);
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="summary_${req.params.id}.md"`);
   res.send(md);

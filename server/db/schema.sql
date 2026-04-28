@@ -79,6 +79,17 @@ CREATE TABLE IF NOT EXISTS qa_entries (
   id                 TEXT PRIMARY KEY,
   tender_id          TEXT NOT NULL,
   source_file_path   TEXT,
+  section            TEXT,
+  sent_at            TEXT,
+  answer_at          TEXT,
+  round_label        TEXT,
+  tz_clause          TEXT,                 -- ссылка/название пункта ТЗ
+  tz_reflected       INTEGER DEFAULT 0,    -- 0/1: решение отражено в ТЗ
+  tz_contradicts     INTEGER DEFAULT 0,    -- 0/1: ТЗ противоречит решению
+  affects_calc       INTEGER DEFAULT 0,    -- влияет на расчёт
+  affects_kp         INTEGER DEFAULT 0,    -- влияет на КП
+  affects_contract   INTEGER DEFAULT 0,    -- влияет на договор
+  affects_schedule   INTEGER DEFAULT 0,    -- влияет на график
   question           TEXT,
   answer             TEXT,
   accepted_decision  TEXT,

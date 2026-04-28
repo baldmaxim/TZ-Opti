@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { TENDER_TYPES } from '../../utils/labels';
 import { toastError, toastSuccess } from '../../store/useToastStore';
+import { useTenderStore } from '../../store/useTenderStore';
+import NextStepCta from '../../components/wizard/NextStepCta';
 
 const FIELDS = [
   { key: 'tender_type', label: 'Тип тендера', kind: 'select' },
@@ -14,11 +16,13 @@ const FIELDS = [
   { key: 'comment', label: 'Комментарий', kind: 'textarea' },
 ];
 
-export default function ObjectInfoTab({ tenderId }) {
+export default function ObjectInfoPage() {
+  const tenderId = useTenderStore((s) => s.tenderId);
   const [data, setData] = useState({});
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (!tenderId) return;
     api.getObjectInfo(tenderId).then(setData).catch((err) => toastError(err.message));
   }, [tenderId]);
 
@@ -57,6 +61,7 @@ export default function ObjectInfoTab({ tenderId }) {
       <div className="flex justify-end">
         <button className="btn btn-primary" onClick={save} disabled={busy}>{busy ? 'Сохранение…' : 'Сохранить'}</button>
       </div>
+      <NextStepCta />
     </div>
   );
 }

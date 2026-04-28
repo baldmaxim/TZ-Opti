@@ -18,3 +18,6 @@ server/db/*.db-wal
 .claude/settings.local.json
 memory.md
 memory/
+
+# scratch для чтения xlsx-фикстур (локальный)
+.tmp_xlsx/

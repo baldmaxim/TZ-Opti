@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { v4: uuid } = require('uuid');
+const { decodeMulterFilename } = require('../utils/filename');
 
 const UPLOAD_ROOT = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
 fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
@@ -17,9 +18,11 @@ function makeStorage(subdirResolver) {
       cb(null, target);
     },
     filename(_req, file, cb) {
-      const ext = path.extname(file.originalname) || '';
+      const fixed = decodeMulterFilename(file.originalname);
+      file.originalname = fixed;
+      const ext = path.extname(fixed) || '';
       const safe = path
-        .basename(file.originalname, ext)
+        .basename(fixed, ext)
         .replace(/[^a-zA-Z0-9_\-]/g, '_')
         .slice(0, 60);
       cb(null, `${uuid()}__${safe}${ext}`);

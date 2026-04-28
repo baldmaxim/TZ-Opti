@@ -22,6 +22,8 @@ const stagesRouter = require('./routes/stages');
 const decisionsRouter = require('./routes/decisions');
 const reviewRouter = require('./routes/review');
 const exportRouter = require('./routes/export');
+const setupLocksRouter = require('./routes/setupLocks');
+const setupParamsRouter = require('./routes/setupParams');
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -47,6 +49,8 @@ app.use('/api', stagesRouter);
 app.use('/api', decisionsRouter);
 app.use('/api', reviewRouter);
 app.use('/api', exportRouter);
+app.use('/api', setupLocksRouter);
+app.use('/api', setupParamsRouter);
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) {

@@ -191,6 +191,26 @@ CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
 
 CREATE INDEX IF NOT EXISTS idx_excluded_tender ON tz_excluded_ranges(tender_id);
 
+CREATE TABLE IF NOT EXISTS tender_setup_params (
+  tender_id        TEXT PRIMARY KEY,
+  contract_kind    TEXT,                 -- 'gen' | 'shell'
+  escalation       TEXT,                 -- значение из PARAMS_SCHEMA[kind].escalation.options
+  advance          TEXT,                 -- только для gen; для shell — NULL
+  build_months     INTEGER,
+  transfer_months  INTEGER,
+  kp_date          TEXT,                 -- ISO date (YYYY-MM-DD)
+  updated_at       TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS setup_locks (
+  tender_id  TEXT NOT NULL,
+  section    TEXT NOT NULL,        -- 'checklist' | 'conditions' | 'risks' | 'object_info' | 'qa' | 'documents'
+  locked_at  TEXT NOT NULL,
+  PRIMARY KEY (tender_id, section),
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS tender_stage_state (
   tender_id      TEXT PRIMARY KEY,
   current_stage  INTEGER DEFAULT 1,

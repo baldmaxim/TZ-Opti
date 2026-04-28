@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import EditableTable from '../../components/tables/EditableTable';
 import { toastError, toastSuccess } from '../../store/useToastStore';
+import { useTenderStore } from '../../store/useTenderStore';
+import NextStepCta from '../../components/wizard/NextStepCta';
 
 const CRIT = [
   { value: 'low', label: 'Низкая' },
@@ -19,11 +21,14 @@ const COLUMNS = [
 
 const EMPTY = { category: '', risk_text: '', recommendation: '', criticality: 'medium' };
 
-export default function RisksTab({ tenderId }) {
+export default function RisksPage() {
+  const tenderId = useTenderStore((s) => s.tenderId);
+  const refreshTender = useTenderStore((s) => s.refreshTender);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
+    if (!tenderId) return;
     setLoading(true);
     try {
       const data = await api.listRisks(tenderId);
@@ -40,11 +45,11 @@ export default function RisksTab({ tenderId }) {
     catch (err) { toastError(err.message); load(); }
   };
   const handleCreate = async (data) => {
-    try { await api.createRisk(tenderId, data); toastSuccess('Риск добавлен'); await load(); }
+    try { await api.createRisk(tenderId, data); toastSuccess('Риск добавлен'); await load(); await refreshTender(); }
     catch (err) { toastError(err.message); }
   };
   const handleDelete = async (id) => {
-    try { await api.deleteRisk(tenderId, id); await load(); }
+    try { await api.deleteRisk(tenderId, id); await load(); await refreshTender(); }
     catch (err) { toastError(err.message); }
   };
 
@@ -85,6 +90,7 @@ export default function RisksTab({ tenderId }) {
       <EditableTable columns={COLUMNS} rows={localRows} loading={loading}
         onUpdate={handleUpdate} onCreate={handleCreate} onDelete={handleDelete}
         emptyRowTemplate={EMPTY} />
+      <NextStepCta />
     </div>
   );
 }

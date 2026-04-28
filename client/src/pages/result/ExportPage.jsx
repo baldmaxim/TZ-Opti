@@ -1,6 +1,18 @@
 import { api } from '../../services/api';
+import { useTenderStore } from '../../store/useTenderStore';
+import { useWizardState } from '../../hooks/useWizardState';
+import GateNotice from '../../components/wizard/GateNotice';
 
-export default function ExportTab({ tenderId }) {
+export default function ExportPage() {
+  const tenderId = useTenderStore((s) => s.tenderId);
+  const { steps } = useWizardState();
+  const exportStep = steps.find((s) => s.id === 'export');
+
+  if (!tenderId) return null;
+  if (exportStep?.status === 'locked') {
+    return <GateNotice stepId="export" />;
+  }
+
   const items = [
     {
       title: 'ТЗ.docx с правками и комментариями',
@@ -34,7 +46,7 @@ export default function ExportTab({ tenderId }) {
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-600">
-        Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Доступен сразу, но качество результата выше после прохождения хотя бы Стадии 1.
+        Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Доступен после первой завершённой стадии, но качество результата выше после прохождения всех 4 стадий.
       </p>
       {items.map((it) => (
         <div key={it.title} className={`card p-4 flex items-center justify-between gap-3 ${it.primary ? 'border-brand-300 bg-brand-50/40' : ''}`}>

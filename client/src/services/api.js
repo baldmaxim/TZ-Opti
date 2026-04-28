@@ -44,17 +44,27 @@ export const api = {
   deleteDocument: (id) => request(`/documents/${id}`, { method: 'DELETE' }),
   documentDownloadUrl: (id) => `${BASE}/documents/${id}/download`,
 
+  // Локи разделов подготовки
+  getSetupLocks: (tenderId) => request(`/tenders/${tenderId}/setup/locks`),
+  lockSetup: (tenderId, section) => request(`/tenders/${tenderId}/setup/${section}/lock`, { method: 'POST' }),
+  unlockSetup: (tenderId, section) => request(`/tenders/${tenderId}/setup/${section}/unlock`, { method: 'POST' }),
+
   // Чек-лист
   listChecklist: (tenderId) => request(`/tenders/${tenderId}/checklist`),
   createChecklist: (tenderId, data) => request(`/tenders/${tenderId}/checklist`, { method: 'POST', body: data }),
   updateChecklist: (tenderId, itemId, data) => request(`/tenders/${tenderId}/checklist/${itemId}`, { method: 'PATCH', body: data }),
   deleteChecklist: (tenderId, itemId) => request(`/tenders/${tenderId}/checklist/${itemId}`, { method: 'DELETE' }),
+  resetChecklistToStandard: (tenderId) => request(`/tenders/${tenderId}/checklist/standard`, { method: 'POST' }),
 
-  // Условия компании
+  // Существенные условия — параметрический шаблон
+  getSetupParams: (tenderId) => request(`/tenders/${tenderId}/setup/params`),
+  updateSetupParams: (tenderId, data) => request(`/tenders/${tenderId}/setup/params`, { method: 'PUT', body: data }),
+  getSetupParamsSchema: (tenderId) => request(`/tenders/${tenderId}/setup/params/schema`),
+
   listConditions: (tenderId) => request(`/tenders/${tenderId}/conditions`),
-  createCondition: (tenderId, data) => request(`/tenders/${tenderId}/conditions`, { method: 'POST', body: data }),
-  updateCondition: (tenderId, itemId, data) => request(`/tenders/${tenderId}/conditions/${itemId}`, { method: 'PATCH', body: data }),
-  deleteCondition: (tenderId, itemId) => request(`/tenders/${tenderId}/conditions/${itemId}`, { method: 'DELETE' }),
+  patchCondition: (tenderId, idx, data) => request(`/tenders/${tenderId}/conditions/${idx}`, { method: 'PATCH', body: data }),
+  removeConditionOverride: (tenderId, idx) => request(`/tenders/${tenderId}/conditions/${idx}/override`, { method: 'DELETE' }),
+  resetConditions: (tenderId) => request(`/tenders/${tenderId}/conditions/reset`, { method: 'POST' }),
 
   // Риски
   listRisks: (tenderId) => request(`/tenders/${tenderId}/risks`),

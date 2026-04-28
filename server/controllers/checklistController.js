@@ -3,18 +3,28 @@
 const db = require('../db/connection');
 const { newId } = require('../utils/ids');
 const { notFound, badRequest } = require('../utils/errors');
+const { populateStandardChecklist } = require('./tendersController');
 
 const FIELDS = [
   'section', 'work_name', 'in_tz', 'in_pd_rd', 'in_vor',
   'in_calc', 'in_kp', 'in_contract', 'affects_schedule', 'decision', 'comment',
 ];
-const BOOL_FIELDS = ['in_tz', 'in_pd_rd', 'in_vor', 'in_calc', 'in_kp', 'in_contract', 'affects_schedule'];
+const BOOL_FIELDS = ['in_tz', 'in_pd_rd', 'in_vor', 'in_kp', 'in_contract', 'affects_schedule'];
+// in_calc — тристат: 1 (учтено) / 0 (не учтено) / null (не указано).
 
 function normalize(body) {
   const out = {};
   for (const f of FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(body, f)) {
-      out[f] = BOOL_FIELDS.includes(f) ? (body[f] ? 1 : 0) : body[f];
+    if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+    const v = body[f];
+    if (BOOL_FIELDS.includes(f)) {
+      out[f] = v ? 1 : 0;
+    } else if (f === 'in_calc') {
+      if (v === null || v === undefined || v === '') out[f] = null;
+      else if (v === 1 || v === 0) out[f] = v;
+      else out[f] = v ? 1 : 0;
+    } else {
+      out[f] = v;
     }
   }
   return out;
@@ -57,4 +67,19 @@ exports.remove = (req, res) => {
   const r = db.prepare('DELETE FROM work_checklist_items WHERE id = ?').run(req.params.itemId);
   if (!r.changes) throw notFound('Запись не найдена');
   res.json({ ok: true });
+};
+
+exports.resetToStandard = (req, res) => {
+  const tenderId = req.params.id;
+  const tender = db.prepare('SELECT id FROM tenders WHERE id = ?').get(tenderId);
+  if (!tender) throw notFound('Тендер не найден');
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM work_checklist_items WHERE tender_id = ?').run(tenderId);
+    populateStandardChecklist(tenderId);
+  });
+  tx();
+  const items = db
+    .prepare('SELECT * FROM work_checklist_items WHERE tender_id = ? ORDER BY rowid ASC')
+    .all(tenderId);
+  res.json({ items });
 };

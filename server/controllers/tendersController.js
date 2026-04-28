@@ -3,6 +3,8 @@
 const db = require('../db/connection');
 const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
+const { STANDARD_CHECKLIST } = require('../db/standardChecklist');
+const { getLocksMap } = require('./setupLocksController');
 
 const TENDER_FIELDS = ['title', 'customer', 'type', 'stage', 'deadline', 'owner', 'status', 'description'];
 
@@ -14,6 +16,17 @@ function ensureStageState(tenderId) {
       VALUES (?, 1, 'open', 'locked', 'locked', 'locked')
     `).run(tenderId);
   }
+}
+
+function populateStandardChecklist(tenderId) {
+  const stmt = db.prepare(`
+    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
+    VALUES (?, ?, ?, ?, NULL, NULL)
+  `);
+  const tx = db.transaction((items) => {
+    for (const it of items) stmt.run(newId(), tenderId, it.section, it.work_name);
+  });
+  tx(STANDARD_CHECKLIST);
 }
 
 function getTenderById(tenderId) {
@@ -28,7 +41,8 @@ function getTenderById(tenderId) {
     issues_total: db.prepare('SELECT COUNT(*) as c FROM issues WHERE tender_id = ?').get(tenderId).c,
     issues_pending: db.prepare("SELECT COUNT(*) as c FROM issues WHERE tender_id = ? AND review_status = 'pending'").get(tenderId).c,
   };
-  return { ...t, stage_state, counts };
+  const setup_locks = getLocksMap(tenderId);
+  return { ...t, stage_state, counts, setup_locks };
 }
 
 exports.list = (req, res) => {
@@ -78,6 +92,7 @@ exports.create = (req, res) => {
   const values = [id, ...TENDER_FIELDS.map((f) => body[f] ?? null), created_at];
   db.prepare(`INSERT INTO tenders (${insertCols.join(', ')}) VALUES (${placeholders})`).run(...values);
   ensureStageState(id);
+  populateStandardChecklist(id);
   res.status(201).json(getTenderById(id));
 };
 
@@ -109,3 +124,4 @@ exports.remove = (req, res) => {
 
 exports.getTenderById = getTenderById;
 exports.ensureStageState = ensureStageState;
+exports.populateStandardChecklist = populateStandardChecklist;

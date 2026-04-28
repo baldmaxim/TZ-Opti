@@ -4,14 +4,28 @@ const { findInParagraphs, normalize } = require('./shared/fragmentMatcher');
 
 /**
  * Стадия 1: ТЗ + Чек-лист + ВОР.
+ *
  * Контракт: (context) → Issue[]
  * context = { tenderId, paragraphs, vorText, checklist, sourceDocumentId }
+ *
+ * Чек-лист — стандартный список работ. Поле in_calc хранит ответ инженера:
+ *   1 — учтено в КП
+ *   0 — не учтено
+ *   NULL — не отвечал
+ *
+ * Логика выявления расхождений:
+ *   • работа упоминается в ТЗ, но помечена «не учтено» → высокий риск
+ *     («может потребоваться выполнить без оплаты»)
+ *   • работа упоминается в ВОР, но помечена «не учтено» → высокий риск
+ *   • работа помечена «учтено», но не находится ни в ТЗ, ни в ВОР →
+ *     средний риск («заложили в КП без подтверждения документами»)
+ *   • работа не отмечена («не указано») и упоминается в ТЗ → подсказка
+ *     («работа описана в ТЗ — определитесь, учитывать ли её в КП»)
  */
 function runStage1(context) {
   const { paragraphs, vorText, checklist, sourceDocumentId } = context;
   const issues = [];
-  const tzText = paragraphs.map((p) => p.text).join('\n');
-  const tzNorm = normalize(tzText);
+  const tzNorm = normalize(paragraphs.map((p) => p.text).join('\n'));
   const vorNorm = normalize(vorText || '');
 
   for (const item of checklist) {
@@ -19,65 +33,88 @@ function runStage1(context) {
     if (!work) continue;
     const inTzActual = tzNorm.includes(normalize(work));
     const inVorActual = vorNorm.includes(normalize(work));
+    const accounted = item.in_calc;       // 1 / 0 / null
 
-    // Работа есть в ТЗ, но не учтена в расчёте
-    if (inTzActual && !item.in_calc) {
+    if (accounted === 1) {
+      // учтено в КП
+      if (!inTzActual && !inVorActual) {
+        issues.push(buildIssue({
+          sourceDocumentId,
+          paragraph: null,
+          fragment: work,
+          problem_type: 'учтено_в_кп_без_подтверждения',
+          risk_category: 'покрытие_расчёта',
+          criticality: 'medium',
+          price_impact: 'возможно',
+          schedule_impact: 'нет',
+          basis: `Работа «${work}» помечена «учтено в КП», но в текстах ТЗ и ВОР не найдена.`,
+          suggested_action: 'clarify',
+          suggested_redaction: `Запросить у Заказчика подтверждение по позиции «${work}» или скорректировать КП.`,
+          review_comment: 'Работа учтена в расчёте, но не подтверждена документально. Возможна избыточная стоимость.',
+          confidence: 0.65,
+        }));
+      }
+      continue;
+    }
+
+    if (accounted === 0) {
+      // не учтено в КП
+      if (inTzActual) {
+        const hits = findInParagraphs(paragraphs, work);
+        const hit = hits[0] || null;
+        issues.push(buildIssue({
+          sourceDocumentId,
+          paragraph: hit,
+          fragment: hit ? hit.fragment : work,
+          problem_type: 'не_учтено_но_есть_в_ТЗ',
+          risk_category: 'покрытие_расчёта',
+          criticality: 'high',
+          price_impact: 'высокое',
+          schedule_impact: 'возможно',
+          basis: `Работа «${work}» упоминается в ТЗ, но в чек-листе помечена как НЕ учтённая в КП.`,
+          suggested_action: 'clarify',
+          suggested_redaction: `Учесть в КП или вынести в допущения: «${work}».`,
+          review_comment: 'Риск выполнения без оплаты. Требуется добавить позицию в КП либо явно исключить из объёма.',
+          confidence: 0.8,
+        }));
+      } else if (inVorActual) {
+        issues.push(buildIssue({
+          sourceDocumentId,
+          paragraph: null,
+          fragment: work,
+          problem_type: 'не_учтено_но_есть_в_ВОР',
+          risk_category: 'покрытие_расчёта',
+          criticality: 'high',
+          price_impact: 'высокое',
+          schedule_impact: 'возможно',
+          basis: `Работа «${work}» отражена в ВОР, но в чек-листе помечена как НЕ учтённая в КП.`,
+          suggested_action: 'clarify',
+          suggested_redaction: `Учесть в КП объёмы по позиции «${work}» из ВОР.`,
+          review_comment: 'Заказчик ожидает выполнение по ВОР, но в КП объём не заложен.',
+          confidence: 0.75,
+        }));
+      }
+      continue;
+    }
+
+    // accounted == null: статус не указан
+    if (inTzActual) {
       const hits = findInParagraphs(paragraphs, work);
-      const hit = hits[0];
+      const hit = hits[0] || null;
       issues.push(buildIssue({
         sourceDocumentId,
         paragraph: hit,
         fragment: hit ? hit.fragment : work,
-        problem_type: 'не_учтено_в_расчёте',
+        problem_type: 'статус_не_определён',
         risk_category: 'покрытие_расчёта',
-        criticality: 'high',
-        price_impact: 'высокое',
-        schedule_impact: 'нет',
-        basis: `Работа «${work}» упоминается в ТЗ (раздел «${item.section || '—'}»), но в чек-листе не отмечена как учтённая в расчёте.`,
-        suggested_action: 'clarify',
-        suggested_redaction: `Учесть в расчёте: ${work}`,
-        review_comment: 'Работа описана в ТЗ, но отсутствует в составе расчёта. Требуется добавить в КП или вынести в допущения.',
-        confidence: 0.75,
-      }));
-    }
-
-    // Работа в ВОР, но не подтверждена в ТЗ
-    if (inVorActual && !inTzActual) {
-      issues.push(buildIssue({
-        sourceDocumentId,
-        paragraph: null,
-        fragment: work,
-        problem_type: 'есть_в_ВОР_нет_в_ТЗ',
-        risk_category: 'расхождение',
         criticality: 'medium',
-        price_impact: 'среднее',
+        price_impact: 'возможно',
         schedule_impact: 'нет',
-        basis: `Работа «${work}» отражена в ВОР, но не найдена в тексте ТЗ.`,
+        basis: `Работа «${work}» упоминается в ТЗ, но в чек-листе по ней не указан статус «учтено / не учтено».`,
         suggested_action: 'clarify',
-        suggested_redaction: `Внести в раздел ТЗ: ${work}`,
-        review_comment: 'ВОР содержит работу, не подтверждённую формулировкой в ТЗ. Требуется уточнить состав ТЗ.',
-        confidence: 0.7,
-      }));
-    }
-
-    // Работа в ТЗ, но в ВОР отсутствует
-    if (inTzActual && vorText && !inVorActual) {
-      const hits = findInParagraphs(paragraphs, work);
-      const hit = hits[0];
-      issues.push(buildIssue({
-        sourceDocumentId,
-        paragraph: hit,
-        fragment: hit ? hit.fragment : work,
-        problem_type: 'есть_в_ТЗ_нет_в_ВОР',
-        risk_category: 'расхождение',
-        criticality: 'high',
-        price_impact: 'высокое',
-        schedule_impact: 'возможно',
-        basis: `Работа «${work}» описана в ТЗ, но в ВОР объём не выделен.`,
-        suggested_action: 'clarify',
-        suggested_redaction: `Запросить у Заказчика дополнение ВОР по позиции «${work}»`,
-        review_comment: 'Несоответствие ТЗ и ВОР: объём работ требует уточнения, иначе риск выполнения без оплаты.',
-        confidence: 0.7,
+        suggested_redaction: `Принять решение по позиции «${work}» в чек-листе.`,
+        review_comment: 'Не определён статус в чек-листе. Уточните, входит ли работа в КП.',
+        confidence: 0.55,
       }));
     }
   }

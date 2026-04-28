@@ -3,51 +3,111 @@
 const db = require('../db/connection');
 const { newId } = require('../utils/ids');
 const { notFound, badRequest } = require('../utils/errors');
+const { renderConditions } = require('../services/conditionsRenderer');
+const { getOrCreate } = require('./setupParamsController');
 
-const FIELDS = ['category', 'condition', 'criticality', 'comment'];
-
-function pick(body) {
-  const out = {};
-  for (const f of FIELDS) if (Object.prototype.hasOwnProperty.call(body, f)) out[f] = body[f];
+function getOverlayMap(tenderId) {
+  const rows = db
+    .prepare(`SELECT condition_idx, text_override, comment, criticality FROM company_conditions WHERE tender_id = ? AND condition_idx IS NOT NULL`)
+    .all(tenderId);
+  const out = new Map();
+  for (const r of rows) out.set(r.condition_idx, r);
   return out;
 }
 
-exports.list = (req, res) => {
-  const rows = db.prepare('SELECT * FROM company_conditions WHERE tender_id = ? ORDER BY rowid ASC').all(req.params.id);
-  res.json({ items: rows });
-};
-
-exports.create = (req, res) => {
-  const tenderId = req.params.id;
-  const body = req.body || {};
-  if (!body.condition) throw badRequest('Поле condition обязательно');
-  const id = newId();
-  const data = pick(body);
-  const cols = ['id', 'tender_id', ...Object.keys(data)];
-  const placeholders = cols.map(() => '?').join(', ');
-  db.prepare(`INSERT INTO company_conditions (${cols.join(', ')}) VALUES (${placeholders})`).run(
-    id,
-    tenderId,
-    ...Object.values(data)
-  );
-  res.status(201).json(db.prepare('SELECT * FROM company_conditions WHERE id = ?').get(id));
-};
-
-exports.update = (req, res) => {
-  const id = req.params.itemId;
-  const existing = db.prepare('SELECT id FROM company_conditions WHERE id = ?').get(id);
-  if (!existing) throw notFound('Запись не найдена');
-  const data = pick(req.body || {});
-  if (!Object.keys(data).length) {
-    return res.json(db.prepare('SELECT * FROM company_conditions WHERE id = ?').get(id));
+function upsertOverlay(tenderId, idx, name, patch) {
+  const existing = db
+    .prepare('SELECT id FROM company_conditions WHERE tender_id = ? AND condition_idx = ?')
+    .get(tenderId, idx);
+  if (existing) {
+    const sets = [];
+    const params = [];
+    if (Object.prototype.hasOwnProperty.call(patch, 'text_override')) {
+      sets.push('text_override = ?');
+      params.push(patch.text_override);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'comment')) {
+      sets.push('comment = ?');
+      params.push(patch.comment);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'criticality')) {
+      sets.push('criticality = ?');
+      params.push(patch.criticality);
+    }
+    if (sets.length) {
+      params.push(existing.id);
+      db.prepare(`UPDATE company_conditions SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    }
+  } else {
+    db.prepare(`
+      INSERT INTO company_conditions (id, tender_id, condition_idx, condition, category, text_override, comment, criticality)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      newId(),
+      tenderId,
+      idx,
+      name || '',
+      'template',
+      patch.text_override ?? null,
+      patch.comment ?? null,
+      patch.criticality ?? 'medium'
+    );
   }
-  const sets = Object.keys(data).map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE company_conditions SET ${sets} WHERE id = ?`).run(...Object.values(data), id);
-  res.json(db.prepare('SELECT * FROM company_conditions WHERE id = ?').get(id));
+}
+
+exports.list = (req, res) => {
+  const { kind, row: params } = getOrCreate(req.params.id);
+  const rendered = renderConditions(kind, params);
+  const overlay = getOverlayMap(req.params.id);
+  const items = rendered.map((c) => {
+    const o = overlay.get(c.idx);
+    return {
+      ...c,
+      text_template: c.text,
+      text: o && o.text_override != null ? o.text_override : c.text,
+      isOverridden: !!(o && o.text_override != null && o.text_override !== ''),
+      comment: o ? o.comment || '' : '',
+      criticality: o ? o.criticality || null : null,
+    };
+  });
+  res.json({ kind, items });
 };
 
-exports.remove = (req, res) => {
-  const r = db.prepare('DELETE FROM company_conditions WHERE id = ?').run(req.params.itemId);
-  if (!r.changes) throw notFound('Запись не найдена');
+exports.patch = (req, res) => {
+  const idx = Number(req.params.idx);
+  if (!Number.isFinite(idx) || idx <= 0) throw badRequest('Некорректный idx');
+  const { kind, row: params } = getOrCreate(req.params.id);
+  const rendered = renderConditions(kind, params);
+  const tpl = rendered.find((c) => c.idx === idx);
+  if (!tpl) throw notFound('Условие не найдено в шаблоне');
+
+  const body = req.body || {};
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(body, 'text_override')) {
+    let v = body.text_override;
+    if (v === undefined) v = null;
+    patch.text_override = v;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'comment')) patch.comment = body.comment ?? null;
+  if (Object.prototype.hasOwnProperty.call(body, 'criticality')) patch.criticality = body.criticality ?? null;
+
+  if (Object.keys(patch).length === 0) {
+    return res.json({ ok: true });
+  }
+
+  upsertOverlay(req.params.id, idx, tpl.name, patch);
+  res.json({ ok: true });
+};
+
+exports.removeOverride = (req, res) => {
+  const idx = Number(req.params.idx);
+  if (!Number.isFinite(idx) || idx <= 0) throw badRequest('Некорректный idx');
+  db.prepare(`UPDATE company_conditions SET text_override = NULL WHERE tender_id = ? AND condition_idx = ?`)
+    .run(req.params.id, idx);
+  res.json({ ok: true });
+};
+
+exports.reset = (req, res) => {
+  db.prepare(`DELETE FROM company_conditions WHERE tender_id = ?`).run(req.params.id);
   res.json({ ok: true });
 };

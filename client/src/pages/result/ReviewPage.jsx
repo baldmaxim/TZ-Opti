@@ -4,16 +4,24 @@ import { criticalityClass, CRITICALITY, STAGE_LABELS, ACTIONS } from '../../util
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
+import { useWizardState } from '../../hooks/useWizardState';
+import GateNotice from '../../components/wizard/GateNotice';
+import NextStepCta from '../../components/wizard/NextStepCta';
 
-export default function ReviewTab({ tenderId }) {
+export default function ReviewPage() {
+  const tenderId = useTenderStore((s) => s.tenderId);
+  const decideIssue = useTenderStore((s) => s.decideIssue);
+  const { steps } = useWizardState();
+  const reviewStep = steps.find((s) => s.id === 'review');
+
   const [pending, setPending] = useState([]);
   const [idx, setIdx] = useState(0);
   const [draftRed, setDraftRed] = useState('');
   const [draftCom, setDraftCom] = useState('');
   const [busy, setBusy] = useState(false);
-  const refreshStages = useTenderStore((s) => s.refreshStages);
 
   const load = async () => {
+    if (!tenderId) return;
     try {
       const all = [];
       for (let s = 1; s <= 4; s++) {
@@ -27,7 +35,11 @@ export default function ReviewTab({ tenderId }) {
     } catch (err) { toastError(err.message); }
   };
 
-  useEffect(() => { load(); }, [tenderId]);
+  useEffect(() => {
+    if (reviewStep?.status === 'locked') return;
+    load();
+    /* eslint-disable-next-line */
+  }, [tenderId, reviewStep?.status]);
 
   useEffect(() => {
     const cur = pending[idx];
@@ -37,8 +49,17 @@ export default function ReviewTab({ tenderId }) {
     }
   }, [idx, pending]);
 
+  if (reviewStep?.status === 'locked') {
+    return <GateNotice stepId="review" />;
+  }
+
   if (!pending.length) {
-    return <EmptyState title="Нет замечаний на рассмотрении" description="Все замечания обработаны или анализ ещё не запускался." />;
+    return (
+      <div className="space-y-4">
+        <EmptyState title="Нет замечаний на рассмотрении" description="Все замечания обработаны или анализ ещё не запускался." />
+        <NextStepCta hint="Все pending замечания обработаны — можно переходить к экспорту." />
+      </div>
+    );
   }
 
   const cur = pending[idx];
@@ -46,13 +67,12 @@ export default function ReviewTab({ tenderId }) {
   const decide = async (decision) => {
     setBusy(true);
     try {
-      await api.decideIssue(cur.id, { decision, edited_redaction: draftRed, final_comment: draftCom });
+      await decideIssue(cur.id, { decision, edited_redaction: draftRed, final_comment: draftCom });
       toastSuccess('Решение сохранено');
       const next = [...pending];
       next.splice(idx, 1);
       setPending(next);
       if (idx >= next.length) setIdx(Math.max(0, next.length - 1));
-      await refreshStages();
     } catch (err) { toastError(err.message); }
     setBusy(false);
   };
@@ -101,6 +121,8 @@ export default function ReviewTab({ tenderId }) {
           <button className="btn btn-danger" disabled={busy} onClick={() => decide('delete')}>Удалить из ТЗ</button>
         </div>
       </div>
+
+      <NextStepCta hint="После обработки всех pending — переходите к экспорту." />
     </div>
   );
 }

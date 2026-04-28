@@ -9,6 +9,7 @@ const { runMigration } = require('./migrate');
 const { newId, nowIso } = require('../utils/ids');
 const { buildMinimalDocx } = require('./fixtures/buildMinimalDocx');
 const { buildXlsxBuffer } = require('./fixtures/buildMinimalXlsx');
+const { STANDARD_CHECKLIST } = require('./standardChecklist');
 
 const UPLOAD_ROOT = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
 
@@ -96,61 +97,33 @@ function seedTenderSeverniy() {
   const pdPath = writeFile(tenderId, 'PD_Severnyy.txt', Buffer.from(pdText, 'utf8'));
   insertDocument({ id: tenderId }, 'pd_rd', 'PD_Severnyy.txt', pdPath, 'text/plain', pdText, 'Краткий выжимка ПД');
 
-  // Чек-лист
-  const checklist = [
-    { section: 'Монолит', work_name: 'Устройство фундаментной плиты', in_tz: 1, in_pd_rd: 1, in_vor: 1, in_calc: 1, in_kp: 1, in_contract: 0, affects_schedule: 1 },
-    { section: 'Монолит', work_name: 'Колонны и перекрытия', in_tz: 1, in_pd_rd: 1, in_vor: 1, in_calc: 1, in_kp: 1, in_contract: 0, affects_schedule: 1 },
-    { section: 'Кладка', work_name: 'Кладка из газоблока', in_tz: 1, in_pd_rd: 1, in_vor: 1, in_calc: 1, in_kp: 0, in_contract: 0, affects_schedule: 0 },
-    { section: 'Кладка', work_name: 'Армирование сетками', in_tz: 1, in_pd_rd: 1, in_vor: 1, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 0, comment: 'Не учтено в КП' },
-    { section: 'Кладка', work_name: 'Перемычки оконные и дверные', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 0, comment: 'Только в ТЗ' },
-    { section: 'Гидроизоляция', work_name: 'Гидроизоляция фундаментов', in_tz: 1, in_pd_rd: 1, in_vor: 1, in_calc: 1, in_kp: 1, in_contract: 0, affects_schedule: 0 },
-    { section: 'Гидроизоляция', work_name: 'Пароизоляция', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 0, comment: 'Только в ТЗ, требует уточнения' },
-    { section: 'Прочее', work_name: 'Вывоз строительного мусора', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 0 },
-    { section: 'Прочее', work_name: 'Лабораторные испытания бетона', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 0 },
-    { section: 'Площадка', work_name: 'Временные коммуникации', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 1 },
-    { section: 'Площадка', work_name: 'Подготовка площадки', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 1 },
-    { section: 'Площадка', work_name: 'Уборка территории', in_tz: 1, in_pd_rd: 0, in_vor: 0, in_calc: 0, in_kp: 0, in_contract: 0, affects_schedule: 0 },
-  ];
-  const insChk = db.prepare(`
-    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_tz, in_pd_rd, in_vor, in_calc, in_kp, in_contract, affects_schedule, comment)
-    VALUES (?, ?, @section, @work_name, @in_tz, @in_pd_rd, @in_vor, @in_calc, @in_kp, @in_contract, @affects_schedule, @comment)
-  `);
-  // Better-sqlite3 named params не сочетаются с positional — переписать:
+  // Чек-лист — стандартный список с реалистичными ответами «коробочного» тендера.
+  // Не учтено в КП: ПД/РД (делает Заказчик), демонтаж, вырубка, мониторинг.
+  // Остальное по умолчанию учтено.
+  const NOT_ACCOUNTED = new Set([
+    'Разработка Рабочей документации',
+    'Корректировка ПД',
+    'Корректировка АГР',
+    'Демонтажные работы',
+    'Вырубка',
+    'Геотехнический мониторинг',
+  ]);
   const stmtChk = db.prepare(`
-    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_tz, in_pd_rd, in_vor, in_calc, in_kp, in_contract, affects_schedule, comment)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const it of checklist) {
-    stmtChk.run(
-      newId(),
-      tenderId,
-      it.section,
-      it.work_name,
-      it.in_tz || 0,
-      it.in_pd_rd || 0,
-      it.in_vor || 0,
-      it.in_calc || 0,
-      it.in_kp || 0,
-      it.in_contract || 0,
-      it.affects_schedule || 0,
-      it.comment || null
-    );
-  }
-
-  // Условия компании
-  const stmtCond = db.prepare(`
-    INSERT INTO company_conditions (id, tender_id, category, condition, criticality, comment)
+    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const conditions = [
-    ['Поставка', 'Бетон поставляется только с собственного БСУ либо на давальческой основе Заказчиком', 'high', 'Не работаем со сторонними БСУ без предварительной аттестации'],
-    ['Сроки', 'Не принимаем графики «без права переноса» без буфера 10 рабочих дней', 'high', null],
-    ['Финансы', 'Не принимаем неустойку выше 0,1% за день просрочки', 'medium', null],
-    ['Качество', 'Лабораторные испытания — только по графику Подрядчика, без неограниченных требований Заказчика', 'medium', null],
-    ['Гарантии', 'Гарантийный срок не более 60 месяцев', 'medium', null],
-    ['Прочее', 'Круглосуточные работы — по отдельному соглашению с доплатой', 'high', null],
-  ];
-  for (const c of conditions) stmtCond.run(newId(), tenderId, c[0], c[1], c[2], c[3]);
+  for (const it of STANDARD_CHECKLIST) {
+    const status = NOT_ACCOUNTED.has(it.work_name) ? 0 : 1;
+    stmtChk.run(newId(), tenderId, it.section, it.work_name, status, null);
+  }
+
+  // Условия компании теперь — параметрический шаблон (28 пунктов).
+  // Заполняем только tender_setup_params; конкретные условия рендерятся
+  // на лету сервисом conditionsRenderer.
+  db.prepare(`
+    INSERT INTO tender_setup_params (tender_id, contract_kind, escalation, advance, build_months, transfer_months, kp_date, updated_at)
+    VALUES (?, 'shell', 'БСМ5%', NULL, 24, 3, '2026-07-30', ?)
+  `).run(tenderId, nowIso());
 
   // Риски
   const stmtRisk = db.prepare(`
@@ -225,27 +198,18 @@ function seedTenderZarechnyy() {
     'Главный документ тендера'
   );
 
-  // Минимальный набор checklist / conditions / risks — чтобы пайплайн работал
+  // Стандартный чек-лист, статусы не заполнены — пользователь ответит сам.
   const stmtChk = db.prepare(`
-    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_tz, in_pd_rd, in_vor, in_calc, in_kp, in_contract, affects_schedule, comment)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO work_checklist_items (id, tender_id, section, work_name, in_calc, comment)
+    VALUES (?, ?, ?, ?, NULL, NULL)
   `);
-  const checklist = [
-    ['Земляные', 'Земляные работы', 1, 0, 0, 0, 0, 0, 0],
-    ['Фундаменты', 'Устройство фундаментов', 1, 0, 0, 0, 0, 0, 1],
-    ['Кровля', 'Устройство кровли', 1, 0, 0, 0, 0, 0, 0],
-    ['Фасад', 'Фасадные работы', 1, 0, 0, 0, 0, 0, 0],
-    ['Инженерия', 'Инженерные системы', 1, 0, 0, 0, 0, 0, 1],
-    ['Благоустройство', 'Благоустройство', 1, 0, 0, 0, 0, 0, 0],
-  ];
-  for (const c of checklist) stmtChk.run(newId(), tenderId, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], null);
+  for (const it of STANDARD_CHECKLIST) stmtChk.run(newId(), tenderId, it.section, it.work_name);
 
-  const stmtCond = db.prepare(`
-    INSERT INTO company_conditions (id, tender_id, category, condition, criticality, comment)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  stmtCond.run(newId(), tenderId, 'Сроки', 'Срок согласований Заказчика — не более 5 рабочих дней', 'high', null);
-  stmtCond.run(newId(), tenderId, 'Поставка', 'Башенные краны — только Заказчика', 'medium', null);
+  // Параметры тендера для шаблона существенных условий (Генподряд)
+  db.prepare(`
+    INSERT INTO tender_setup_params (tender_id, contract_kind, escalation, advance, build_months, transfer_months, kp_date, updated_at)
+    VALUES (?, 'gen', 'БСМ5%', 'Аванс 30%', 24, 3, '2026-07-29', ?)
+  `).run(tenderId, nowIso());
 
   return tenderId;
 }
@@ -266,9 +230,11 @@ function runSeed(force = false) {
       DELETE FROM qa_entries;
       DELETE FROM work_checklist_items;
       DELETE FROM company_conditions;
+      DELETE FROM tender_setup_params;
       DELETE FROM risk_templates;
       DELETE FROM additional_object_info;
       DELETE FROM tender_stage_state;
+      DELETE FROM setup_locks;
       DELETE FROM documents;
       DELETE FROM tenders;
     `);

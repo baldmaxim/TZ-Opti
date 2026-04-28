@@ -4,7 +4,7 @@ const db = require('../db/connection');
 const { nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
 
-const ALLOWED_SECTIONS = ['checklist', 'conditions', 'risks', 'object_info', 'qa', 'documents'];
+const ALLOWED_SECTIONS = ['checklist', 'conditions', 'risks', 'qa', 'documents'];
 
 function getLocksMap(tenderId) {
   const rows = db.prepare('SELECT section, locked_at FROM setup_locks WHERE tender_id = ?').all(tenderId);

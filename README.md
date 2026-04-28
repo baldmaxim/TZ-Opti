@@ -89,7 +89,7 @@ TZ-Opti/
 └── server/    Express + SQLite + Multer
     ├── app.js
     ├── routes/            tenders, documents, checklist, conditions, risks,
-    │                      objectInfo, qa, stages, decisions, review, export
+    │                      qa, stages, decisions, review, export
     ├── controllers/       тонкие контроллеры под каждый route
     ├── services/
     │   ├── textExtractionService.js
@@ -126,7 +126,7 @@ TZ-Opti/
 
 1. **Создать тендер** на дашборде («+ Создать тендер»).
 2. **Документы**: загрузить ТЗ.docx, ПД/РД, ВОР.xlsx и сопутствующие материалы. Текст извлекается автоматически.
-3. **Состав работ**, **Условия компании**, **База рисков**, **Доп. информация** — заполнить (или отредактировать готовое seed).
+3. **Состав работ**, **Условия компании**, **База рисков** — заполнить (или отредактировать готовое seed).
 4. **Стадии анализа**:
    - **Стадия 1** (ТЗ + Чек-лист + ВОР): запустить → пройти таблицу решений (принять / редактировать / отклонить / удалить из ТЗ) → завершить стадию.
    - **Стадия 2** (ТЗ + Q&A форма + Таблица характеристик): загрузить `.xlsx` Q&A формы → запустить анализ → пройти таблицу → завершить.
@@ -222,9 +222,6 @@ DELETE /api/tenders/:id/checklist/:itemId
 GET/POST/PATCH/DELETE /api/tenders/:id/conditions[/:itemId]
 GET/POST/PATCH/DELETE /api/tenders/:id/risks[/:itemId]
 GET    /api/risks/global
-
-GET    /api/tenders/:id/object-info
-PUT    /api/tenders/:id/object-info
 
 POST   /api/tenders/:id/qa/import                    multer .xlsx
 GET    /api/tenders/:id/qa

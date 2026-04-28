@@ -23,7 +23,6 @@ export const DOC_TYPES = {
   checklist: 'Чек-лист состава работ',
   company_conditions: 'Существенные условия компании',
   risks: 'База рисков',
-  object_info: 'Доп. информация по объекту',
   qa: 'Q&A форма',
   other: 'Другое',
 };

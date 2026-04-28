@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS tenders (
 CREATE TABLE IF NOT EXISTS documents (
   id                  TEXT PRIMARY KEY,
   tender_id           TEXT NOT NULL,
-  doc_type            TEXT NOT NULL,    -- 'tz' | 'pd_rd' | 'vor' | 'checklist' | 'company_conditions' | 'risks' | 'object_info' | 'qa' | 'other'
+  doc_type            TEXT NOT NULL,    -- 'tz' | 'pd_rd' | 'vor' | 'checklist' | 'company_conditions' | 'risks' | 'qa' | 'other'
   name                TEXT NOT NULL,
   file_path           TEXT NOT NULL,
   mime_type           TEXT,
@@ -74,20 +74,6 @@ CREATE TABLE IF NOT EXISTS risk_templates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_risks_tender ON risk_templates(tender_id);
-
-CREATE TABLE IF NOT EXISTS additional_object_info (
-  id                  TEXT PRIMARY KEY,
-  tender_id           TEXT NOT NULL UNIQUE,
-  tender_type         TEXT,
-  package_scope       TEXT,
-  terms               TEXT,
-  staging             TEXT,
-  blocks_sections     TEXT,
-  site_constraints    TEXT,
-  special_conditions  TEXT,
-  comment             TEXT,
-  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
-);
 
 CREATE TABLE IF NOT EXISTS qa_entries (
   id                 TEXT PRIMARY KEY,
@@ -191,6 +177,27 @@ CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
 
 CREATE INDEX IF NOT EXISTS idx_excluded_tender ON tz_excluded_ranges(tender_id);
 
+CREATE TABLE IF NOT EXISTS tender_custom_risks (
+  id          TEXT PRIMARY KEY,
+  tender_id   TEXT NOT NULL,
+  category    TEXT,
+  risk_text   TEXT NOT NULL,
+  triggers    TEXT,                  -- JSON-массив фраз
+  criticality TEXT DEFAULT 'medium',
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS tender_risk_state (
+  tender_id   TEXT NOT NULL,
+  risk_key    TEXT NOT NULL,        -- ключ из standardRisks.js
+  applies     INTEGER,              -- 1=Да, 0=Нет, NULL=не указано (использовать auto-default)
+  comment     TEXT,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (tender_id, risk_key),
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS tender_setup_params (
   tender_id        TEXT PRIMARY KEY,
   contract_kind    TEXT,                 -- 'gen' | 'shell'
@@ -205,7 +212,7 @@ CREATE TABLE IF NOT EXISTS tender_setup_params (
 
 CREATE TABLE IF NOT EXISTS setup_locks (
   tender_id  TEXT NOT NULL,
-  section    TEXT NOT NULL,        -- 'checklist' | 'conditions' | 'risks' | 'object_info' | 'qa' | 'documents'
+  section    TEXT NOT NULL,        -- 'checklist' | 'conditions' | 'risks' | 'qa' | 'documents'
   locked_at  TEXT NOT NULL,
   PRIMARY KEY (tender_id, section),
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE

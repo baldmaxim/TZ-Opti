@@ -9,7 +9,6 @@ export const STEPS = [
   { id: 'checklist', section: 'setup', label: 'Состав работ', sub: 'checklist', countKey: 'checklist' },
   { id: 'conditions', section: 'setup', label: 'Условия компании', sub: 'conditions', countKey: 'conditions' },
   { id: 'risks', section: 'setup', label: 'База рисков', sub: 'risks', countKey: 'risks' },
-  { id: 'object', section: 'setup', label: 'Доп. информация', sub: 'object' },
   { id: 'qa', section: 'setup', label: 'Q&A форма', sub: 'qa' },
   { id: 'stage1', section: 'analysis', label: 'Стадия 1: ТЗ + Чек-лист + ВОР', shortLabel: 'Стадия 1', stage: 1 },
   { id: 'stage2', section: 'analysis', label: 'Стадия 2: Q&A + Характеристики', shortLabel: 'Стадия 2', stage: 2 },

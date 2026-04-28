@@ -125,26 +125,9 @@ function seedTenderSeverniy() {
     VALUES (?, 'shell', 'БСМ5%', NULL, 24, 3, '2026-07-30', ?)
   `).run(tenderId, nowIso());
 
-  // Риски
-  const stmtRisk = db.prepare(`
-    INSERT INTO risk_templates (id, tender_id, category, risk_text, recommendation, criticality, is_global)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-  const risks = [
-    { c: 'Срок', t: 'согласование', r: 'Зафиксировать SLA согласований и сроки в днях. При срыве — продление графика.', cr: 'high', g: 1 },
-    { c: 'Срок', t: 'неустойк', r: 'Ограничить неустойку 0,1% за день, не более 10% от стоимости.', cr: 'high', g: 1 },
-    { c: 'Объём', t: 'все необходимые мероприятия', r: 'Заменить на закрытый перечень.', cr: 'high', g: 1 },
-    { c: 'Объём', t: 'в полном объеме', r: 'Сослаться на конкретный раздел ПД.', cr: 'medium', g: 1 },
-    { c: 'Качество', t: 'надлежащим образом', r: 'Заменить на ссылку на нормативные документы.', cr: 'medium', g: 1 },
-    { c: 'Гарантии', t: 'до полного устранения', r: 'Ограничить срок устранения и состав работ.', cr: 'medium', g: 0 },
-  ];
-  for (const r of risks) stmtRisk.run(newId(), r.g ? null : tenderId, r.c, r.t, r.r, r.cr, r.g);
-
-  // Доп. инфо
-  db.prepare(`
-    INSERT INTO additional_object_info (id, tender_id, tender_type, package_scope, terms, staging, blocks_sections, site_constraints, special_conditions, comment)
-    VALUES (?, ?, 'shell', 'Монолит + кладка корпуса 5', '12 мес.', '2 этапа', 'Корпус 5, секции 1–4', 'Стесненная площадка, ограниченный доступ техники по ночам', 'Круглосуточный режим запрещен по решению префектуры', null)
-  `).run(newId(), tenderId);
+  // Риски — вся библиотека лежит в коде (server/db/standardRisks.js).
+  // Для тендера нужно только overlay (tender_risk_state) — оставляем пустым,
+  // пользователь сам выберет «Да/Нет/Авто» по умолчанию.
 
   // Q&A xlsx-фикстура
   const qaRows = [
@@ -231,8 +214,9 @@ function runSeed(force = false) {
       DELETE FROM work_checklist_items;
       DELETE FROM company_conditions;
       DELETE FROM tender_setup_params;
+      DELETE FROM tender_risk_state;
+      DELETE FROM tender_custom_risks;
       DELETE FROM risk_templates;
-      DELETE FROM additional_object_info;
       DELETE FROM tender_stage_state;
       DELETE FROM setup_locks;
       DELETE FROM documents;

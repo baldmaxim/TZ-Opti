@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import TenderOverview from './TenderOverview';
 
-const SETUP_SUBS = new Set(['documents', 'checklist', 'conditions', 'risks', 'object', 'qa']);
+const SETUP_SUBS = new Set(['documents', 'checklist', 'conditions', 'risks', 'qa']);
 
 function legacyTarget(id, block, sub) {
   if (block === 'input') {

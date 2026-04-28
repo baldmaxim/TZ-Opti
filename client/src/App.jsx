@@ -7,7 +7,6 @@ import DocumentsPage from './pages/setup/DocumentsPage';
 import ChecklistPage from './pages/setup/ChecklistPage';
 import ConditionsPage from './pages/setup/ConditionsPage';
 import RisksPage from './pages/setup/RisksPage';
-import ObjectInfoPage from './pages/setup/ObjectInfoPage';
 import QaPage from './pages/setup/QaPage';
 import StagePage from './pages/stages/StagePage';
 import ReviewPage from './pages/result/ReviewPage';
@@ -25,7 +24,6 @@ export default function App() {
           <Route path="setup/checklist" element={<ChecklistPage />} />
           <Route path="setup/conditions" element={<ConditionsPage />} />
           <Route path="setup/risks" element={<RisksPage />} />
-          <Route path="setup/object" element={<ObjectInfoPage />} />
           <Route path="setup/qa" element={<QaPage />} />
           <Route path="stage/:n" element={<StagePage />} />
           <Route path="review" element={<ReviewPage />} />

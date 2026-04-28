@@ -66,15 +66,13 @@ export const api = {
   removeConditionOverride: (tenderId, idx) => request(`/tenders/${tenderId}/conditions/${idx}/override`, { method: 'DELETE' }),
   resetConditions: (tenderId) => request(`/tenders/${tenderId}/conditions/reset`, { method: 'POST' }),
 
-  // Риски
+  // Риски — стандартная библиотека + кастомные + per-tender overlay
   listRisks: (tenderId) => request(`/tenders/${tenderId}/risks`),
-  createRisk: (tenderId, data) => request(`/tenders/${tenderId}/risks`, { method: 'POST', body: data }),
-  updateRisk: (tenderId, itemId, data) => request(`/tenders/${tenderId}/risks/${itemId}`, { method: 'PATCH', body: data }),
-  deleteRisk: (tenderId, itemId) => request(`/tenders/${tenderId}/risks/${itemId}`, { method: 'DELETE' }),
-
-  // Доп. инфо
-  getObjectInfo: (tenderId) => request(`/tenders/${tenderId}/object-info`),
-  saveObjectInfo: (tenderId, data) => request(`/tenders/${tenderId}/object-info`, { method: 'PUT', body: data }),
+  patchRiskState: (tenderId, key, data) => request(`/tenders/${tenderId}/risks/${encodeURIComponent(key)}`, { method: 'PATCH', body: data }),
+  resetRisks: (tenderId) => request(`/tenders/${tenderId}/risks/reset`, { method: 'POST' }),
+  getRiskMatches: (tenderId) => request(`/tenders/${tenderId}/risks/matches`),
+  createCustomRisk: (tenderId, data) => request(`/tenders/${tenderId}/risks/custom`, { method: 'POST', body: data }),
+  deleteCustomRisk: (tenderId, customId) => request(`/tenders/${tenderId}/risks/custom/${customId}`, { method: 'DELETE' }),
 
   // Q&A
   uploadQa: (tenderId, file) => {

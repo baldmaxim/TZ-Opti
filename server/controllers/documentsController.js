@@ -7,7 +7,7 @@ const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
 const { extractFromFile } = require('../services/textExtractionService');
 
-const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'object_info', 'qa', 'other'];
+const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
 
 exports.listForTender = (req, res) => {
   const tenderId = req.params.id;

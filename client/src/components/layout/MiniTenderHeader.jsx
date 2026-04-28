@@ -1,12 +1,20 @@
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import clsx from 'clsx';
 import { useTenderStore } from '../../store/useTenderStore';
 import { TENDER_TYPES, TENDER_STATUSES, statusClass } from '../../utils/labels';
 import { formatDate } from '../../utils/format';
+import { withViewTransition } from '../../utils/viewTransition';
 
 export default function MiniTenderHeader({ sidebarCollapsed, onToggleSidebar, onOpenDrawer }) {
   const tender = useTenderStore((s) => s.tender);
+  const navigate = useNavigate();
   if (!tender) return null;
+
+  const handleBack = (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+    e.preventDefault();
+    withViewTransition('back', () => navigate('/'));
+  };
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg shadow-sm sticky top-[60px] z-20">
@@ -33,7 +41,7 @@ export default function MiniTenderHeader({ sidebarCollapsed, onToggleSidebar, on
             )}
           </svg>
         </button>
-        <Link to="/" className="text-xs text-gray-500 hover:text-gray-700 whitespace-nowrap">← К списку</Link>
+        <Link to="/" onClick={handleBack} className="text-xs text-gray-500 hover:text-gray-700 whitespace-nowrap">← К списку</Link>
 
         <div className="min-w-0 flex-1">
           <h1 className="text-base font-semibold leading-tight truncate">{tender.title}</h1>

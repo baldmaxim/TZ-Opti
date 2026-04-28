@@ -1,10 +1,6 @@
 export const TENDER_TYPES = {
   general_contract: 'Генподряд (полный цикл)',
   shell: 'Коробка',
-  monolith: 'Монолит',
-  masonry: 'Кладка',
-  waterproofing: 'Гидроизоляция',
-  other: 'Другое',
 };
 
 export const TENDER_STATUSES = {

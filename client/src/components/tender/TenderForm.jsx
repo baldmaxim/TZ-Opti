@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { TENDER_TYPES, TENDER_STATUSES } from '../../utils/labels';
+import { TENDER_TYPES } from '../../utils/labels';
 
 const EMPTY = {
   title: '',
@@ -44,24 +44,6 @@ export default function TenderForm({ initial, onSubmit, onCancel }) {
           <label className="label">Тип тендера</label>
           <select className="input" value={data.type || 'shell'} onChange={(e) => set('type', e.target.value)}>
             {Object.entries(TENDER_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="label">Стадия проекта</label>
-          <input className="input" placeholder="РД, П, П+РД…" value={data.stage || ''} onChange={(e) => set('stage', e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Срок подачи</label>
-          <input className="input" type="date" value={data.deadline || ''} onChange={(e) => set('deadline', e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Ответственный</label>
-          <input className="input" value={data.owner || ''} onChange={(e) => set('owner', e.target.value)} />
-        </div>
-        <div>
-          <label className="label">Статус</label>
-          <select className="input" value={data.status || 'draft'} onChange={(e) => set('status', e.target.value)}>
-            {Object.entries(TENDER_STATUSES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
           </select>
         </div>
       </div>

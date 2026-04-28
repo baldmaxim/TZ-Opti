@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, Outlet } from 'react-router-dom';
+import { useParams, Outlet, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
 import { useTenderStore } from '../../store/useTenderStore';
 import MiniTenderHeader from './MiniTenderHeader';
@@ -9,6 +9,7 @@ const COLLAPSED_KEY = 'tz-opti.sidebar.collapsed';
 
 export default function TenderShell() {
   const { id } = useParams();
+  const location = useLocation();
   const setTender = useTenderStore((s) => s.setTender);
   const tender = useTenderStore((s) => s.tender);
   const loading = useTenderStore((s) => s.loading);
@@ -28,6 +29,11 @@ export default function TenderShell() {
 
   if (loading || !tender) {
     return <div className="py-12 text-center text-gray-500">Загрузка…</div>;
+  }
+
+  const isOverview = location.pathname.replace(/\/$/, '') === `/tenders/${id}`;
+  if (isOverview) {
+    return <Outlet />;
   }
 
   return (

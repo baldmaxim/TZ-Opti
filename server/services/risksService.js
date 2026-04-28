@@ -201,7 +201,7 @@ async function removeCustom(tenderId, customId) {
   // Подчистить overlay по этому ключу.
   await db.queryRun('DELETE FROM tender_risk_state WHERE tender_id = ? AND risk_key = ?', tenderId, CUSTOM_PREFIX + customId);
   const r = await db.queryRun('DELETE FROM tender_custom_risks WHERE id = ? AND tender_id = ?', customId, tenderId);
-  return r.rowCount > 0;
+  return r.changes > 0;
 }
 
 async function getMatches(tenderId) {

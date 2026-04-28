@@ -74,7 +74,7 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const r = await db.queryRun('DELETE FROM work_checklist_items WHERE id = ?', req.params.itemId);
-  if (!r.rowCount) throw notFound('Запись не найдена');
+  if (!r.changes) throw notFound('Запись не найдена');
   res.json({ ok: true });
 };
 

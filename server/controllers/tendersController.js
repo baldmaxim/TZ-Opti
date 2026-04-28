@@ -147,7 +147,7 @@ exports.update = async (req, res) => {
 exports.remove = async (req, res) => {
   const id = req.params.id;
   const r = await db.queryRun('DELETE FROM tenders WHERE id = ?', id);
-  if (!r.rowCount) throw notFound('Тендер не найден');
+  if (!r.changes) throw notFound('Тендер не найден');
   res.json({ ok: true });
 };
 

@@ -136,13 +136,9 @@ export default function CharacteristicsPage() {
                   <tr key={it.id} className="border-t border-gray-100 align-top">
                     <td className="table-cell text-gray-400 text-center">{idx + 1}</td>
                     <td className="table-cell">
-                      <input
-                        type="text"
-                        className="input text-sm"
-                        value={it.name || ''}
-                        onChange={(e) => handleFieldChange(it.id, 'name', e.target.value)}
-                        disabled={locked}
-                      />
+                      <div className="text-sm font-medium text-gray-900 py-1.5 px-1" title="Название — константа, редактирование запрещено">
+                        {it.name || '—'}
+                      </div>
                     </td>
                     <td className="table-cell">
                       <input

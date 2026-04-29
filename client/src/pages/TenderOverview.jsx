@@ -144,20 +144,26 @@ export default function TenderOverview() {
     const node = tilesGridRef.current;
     if (!node) return undefined;
     const onWheel = (e) => {
-      if (Math.abs(e.deltaY) < 1 && Math.abs(e.deltaX) < 1) return;
+      const delta = e.deltaY || e.deltaX;
+      if (Math.abs(delta) < 1) return;
       e.preventDefault();
       const now = Date.now();
-      if (now - lastWheelAtRef.current < 110) return;
-      const dir = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
+      if (now - lastWheelAtRef.current < 90) return;
+      const dir = delta > 0 ? 1 : -1;
+      // акселерация: чем сильнее прокрут — тем больше шаг.
+      // 100px ~= 1 плитка, 300px ~= 3 плитки, и т.д.
+      const jumps = Math.max(1, Math.min(TILES.length, Math.round(Math.abs(delta) / 100)));
       const cur = activeTileRef.current;
       const curIdx = cur ? TILES.findIndex((t) => t.id === cur) : -1;
       let nextIdx;
       if (curIdx === -1) {
         if (dir < 0) return;
-        nextIdx = 0;
+        nextIdx = Math.min(TILES.length - 1, jumps - 1);
       } else {
-        nextIdx = curIdx + dir;
-        if (nextIdx < 0 || nextIdx >= TILES.length) return;
+        nextIdx = curIdx + dir * jumps;
+        if (nextIdx < 0) nextIdx = 0;
+        if (nextIdx >= TILES.length) nextIdx = TILES.length - 1;
+        if (nextIdx === curIdx) return;
       }
       lastWheelAtRef.current = now;
       const nextId = TILES[nextIdx].id;

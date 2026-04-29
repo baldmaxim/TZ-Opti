@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTenderStore } from '../store/useTenderStore';
 import { useWizardState } from '../hooks/useWizardState';
@@ -134,7 +134,47 @@ export default function TenderOverview() {
   const [origins, setOrigins] = useState({}); // id -> "Xpx Ypx"
   const tileRefs = useRef({});
   const panelsWrapperRef = useRef(null);
+  const tilesGridRef = useRef(null);
   const lastWheelAtRef = useRef(0);
+  const activeTileRef = useRef(null);
+
+  useEffect(() => { activeTileRef.current = activeTile; }, [activeTile]);
+
+  useEffect(() => {
+    const node = tilesGridRef.current;
+    if (!node) return undefined;
+    const onWheel = (e) => {
+      if (Math.abs(e.deltaY) < 1 && Math.abs(e.deltaX) < 1) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastWheelAtRef.current < 250) return;
+      const dir = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
+      const cur = activeTileRef.current;
+      const curIdx = cur ? TILES.findIndex((t) => t.id === cur) : -1;
+      let nextIdx;
+      if (curIdx === -1) {
+        if (dir < 0) return;
+        nextIdx = 0;
+      } else {
+        nextIdx = curIdx + dir;
+        if (nextIdx < 0 || nextIdx >= TILES.length) return;
+      }
+      lastWheelAtRef.current = now;
+      const nextId = TILES[nextIdx].id;
+      const tileEl = tileRefs.current[nextId];
+      const wrapEl = panelsWrapperRef.current;
+      if (tileEl && wrapEl) {
+        const t = tileEl.getBoundingClientRect();
+        const w = wrapEl.getBoundingClientRect();
+        const x = t.left + t.width / 2 - w.left;
+        const y = t.top + t.height / 2 - w.top;
+        setOrigins((prev) => ({ ...prev, [nextId]: `${x}px ${y}px` }));
+      }
+      setActiveTile(nextId);
+    };
+    node.addEventListener('wheel', onWheel, { passive: false });
+    return () => node.removeEventListener('wheel', onWheel);
+  }, []);
 
   if (!tender || !tenderId) return null;
 
@@ -181,25 +221,6 @@ export default function TenderOverview() {
     }
   };
 
-  const handleTilesWheel = (e) => {
-    if (Math.abs(e.deltaY) < 1 && Math.abs(e.deltaX) < 1) return;
-    e.preventDefault();
-    const now = Date.now();
-    if (now - lastWheelAtRef.current < 250) return;
-    const dir = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
-    const curIdx = activeTile ? TILES.findIndex((t) => t.id === activeTile) : -1;
-    let nextIdx;
-    if (curIdx === -1) {
-      if (dir < 0) return; // вверх без активной — игнорируем
-      nextIdx = 0;
-    } else {
-      nextIdx = curIdx + dir;
-      if (nextIdx < 0 || nextIdx >= TILES.length) return; // на границе — стоим
-    }
-    lastWheelAtRef.current = now;
-    activateTile(TILES[nextIdx].id);
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -233,8 +254,8 @@ export default function TenderOverview() {
       </div>
 
       <div
+        ref={tilesGridRef}
         className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4"
-        onWheel={handleTilesWheel}
       >
         {TILES.map((t) => {
           const isActive = activeTile === t.id;

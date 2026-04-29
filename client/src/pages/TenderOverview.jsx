@@ -147,7 +147,7 @@ export default function TenderOverview() {
       if (Math.abs(e.deltaY) < 1 && Math.abs(e.deltaX) < 1) return;
       e.preventDefault();
       const now = Date.now();
-      if (now - lastWheelAtRef.current < 250) return;
+      if (now - lastWheelAtRef.current < 110) return;
       const dir = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
       const cur = activeTileRef.current;
       const curIdx = cur ? TILES.findIndex((t) => t.id === cur) : -1;

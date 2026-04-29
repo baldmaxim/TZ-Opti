@@ -7,14 +7,14 @@ import DocumentsPage from './setup/DocumentsPage';
 import ChecklistPage from './setup/ChecklistPage';
 import ConditionsPage from './setup/ConditionsPage';
 import RisksPage from './setup/RisksPage';
-import QaPage from './setup/QaPage';
+import CharacteristicsPage from './setup/CharacteristicsPage';
 
 const PANELS = {
   documents: DocumentsPage,
   checklist: ChecklistPage,
   conditions: ConditionsPage,
   risks: RisksPage,
-  qa: QaPage,
+  characteristics: CharacteristicsPage,
 };
 
 const TILES = [
@@ -96,17 +96,31 @@ const TILES = [
     ),
   },
   {
-    id: 'qa',
-    label: 'Q&A форма',
-    to: 'setup/qa',
+    id: 'characteristics',
+    label: 'Таблица характеристик',
+    to: 'setup/characteristics',
     accent: 'from-rose-50 to-pink-50',
     icon: (
       <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
-        <path d="M20 26 C20 22 23 19 27 19 H59 C63 19 66 22 66 26 V48 C66 52 63 55 59 55 H38 L28 64 V55 H27 C23 55 20 52 20 48 Z" fill="#fff1f2" stroke="#fda4af" strokeWidth="1.5" />
-        <path d="M37 33 C37 30 39 28 42 28 C45 28 47 30 47 33 C47 35 45 36 43 38 C42 39 42 40 42 42" stroke="#e11d48" strokeWidth="2" strokeLinecap="round" fill="none" />
-        <circle cx="42" cy="47" r="1.5" fill="#e11d48" />
-        <path d="M76 38 C76 35 73 32 69 32 H58 C54 32 51 35 51 38 V58 C51 61 54 64 58 64 H62 L70 72 V64 H69 C73 64 76 61 76 58 Z" fill="#fce7f3" stroke="#f9a8d4" strokeWidth="1.5" />
-        <text x="63" y="52" fontSize="14" fontWeight="700" fill="#be185d" textAnchor="middle">A</text>
+        <rect x="16" y="18" width="64" height="60" rx="4" fill="#fff1f2" stroke="#fda4af" strokeWidth="1.5" />
+        <rect x="16" y="18" width="64" height="12" rx="4" fill="#fda4af" opacity="0.45" />
+        <line x1="42" y1="18" x2="42" y2="78" stroke="#fda4af" strokeWidth="1" />
+        <line x1="64" y1="18" x2="64" y2="78" stroke="#fda4af" strokeWidth="1" />
+        <line x1="16" y1="42" x2="80" y2="42" stroke="#fda4af" strokeWidth="1" />
+        <line x1="16" y1="54" x2="80" y2="54" stroke="#fda4af" strokeWidth="1" />
+        <line x1="16" y1="66" x2="80" y2="66" stroke="#fda4af" strokeWidth="1" />
+        <rect x="20" y="34" width="18" height="3" rx="1" fill="#e11d48" opacity="0.6" />
+        <rect x="46" y="34" width="14" height="3" rx="1" fill="#be185d" opacity="0.55" />
+        <rect x="68" y="34" width="9" height="3" rx="1" fill="#be185d" opacity="0.4" />
+        <rect x="20" y="46" width="16" height="3" rx="1" fill="#fda4af" />
+        <rect x="46" y="46" width="12" height="3" rx="1" fill="#fda4af" />
+        <rect x="68" y="46" width="9" height="3" rx="1" fill="#fda4af" />
+        <rect x="20" y="58" width="14" height="3" rx="1" fill="#fecdd3" />
+        <rect x="46" y="58" width="14" height="3" rx="1" fill="#fecdd3" />
+        <rect x="68" y="58" width="9" height="3" rx="1" fill="#fecdd3" />
+        <rect x="20" y="70" width="14" height="3" rx="1" fill="#fecdd3" />
+        <rect x="46" y="70" width="10" height="3" rx="1" fill="#fecdd3" />
+        <rect x="68" y="70" width="9" height="3" rx="1" fill="#fecdd3" />
       </svg>
     ),
   },

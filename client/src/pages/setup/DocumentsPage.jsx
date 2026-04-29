@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../../services/api';
 import { formatDateTime } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
@@ -30,6 +31,15 @@ const SLOTS = [
     accept: '.xlsx,.xls,.csv,.pdf',
     badge: 'ВОР',
     color: 'purple',
+    multiple: false,
+  },
+  {
+    type: 'qa',
+    label: 'Q&A форма',
+    hint: 'Форма «Вопрос–Ответ» в .xlsx',
+    accept: '.xlsx,.xls',
+    badge: 'Q&A',
+    color: 'amber',
     multiple: false,
   },
 ];
@@ -135,6 +145,7 @@ export default function DocumentsPage() {
             docs={docsFor(slot.type)}
             busy={busyType === slot.type}
             disabled={loading || (busyType !== null && busyType !== slot.type)}
+            tenderId={tenderId}
             onUpload={(files) => handleUpload(slot, files)}
             onDelete={(doc) => handleDelete(slot, doc)}
           />
@@ -148,7 +159,7 @@ export default function DocumentsPage() {
   );
 }
 
-function SlotCard({ slot, docs, busy, disabled, onUpload, onDelete }) {
+function SlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDelete }) {
   const inputRef = useRef(null);
   const c = COLOR_CLASSES[slot.color];
   const empty = docs.length === 0;
@@ -227,6 +238,15 @@ function SlotCard({ slot, docs, busy, disabled, onUpload, onDelete }) {
           </>
         )}
       </div>
+
+      {slot.type === 'qa' && !empty && tenderId && (
+        <Link
+          to={`/tenders/${tenderId}/setup/qa`}
+          className="btn btn-secondary justify-center w-full"
+        >
+          Открыть таблицу Q&A →
+        </Link>
+      )}
     </div>
   );
 }

@@ -6,6 +6,7 @@ const db = require('../db/connection');
 const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
 const { extractFromFile } = require('../services/textExtractionService');
+const { importQaXlsx } = require('../services/qaImportService');
 
 const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
 
@@ -56,12 +57,20 @@ exports.upload = async (req, res) => {
 
   setImmediate(async () => {
     try {
-      const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
-      await db.queryRun(
-        'UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?',
-        text, status, id,
-      );
-      if (reason) console.warn(`[extract] doc ${id}: ${reason}`);
+      if (docType === 'qa') {
+        await importQaXlsx(tenderId, req.file.path);
+        await db.queryRun(
+          `UPDATE documents SET processing_status = 'extracted' WHERE id = ?`,
+          id,
+        );
+      } else {
+        const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
+        await db.queryRun(
+          'UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?',
+          text, status, id,
+        );
+        if (reason) console.warn(`[extract] doc ${id}: ${reason}`);
+      }
     } catch (err) {
       console.error(`[extract] doc ${id} failed:`, err);
       await db

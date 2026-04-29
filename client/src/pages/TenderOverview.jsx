@@ -278,8 +278,14 @@ export default function TenderOverview() {
                   : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
               }`}
             >
-              <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-3 group-hover:scale-[1.02] transition-transform`}>
-                {t.icon}
+              <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-3 transition-transform duration-300 ease-out ${
+                isActive ? 'scale-[1.04]' : 'group-hover:scale-[1.02]'
+              }`}>
+                <span className={`inline-block transition-transform duration-300 ease-out ${
+                  isActive ? 'scale-[1.18]' : 'group-hover:scale-[1.05]'
+                }`}>
+                  {t.icon}
+                </span>
               </div>
               <div className="text-[15px] font-medium text-gray-800 leading-snug">{t.label}</div>
             </button>

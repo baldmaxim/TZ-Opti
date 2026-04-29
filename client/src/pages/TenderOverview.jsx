@@ -134,6 +134,7 @@ export default function TenderOverview() {
   const [origins, setOrigins] = useState({}); // id -> "Xpx Ypx"
   const tileRefs = useRef({});
   const panelsWrapperRef = useRef(null);
+  const lastWheelAtRef = useRef(0);
 
   if (!tender || !tenderId) return null;
 
@@ -155,19 +156,48 @@ export default function TenderOverview() {
     return `${x}px ${y}px`;
   };
 
-  const toggleTile = (id) => {
+  const activateTile = (id) => {
     setActiveTile((cur) => {
-      if (cur === id) return null;
+      if (cur === id) return cur;
       const next = {};
       if (cur) {
         const o = computeOrigin(cur);
         if (o) next[cur] = o;
       }
-      const o = computeOrigin(id);
-      if (o) next[id] = o;
-      setOrigins((prev) => ({ ...prev, ...next }));
+      if (id) {
+        const o = computeOrigin(id);
+        if (o) next[id] = o;
+      }
+      if (Object.keys(next).length) setOrigins((prev) => ({ ...prev, ...next }));
       return id;
     });
+  };
+
+  const toggleTile = (id) => {
+    if (activeTile === id) {
+      activateTile(null);
+    } else {
+      activateTile(id);
+    }
+  };
+
+  const handleTilesWheel = (e) => {
+    if (Math.abs(e.deltaY) < 1 && Math.abs(e.deltaX) < 1) return;
+    e.preventDefault();
+    const now = Date.now();
+    if (now - lastWheelAtRef.current < 250) return;
+    const dir = (e.deltaY || e.deltaX) > 0 ? 1 : -1;
+    const curIdx = activeTile ? TILES.findIndex((t) => t.id === activeTile) : -1;
+    let nextIdx;
+    if (curIdx === -1) {
+      if (dir < 0) return; // вверх без активной — игнорируем
+      nextIdx = 0;
+    } else {
+      nextIdx = curIdx + dir;
+      if (nextIdx < 0 || nextIdx >= TILES.length) return; // на границе — стоим
+    }
+    lastWheelAtRef.current = now;
+    activateTile(TILES[nextIdx].id);
   };
 
   return (
@@ -202,7 +232,10 @@ export default function TenderOverview() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div
+        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4"
+        onWheel={handleTilesWheel}
+      >
         {TILES.map((t) => {
           const isActive = activeTile === t.id;
           return (

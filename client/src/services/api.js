@@ -84,7 +84,9 @@ export const api = {
   patchQaEntry: (tenderId, entryId, data) => request(`/tenders/${tenderId}/qa/${entryId}`, { method: 'PATCH', body: data }),
   autoLinkQa: (tenderId, opts = {}) => request(`/tenders/${tenderId}/qa/auto-link`, { method: 'POST', body: opts }),
   listCharacteristics: (tenderId) => request(`/tenders/${tenderId}/characteristics`),
+  createCharacteristic: (tenderId, data) => request(`/tenders/${tenderId}/characteristics`, { method: 'POST', body: data }),
   updateCharacteristic: (id, data) => request(`/characteristics/${id}`, { method: 'PATCH', body: data }),
+  deleteCharacteristic: (id) => request(`/characteristics/${id}`, { method: 'DELETE' }),
 
   // Стадии
   getStages: (tenderId) => request(`/tenders/${tenderId}/stages`),

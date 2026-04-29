@@ -35,7 +35,6 @@ export default function RisksPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [lockedAt, setLockedAt] = useState(null);
   const [filter, setFilter] = useState('all');
   const [showAddModal, setShowAddModal] = useState(false);
 
@@ -50,9 +49,7 @@ export default function RisksPage() {
       ]);
       setItems(risksRes.items || []);
       setMatches(matchesRes.matches || {});
-      const lock = locksRes.locks?.[SECTION];
-      setLocked(!!lock);
-      setLockedAt(lock && lock.locked_at ? lock.locked_at : null);
+      setLocked(!!locksRes.locks?.[SECTION]);
     } catch (err) { toastError(err.message); }
     setLoading(false);
   };
@@ -106,7 +103,6 @@ export default function RisksPage() {
     try {
       await api.unlockSetup(tenderId, SECTION);
       setLocked(false);
-      setLockedAt(null);
       toastSuccess('Режим редактирования включён');
       await refreshTender();
     } catch (err) { toastError(err.message); }
@@ -164,16 +160,6 @@ export default function RisksPage() {
 
   return (
     <div className="space-y-4">
-      {locked && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900 flex items-center gap-2">
-          <span className="text-lg leading-none">🔒</span>
-          <span>
-            Риски сохранены{lockedAt ? ` ${new Date(lockedAt).toLocaleString('ru-RU')}` : ''}.
-            Чтобы внести правки — нажмите «Редактировать».
-          </span>
-        </div>
-      )}
-
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">База типовых рисков</h2>
@@ -182,17 +168,27 @@ export default function RisksPage() {
             Используется в Стадии 3 анализа.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="tag bg-green-100 text-green-800">Применять: <strong className="ml-1">{stats.yes}</strong></span>
-          <span className="tag bg-red-100 text-red-800">Не применять: <strong className="ml-1">{stats.no}</strong></span>
-          <span className="tag bg-gray-100 text-gray-700">Авто: <strong className="ml-1">{stats.auto}</strong></span>
-          {stats.withMatches > 0 && (
-            <span
-              className="tag bg-amber-100 text-amber-800"
-              title="Сколько рисков нашли совпадения в активном тексте ТЗ"
-            >⚡ В ТЗ: <strong className="ml-1">{stats.withMatches}</strong></span>
-          )}
-        </div>
+        {locked ? (
+          <button className="btn btn-control" onClick={handleEdit} disabled={busy}>
+            {busy ? 'Открываю…' : '✎ Редактировать'}
+          </button>
+        ) : (
+          <button className="btn btn-control" onClick={handleSave} disabled={busy}>
+            {busy ? 'Сохранение…' : '💾 Сохранить'}
+          </button>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="tag bg-green-100 text-green-800">Применять: <strong className="ml-1">{stats.yes}</strong></span>
+        <span className="tag bg-red-100 text-red-800">Не применять: <strong className="ml-1">{stats.no}</strong></span>
+        <span className="tag bg-gray-100 text-gray-700">Авто: <strong className="ml-1">{stats.auto}</strong></span>
+        {stats.withMatches > 0 && (
+          <span
+            className="tag bg-amber-100 text-amber-800"
+            title="Сколько рисков нашли совпадения в активном тексте ТЗ"
+          >⚡ В ТЗ: <strong className="ml-1">{stats.withMatches}</strong></span>
+        )}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -246,26 +242,13 @@ export default function RisksPage() {
         ))}
       </div>
 
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex gap-2">
-          {!locked && (
-            <button className="btn btn-ghost text-gray-600" onClick={handleReset} disabled={busy}>
-              Сбросить пометки ↺
-            </button>
-          )}
-        </div>
+      {!locked && (
         <div>
-          {locked ? (
-            <button className="btn btn-primary" onClick={handleEdit} disabled={busy}>
-              {busy ? 'Открываю…' : '✎ Редактировать'}
-            </button>
-          ) : (
-            <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
-              {busy ? 'Сохранение…' : '💾 Сохранить'}
-            </button>
-          )}
+          <button className="btn btn-ghost text-gray-600" onClick={handleReset} disabled={busy}>
+            Сбросить пометки ↺
+          </button>
         </div>
-      </div>
+      )}
 
       <AddCustomRiskModal
         open={showAddModal}

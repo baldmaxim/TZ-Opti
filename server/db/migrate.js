@@ -43,6 +43,24 @@ async function runMigration() {
   await ensureColumn('qa_entries', 'affects_contract', 'INTEGER DEFAULT 0');
   await ensureColumn('qa_entries', 'affects_schedule', 'INTEGER DEFAULT 0');
 
+  // Порядок ручного ввода характеристик (для отображения в UI).
+  const added = await ensureColumn('characteristics', 'sort_order', 'INTEGER DEFAULT 0');
+  if (added) {
+    // Заполняем sort_order для уже существующих строк по физическому
+    // порядку вставки (ctid), отдельно по каждому тендеру.
+    await db.exec(`
+      UPDATE characteristics AS c
+         SET sort_order = sub.rn
+        FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (PARTITION BY tender_id ORDER BY ctid) AS rn
+            FROM characteristics
+        ) AS sub
+       WHERE c.id = sub.id;
+    `);
+    console.log('[migrate] characteristics.sort_order backfilled');
+  }
+
   console.log('[migrate] schema applied');
 }
 

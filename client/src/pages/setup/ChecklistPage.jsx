@@ -165,11 +165,11 @@ export default function ChecklistPage() {
           <Stat label="Не учтено" count={stats.no} cls="bg-red-100 text-red-800" />
           <Stat label="Не указано" count={stats.unknown} cls="bg-gray-100 text-gray-600" />
           {locked ? (
-            <button className="btn btn-primary" onClick={handleEdit} disabled={busy}>
+            <button className="btn btn-control" onClick={handleEdit} disabled={busy}>
               {busy ? 'Открываю…' : '✎ Редактировать'}
             </button>
           ) : (
-            <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
+            <button className="btn btn-control" onClick={handleSave} disabled={busy}>
               {busy ? 'Сохранение…' : '💾 Сохранить'}
             </button>
           )}

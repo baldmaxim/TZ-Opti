@@ -152,11 +152,11 @@ export default function ConditionsPage() {
         onChange={handleParamsChange}
         disabled={locked}
         footerAction={locked ? (
-          <button className="btn btn-primary" onClick={handleEdit} disabled={busy}>
+          <button className="btn btn-control" onClick={handleEdit} disabled={busy}>
             {busy ? 'Открываю…' : '✎ Редактировать'}
           </button>
         ) : (
-          <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
+          <button className="btn btn-control" onClick={handleSave} disabled={busy}>
             {busy ? 'Сохранение…' : '💾 Сохранить'}
           </button>
         )}

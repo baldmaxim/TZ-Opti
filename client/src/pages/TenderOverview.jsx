@@ -282,7 +282,7 @@ export default function TenderOverview() {
                 isActive ? 'scale-[1.04]' : 'group-hover:scale-[1.02]'
               }`}>
                 <span className={`inline-block transition-transform duration-300 ease-out ${
-                  isActive ? 'scale-[1.18]' : 'group-hover:scale-[1.05]'
+                  isActive ? 'scale-[1.35]' : 'group-hover:scale-[1.05]'
                 }`}>
                   {t.icon}
                 </span>

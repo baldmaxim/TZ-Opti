@@ -5,6 +5,7 @@ const { badRequest, notFound } = require('../utils/errors');
 const { newId } = require('../utils/ids');
 const { importQaXlsx } = require('../services/qaImportService');
 const { autoLinkAll } = require('../services/qaTzLinkService');
+const { populateStandardCharacteristics } = require('../services/characteristicsTemplate');
 
 exports.import = async (req, res) => {
   if (!req.file) throw badRequest('Файл не передан');
@@ -21,7 +22,10 @@ exports.listQa = async (req, res) => {
 };
 
 exports.listCharacteristics = async (req, res) => {
-  const items = await db.queryAll('SELECT * FROM characteristics WHERE tender_id = ? ORDER BY name ASC', req.params.id);
+  const items = await db.queryAll(
+    'SELECT * FROM characteristics WHERE tender_id = ? ORDER BY sort_order ASC, name ASC',
+    req.params.id,
+  );
   res.json({ items });
 };
 
@@ -81,12 +85,25 @@ exports.createCharacteristic = async (req, res) => {
   const value = (req.body && req.body.value != null) ? String(req.body.value) : null;
   const comment = (req.body && req.body.comment != null) ? String(req.body.comment) : null;
   if (!name.trim()) throw badRequest('Название характеристики обязательно');
+  const maxRow = await db.queryOne(
+    'SELECT COALESCE(MAX(sort_order), 0) AS m FROM characteristics WHERE tender_id = ?',
+    tenderId,
+  );
+  const nextOrder = (maxRow && maxRow.m ? Number(maxRow.m) : 0) + 1;
   const id = newId();
   await db.queryRun(
-    'INSERT INTO characteristics (id, tender_id, name, value, comment) VALUES (?, ?, ?, ?, ?)',
-    id, tenderId, name, value, comment,
+    'INSERT INTO characteristics (id, tender_id, name, value, comment, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+    id, tenderId, name, value, comment, nextOrder,
   );
   res.status(201).json(await db.queryOne('SELECT * FROM characteristics WHERE id = ?', id));
+};
+
+exports.seedCharacteristics = async (req, res) => {
+  const tenderId = req.params.id;
+  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
+  if (!tender) throw notFound('Тендер не найден');
+  const inserted = await populateStandardCharacteristics(tenderId);
+  res.json({ inserted });
 };
 
 exports.deleteCharacteristic = async (req, res) => {

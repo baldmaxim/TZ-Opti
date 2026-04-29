@@ -85,6 +85,7 @@ export const api = {
   autoLinkQa: (tenderId, opts = {}) => request(`/tenders/${tenderId}/qa/auto-link`, { method: 'POST', body: opts }),
   listCharacteristics: (tenderId) => request(`/tenders/${tenderId}/characteristics`),
   createCharacteristic: (tenderId, data) => request(`/tenders/${tenderId}/characteristics`, { method: 'POST', body: data }),
+  seedCharacteristics: (tenderId) => request(`/tenders/${tenderId}/characteristics/seed`, { method: 'POST' }),
   updateCharacteristic: (id, data) => request(`/characteristics/${id}`, { method: 'PATCH', body: data }),
   deleteCharacteristic: (id) => request(`/characteristics/${id}`, { method: 'DELETE' }),
 

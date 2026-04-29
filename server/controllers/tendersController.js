@@ -4,6 +4,7 @@ const db = require('../db/connection');
 const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
 const { STANDARD_CHECKLIST } = require('../db/standardChecklist');
+const { populateStandardCharacteristics } = require('../services/characteristicsTemplate');
 const { getLocksMap } = require('./setupLocksController');
 
 const TENDER_FIELDS = ['title', 'customer', 'type', 'stage', 'deadline', 'owner', 'status', 'description'];
@@ -122,6 +123,7 @@ exports.create = async (req, res) => {
   await db.queryRun(`INSERT INTO tenders (${insertCols.join(', ')}) VALUES (${placeholders})`, ...values);
   await ensureStageState(id);
   await populateStandardChecklist(id);
+  await populateStandardCharacteristics(id);
   res.status(201).json(await getTenderById(id));
 };
 

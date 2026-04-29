@@ -2,6 +2,7 @@
 
 const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
+const { newId } = require('../utils/ids');
 const { importQaXlsx } = require('../services/qaImportService');
 const { autoLinkAll } = require('../services/qaTzLinkService');
 
@@ -70,6 +71,30 @@ exports.patchQaEntry = async (req, res) => {
     .join(', ');
   await db.queryRun(`UPDATE qa_entries SET ${sets} WHERE id = ?`, ...Object.values(data), entryId);
   res.json(await db.queryOne('SELECT * FROM qa_entries WHERE id = ?', entryId));
+};
+
+exports.createCharacteristic = async (req, res) => {
+  const tenderId = req.params.id;
+  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
+  if (!tender) throw notFound('Тендер не найден');
+  const name = (req.body && req.body.name != null) ? String(req.body.name) : '';
+  const value = (req.body && req.body.value != null) ? String(req.body.value) : null;
+  const comment = (req.body && req.body.comment != null) ? String(req.body.comment) : null;
+  if (!name.trim()) throw badRequest('Название характеристики обязательно');
+  const id = newId();
+  await db.queryRun(
+    'INSERT INTO characteristics (id, tender_id, name, value, comment) VALUES (?, ?, ?, ?, ?)',
+    id, tenderId, name, value, comment,
+  );
+  res.status(201).json(await db.queryOne('SELECT * FROM characteristics WHERE id = ?', id));
+};
+
+exports.deleteCharacteristic = async (req, res) => {
+  const id = req.params.charId;
+  const existing = await db.queryOne('SELECT id FROM characteristics WHERE id = ?', id);
+  if (!existing) throw notFound('Характеристика не найдена');
+  await db.queryRun('DELETE FROM characteristics WHERE id = ?', id);
+  res.status(204).end();
 };
 
 exports.patchCharacteristic = async (req, res) => {

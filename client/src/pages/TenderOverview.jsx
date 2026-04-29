@@ -1,7 +1,21 @@
+import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTenderStore } from '../store/useTenderStore';
 import { useWizardState } from '../hooks/useWizardState';
 import { withViewTransition } from '../utils/viewTransition';
+import DocumentsPage from './setup/DocumentsPage';
+import ChecklistPage from './setup/ChecklistPage';
+import ConditionsPage from './setup/ConditionsPage';
+import RisksPage from './setup/RisksPage';
+import QaPage from './setup/QaPage';
+
+const PANELS = {
+  documents: DocumentsPage,
+  checklist: ChecklistPage,
+  conditions: ConditionsPage,
+  risks: RisksPage,
+  qa: QaPage,
+};
 
 const TILES = [
   {
@@ -102,6 +116,10 @@ export default function TenderOverview() {
   const tender = useTenderStore((s) => s.tender);
   const { tenderId } = useWizardState();
   const navigate = useNavigate();
+  const [activeTile, setActiveTile] = useState(null);
+  const [origins, setOrigins] = useState({}); // id -> "Xpx Ypx"
+  const tileRefs = useRef({});
+  const panelsWrapperRef = useRef(null);
 
   if (!tender || !tenderId) return null;
 
@@ -111,7 +129,32 @@ export default function TenderOverview() {
 
   const goBack = () => withViewTransition('back', () => navigate('/'));
   const goAnalysis = () => withViewTransition('forward', () => navigate(`/tenders/${tenderId}/stage/1`));
-  const goTile = (to) => withViewTransition('forward', () => navigate(`/tenders/${tenderId}/${to}`));
+
+  const computeOrigin = (id) => {
+    const tileEl = tileRefs.current[id];
+    const wrapEl = panelsWrapperRef.current;
+    if (!tileEl || !wrapEl) return null;
+    const t = tileEl.getBoundingClientRect();
+    const w = wrapEl.getBoundingClientRect();
+    const x = t.left + t.width / 2 - w.left;
+    const y = t.top + t.height / 2 - w.top;
+    return `${x}px ${y}px`;
+  };
+
+  const toggleTile = (id) => {
+    setActiveTile((cur) => {
+      if (cur === id) return null;
+      const next = {};
+      if (cur) {
+        const o = computeOrigin(cur);
+        if (o) next[cur] = o;
+      }
+      const o = computeOrigin(id);
+      if (o) next[id] = o;
+      setOrigins((prev) => ({ ...prev, ...next }));
+      return id;
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -146,19 +189,52 @@ export default function TenderOverview() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        {TILES.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => goTile(t.to)}
-            className="group bg-white border border-gray-200 rounded-xl p-5 flex flex-col items-center text-center hover:border-gray-300 hover:shadow-sm transition"
-          >
-            <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-3 group-hover:scale-[1.02] transition-transform`}>
-              {t.icon}
+        {TILES.map((t) => {
+          const isActive = activeTile === t.id;
+          return (
+            <button
+              key={t.id}
+              ref={(el) => { tileRefs.current[t.id] = el; }}
+              type="button"
+              onClick={() => toggleTile(t.id)}
+              aria-expanded={isActive}
+              className={`group bg-white border rounded-xl p-5 flex flex-col items-center text-center transition ${
+                isActive
+                  ? 'border-gray-900 ring-2 ring-gray-900 ring-offset-2'
+                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+              }`}
+            >
+              <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-3 group-hover:scale-[1.02] transition-transform`}>
+                {t.icon}
+              </div>
+              <div className="text-[15px] font-medium text-gray-800 leading-snug">{t.label}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div ref={panelsWrapperRef}>
+        {TILES.map((t) => {
+          const Panel = PANELS[t.id];
+          if (!Panel) return null;
+          const isActive = activeTile === t.id;
+          return (
+            <div
+              key={t.id}
+              className={`tile-panel ${isActive ? 'tile-panel-open' : ''}`}
+              aria-hidden={!isActive}
+            >
+              <div className="tile-panel-inner">
+                <div
+                  className="tile-card bg-white border border-gray-200 rounded-lg p-6"
+                  style={{ transformOrigin: origins[t.id] || 'center top' }}
+                >
+                  <Panel />
+                </div>
+              </div>
             </div>
-            <div className="text-[15px] font-medium text-gray-800 leading-snug">{t.label}</div>
-          </button>
-        ))}
+          );
+        })}
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg p-5">

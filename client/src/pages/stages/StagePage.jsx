@@ -7,7 +7,6 @@ import { useWizardState } from '../../hooks/useWizardState';
 import { STAGE_CONFIG } from './stageConfig';
 import StageRunControls from './StageRunControls';
 import StageDecisionTable from '../../components/stages/StageDecisionTable';
-import NextStepCta from '../../components/wizard/NextStepCta';
 import GateNotice from '../../components/wizard/GateNotice';
 import { STAGE_STATUS, criticalityClass } from '../../utils/labels';
 
@@ -72,13 +71,6 @@ export default function StagePage() {
 
   const counts = summary?.by_criticality || {};
   const ContextSlot = config.ContextSlot;
-
-  const pendingCount = issues.filter((i) => i.review_status === 'pending').length;
-  const allDecided = summary && pendingCount === 0;
-  const ctaDisabled = !isReadOnly && (!summary || !allDecided);
-  const ctaDisabledHint = !summary
-    ? 'Запустите анализ для этой стадии.'
-    : `Сначала примите решения по ${pendingCount} замечаниям.`;
 
   return (
     <div className="space-y-4">
@@ -151,7 +143,6 @@ export default function StagePage() {
         />
       )}
 
-      <NextStepCta disabled={ctaDisabled} disabledHint={ctaDisabledHint} />
     </div>
   );
 }

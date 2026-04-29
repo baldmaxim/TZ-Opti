@@ -14,7 +14,7 @@ async function extractFromFile(filePath, mimeType) {
     }
     if (ext === '.pdf' || (mimeType && mimeType.includes('pdf'))) {
       const pdfParse = require('pdf-parse');
-      const buf = fs.readFileSync(filePath);
+      const buf = await fs.promises.readFile(filePath);
       const data = await pdfParse(buf);
       return { text: data.text || '', status: 'extracted' };
     }
@@ -29,7 +29,7 @@ async function extractFromFile(filePath, mimeType) {
       return { text: parts.join('\n\n'), status: 'extracted' };
     }
     if (ext === '.txt' || ext === '.md' || ext === '.csv') {
-      const text = fs.readFileSync(filePath, 'utf8');
+      const text = await fs.promises.readFile(filePath, 'utf8');
       return { text, status: 'extracted' };
     }
     return { text: '', status: 'failed', reason: `Неподдерживаемый формат: ${ext || mimeType}` };

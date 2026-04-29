@@ -5,30 +5,47 @@ import clsx from 'clsx';
  * schema: [{ key, kind, label, options?, default }]
  * params: текущие значения (escalation/advance/build_months/transfer_months/kp_date)
  */
-export default function ParamsPanel({ schema, params, onChange, disabled }) {
+export default function ParamsPanel({ schema, params, onChange, disabled, footerAction }) {
   if (!schema || !params) return null;
 
   const set = (key, value) => onChange({ ...params, [key]: value });
 
   return (
-    <div className={clsx('card p-4', disabled && 'opacity-95')}>
+    <div className="card p-4">
       <h3 className="font-semibold mb-3">Основные параметры тендера</h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {schema.map((field) => (
-          <div key={field.key}>
-            <label className="label">{field.label}</label>
-            <ParamInput
-              field={field}
-              value={params[field.key]}
-              onChange={(v) => set(field.key, v)}
-              disabled={disabled}
-            />
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-gray-500 mt-3">
-        Изменение параметров автоматически пересчитывает динамические условия ниже.
-      </p>
+      {disabled ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-2">
+          {schema.map((field) => (
+            <div key={field.key} className="min-w-0">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500 truncate">
+                {field.label}
+              </div>
+              <div className="text-base font-semibold text-gray-900 mt-0.5 truncate">
+                {formatValue(field, params[field.key])}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {schema.map((field) => (
+            <div key={field.key}>
+              <label className="label">{field.label}</label>
+              <ParamInput
+                field={field}
+                value={params[field.key]}
+                onChange={(v) => set(field.key, v)}
+                disabled={disabled}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      {footerAction && (
+        <div className={clsx('flex justify-end', disabled ? 'mt-2' : 'mt-3')}>
+          {footerAction}
+        </div>
+      )}
     </div>
   );
 }
@@ -82,4 +99,13 @@ function ParamInput({ field, value, onChange, disabled }) {
       disabled={disabled}
     />
   );
+}
+
+function formatValue(field, value) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (field.kind === 'date') {
+    const d = new Date(String(value).slice(0, 10));
+    return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString('ru-RU');
+  }
+  return String(value);
 }

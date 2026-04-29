@@ -3,7 +3,6 @@ import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
-import NextStepCta from '../../components/wizard/NextStepCta';
 
 const CONTOURS = [
   { key: 'affects_calc',     short: 'Р', title: 'Влияет на расчёт' },
@@ -315,7 +314,6 @@ export default function QaPage() {
         )}
       </div>
 
-      <NextStepCta hint="Q&A — рабочий узел: пометьте каждое решение «отражено / противоречит» и контуры влияния. Эти данные станут источником правок в ТЗ на Стадии 2." />
     </div>
   );
 }

@@ -3,7 +3,6 @@ import { api } from '../../services/api';
 import { formatDateTime } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
-import NextStepCta from '../../components/wizard/NextStepCta';
 
 const SLOTS = [
   {
@@ -23,15 +22,6 @@ const SLOTS = [
     badge: 'ПД',
     color: 'green',
     multiple: true,
-  },
-  {
-    type: 'qa',
-    label: 'Форма вопрос-ответ',
-    hint: 'Q&A с принятыми решениями (.xlsx)',
-    accept: '.xlsx,.xls',
-    badge: 'Q&A',
-    color: 'amber',
-    multiple: false,
   },
   {
     type: 'vor',
@@ -71,6 +61,20 @@ export default function DocumentsPage() {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [tenderId]);
+
+  // Авто-обновление статуса фоновой text-extraction.
+  useEffect(() => {
+    if (!tenderId) return undefined;
+    const hasPending = items.some((d) => d.processing_status === 'pending');
+    if (!hasPending) return undefined;
+    const tick = setTimeout(async () => {
+      try {
+        const data = await api.listDocuments(tenderId);
+        setItems(data.items || []);
+      } catch (_e) { /* swallow polling errors */ }
+    }, 3000);
+    return () => clearTimeout(tick);
+  }, [items, tenderId]);
 
   const docsFor = (type) => items.filter((d) => d.doc_type === type);
 
@@ -118,7 +122,7 @@ export default function DocumentsPage() {
       <div>
         <h2 className="text-lg font-semibold">Документы тендера</h2>
         <p className="text-sm text-gray-600 mt-0.5">
-          ТЗ, Q&A и ВОР — по одному файлу на слот, повторная загрузка заменяет предыдущий.
+          ТЗ и ВОР — по одному файлу на слот, повторная загрузка заменяет предыдущий.
           В разделе ПД/РД можно держать несколько файлов одновременно.
         </p>
       </div>
@@ -140,8 +144,6 @@ export default function DocumentsPage() {
       {loading && items.length === 0 && (
         <div className="text-center text-gray-500 text-sm py-2">Загрузка…</div>
       )}
-
-      <NextStepCta hint="Загрузите ключевые документы — затем заполните остальные разделы подготовки." />
     </div>
   );
 }

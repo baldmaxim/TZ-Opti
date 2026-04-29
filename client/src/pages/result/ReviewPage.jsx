@@ -6,7 +6,6 @@ import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
 import { useWizardState } from '../../hooks/useWizardState';
 import GateNotice from '../../components/wizard/GateNotice';
-import NextStepCta from '../../components/wizard/NextStepCta';
 
 export default function ReviewPage() {
   const tenderId = useTenderStore((s) => s.tenderId);
@@ -57,7 +56,6 @@ export default function ReviewPage() {
     return (
       <div className="space-y-4">
         <EmptyState title="Нет замечаний на рассмотрении" description="Все замечания обработаны или анализ ещё не запускался." />
-        <NextStepCta hint="Все pending замечания обработаны — можно переходить к экспорту." />
       </div>
     );
   }
@@ -122,7 +120,6 @@ export default function ReviewPage() {
         </div>
       </div>
 
-      <NextStepCta hint="После обработки всех pending — переходите к экспорту." />
     </div>
   );
 }

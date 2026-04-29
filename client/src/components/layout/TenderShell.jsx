@@ -12,7 +12,6 @@ export default function TenderShell() {
   const location = useLocation();
   const setTender = useTenderStore((s) => s.setTender);
   const tender = useTenderStore((s) => s.tender);
-  const loading = useTenderStore((s) => s.loading);
 
   const [collapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(COLLAPSED_KEY) === '1'; } catch { return false; }
@@ -27,7 +26,7 @@ export default function TenderShell() {
     try { localStorage.setItem(COLLAPSED_KEY, next ? '1' : '0'); } catch { /* ignore */ }
   };
 
-  if (loading || !tender) {
+  if (!tender) {
     return <div className="py-12 text-center text-gray-500">Загрузка…</div>;
   }
 

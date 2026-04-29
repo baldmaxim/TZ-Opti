@@ -3,7 +3,6 @@ import clsx from 'clsx';
 import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
-import NextStepCta from '../../components/wizard/NextStepCta';
 import EmptyState from '../../components/ui/EmptyState';
 
 const SECTION = 'checklist';
@@ -21,7 +20,6 @@ export default function ChecklistPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [lockedAt, setLockedAt] = useState(null);
 
   const load = async () => {
     if (!tenderId) return;
@@ -32,9 +30,7 @@ export default function ChecklistPage() {
         api.getSetupLocks(tenderId),
       ]);
       setRows(items || []);
-      const lock = locks?.[SECTION];
-      setLocked(!!lock);
-      setLockedAt(lock && lock.locked_at ? lock.locked_at : null);
+      setLocked(!!locks?.[SECTION]);
     } catch (err) { toastError(err.message); }
     setLoading(false);
   };
@@ -113,7 +109,6 @@ export default function ChecklistPage() {
     try {
       await api.unlockSetup(tenderId, SECTION);
       setLocked(false);
-      setLockedAt(null);
       toastSuccess('Режим редактирования включён');
       await refreshTender();
     } catch (err) { toastError(err.message); }
@@ -161,27 +156,23 @@ export default function ChecklistPage() {
 
   return (
     <div className="space-y-4">
-      {locked && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900 flex items-center gap-2">
-          <span className="text-lg leading-none">🔒</span>
-          <span>
-            Чек-лист сохранён{lockedAt ? ` ${new Date(lockedAt).toLocaleString('ru-RU')}` : ''}.
-            Чтобы внести правки — нажмите «Редактировать».
-          </span>
-        </div>
-      )}
-
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">Состав работ</h2>
-          <p className="text-sm text-gray-600 mt-0.5">
-            По каждой работе отметьте, учтена ли она в вашем КП. Используется в Стадии 1 анализа.
-          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Stat label="Учтено" count={stats.yes} cls="bg-green-100 text-green-800" />
           <Stat label="Не учтено" count={stats.no} cls="bg-red-100 text-red-800" />
           <Stat label="Не указано" count={stats.unknown} cls="bg-gray-100 text-gray-600" />
+          {locked ? (
+            <button className="btn btn-primary" onClick={handleEdit} disabled={busy}>
+              {busy ? 'Открываю…' : '✎ Редактировать'}
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
+              {busy ? 'Сохранение…' : '💾 Сохранить'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -214,38 +205,22 @@ export default function ChecklistPage() {
         </table>
       </div>
 
-      <div className="flex items-center justify-between flex-wrap gap-2">
+      {!locked && (
         <div className="flex gap-2">
-          {!locked && (
-            <button className="btn btn-secondary" onClick={addCustom} disabled={busy}>
-              + Добавить свою работу
-            </button>
-          )}
-          {!locked && (
-            <button
-              className="btn btn-ghost text-gray-600"
-              onClick={resetToStandard}
-              disabled={busy}
-              title="Сбросить к стандартному списку"
-            >
-              Сбросить ↺
-            </button>
-          )}
+          <button className="btn btn-secondary" onClick={addCustom} disabled={busy}>
+            + Добавить свою работу
+          </button>
+          <button
+            className="btn btn-ghost text-gray-600"
+            onClick={resetToStandard}
+            disabled={busy}
+            title="Сбросить к стандартному списку"
+          >
+            Сбросить ↺
+          </button>
         </div>
-        <div>
-          {locked ? (
-            <button className="btn btn-primary" onClick={handleEdit} disabled={busy}>
-              {busy ? 'Открываю…' : '✎ Редактировать'}
-            </button>
-          ) : (
-            <button className="btn btn-primary" onClick={handleSave} disabled={busy}>
-              {busy ? 'Сохранение…' : '💾 Сохранить'}
-            </button>
-          )}
-        </div>
-      </div>
+      )}
 
-      <NextStepCta hint="Заполните статус по всем строкам и нажмите «Сохранить» — затем переходите к условиям компании." />
     </div>
   );
 }

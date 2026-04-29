@@ -48,14 +48,27 @@ exports.upload = async (req, res) => {
     comment,
   );
 
-  const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
-  await db.queryRun('UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?', text, status, id);
-
   const row = await db.queryOne(
     'SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status FROM documents WHERE id = ?',
     id,
   );
-  res.status(201).json({ ...row, extraction_reason: reason || null });
+  res.status(201).json(row);
+
+  setImmediate(async () => {
+    try {
+      const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
+      await db.queryRun(
+        'UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?',
+        text, status, id,
+      );
+      if (reason) console.warn(`[extract] doc ${id}: ${reason}`);
+    } catch (err) {
+      console.error(`[extract] doc ${id} failed:`, err);
+      await db
+        .queryRun(`UPDATE documents SET processing_status = 'failed' WHERE id = ?`, id)
+        .catch(() => {});
+    }
+  });
 };
 
 exports.download = async (req, res) => {

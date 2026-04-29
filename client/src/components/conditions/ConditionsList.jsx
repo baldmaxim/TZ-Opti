@@ -61,12 +61,6 @@ function ConditionRow({ item, locked, onPatch, onResetOverride }) {
       <td className="table-cell">
         <div className="font-medium text-sm break-words">{item.name}</div>
         <div className="mt-1 flex flex-wrap gap-1">
-          {item.isDynamic && (
-            <span
-              className="tag bg-amber-100 text-amber-800 text-[10px]"
-              title={`Параметрический пункт (${item.dynamicKey})`}
-            >∮ параметр</span>
-          )}
           {item.isOverridden && (
             <span className="tag bg-blue-100 text-blue-800 text-[10px]" title="Текст изменён вручную">
               ✎ override

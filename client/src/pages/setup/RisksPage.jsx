@@ -3,7 +3,6 @@ import clsx from 'clsx';
 import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
-import NextStepCta from '../../components/wizard/NextStepCta';
 import Modal from '../../components/ui/Modal';
 
 const SECTION = 'risks';
@@ -267,8 +266,6 @@ export default function RisksPage() {
           )}
         </div>
       </div>
-
-      <NextStepCta hint="Отметьте релевантные риски — затем переходите к доп. информации." />
 
       <AddCustomRiskModal
         open={showAddModal}

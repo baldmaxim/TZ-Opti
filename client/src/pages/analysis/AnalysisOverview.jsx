@@ -192,7 +192,7 @@ export default function AnalysisOverview() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex items-center gap-3 flex-wrap">
         <button
           type="button"
           onClick={goOverview}
@@ -204,6 +204,12 @@ export default function AnalysisOverview() {
           </svg>
           К обзору
         </button>
+        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 truncate min-w-0 px-2" title={tender.title}>
+          {tender.title}
+        </h1>
+        <span aria-hidden="true" className="invisible inline-flex items-center gap-3 px-7 py-4 text-base font-medium">
+          К обзору
+        </span>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">

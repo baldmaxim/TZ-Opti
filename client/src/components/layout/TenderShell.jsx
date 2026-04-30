@@ -15,8 +15,9 @@ export default function TenderShell() {
     return <div className="py-12 text-center text-gray-500">Загрузка…</div>;
   }
 
-  const isOverview = location.pathname.replace(/\/$/, '') === `/tenders/${id}`;
-  if (isOverview) {
+  const path = location.pathname.replace(/\/$/, '');
+  const hideShell = path === `/tenders/${id}` || path === `/tenders/${id}/analysis`;
+  if (hideShell) {
     return <Outlet />;
   }
 

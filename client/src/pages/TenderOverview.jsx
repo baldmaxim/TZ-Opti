@@ -229,7 +229,7 @@ export default function TenderOverview() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
         <button
           type="button"
           onClick={goBack}
@@ -241,6 +241,9 @@ export default function TenderOverview() {
           </svg>
           К дашборду
         </button>
+        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 truncate min-w-0 px-2" title={tender.title}>
+          {tender.title}
+        </h1>
         <button
           type="button"
           onClick={goAnalysis}

@@ -9,6 +9,7 @@ import ConditionsPage from './pages/setup/ConditionsPage';
 import RisksPage from './pages/setup/RisksPage';
 import QaPage from './pages/setup/QaPage';
 import StagePage from './pages/stages/StagePage';
+import AnalysisOverview from './pages/analysis/AnalysisOverview';
 import ReviewPage from './pages/result/ReviewPage';
 import ExportPage from './pages/result/ExportPage';
 
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="setup/conditions" element={<ConditionsPage />} />
           <Route path="setup/risks" element={<RisksPage />} />
           <Route path="setup/qa" element={<QaPage />} />
+          <Route path="analysis" element={<AnalysisOverview />} />
           <Route path="stage/:n" element={<StagePage />} />
           <Route path="review" element={<ReviewPage />} />
           <Route path="export" element={<ExportPage />} />

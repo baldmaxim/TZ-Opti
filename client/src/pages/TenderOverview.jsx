@@ -189,7 +189,7 @@ export default function TenderOverview() {
   const accepted = Math.max(0, total - pending);
 
   const goBack = () => withViewTransition('back', () => navigate('/'));
-  const goAnalysis = () => withViewTransition('forward', () => navigate(`/tenders/${tenderId}/stage/1`));
+  const goAnalysis = () => withViewTransition('forward', () => navigate(`/tenders/${tenderId}/analysis`));
 
   const computeOrigin = (id) => {
     const tileEl = tileRefs.current[id];

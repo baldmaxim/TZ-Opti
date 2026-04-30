@@ -10,10 +10,7 @@ function legacyTarget(id, block, sub) {
     return `/tenders/${id}/setup/documents`;
   }
   if (block === 'analysis') {
-    if (sub && /^stage[1-4]$/.test(sub)) {
-      return `/tenders/${id}/stage/${sub.slice(5)}`;
-    }
-    return `/tenders/${id}/stage/1`;
+    return `/tenders/${id}/analysis`;
   }
   if (block === 'result') {
     if (sub === 'export') return `/tenders/${id}/export`;

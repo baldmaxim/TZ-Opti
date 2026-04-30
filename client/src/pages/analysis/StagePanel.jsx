@@ -1,44 +1,38 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
 import { useTenderStore } from '../../store/useTenderStore';
 import { toastError } from '../../store/useToastStore';
-import { useWizardState } from '../../hooks/useWizardState';
-import { withViewTransition } from '../../utils/viewTransition';
-import { STAGE_CONFIG } from './stageConfig';
-import StageRunControls from './StageRunControls';
+import { STAGE_CONFIG } from '../stages/stageConfig';
+import StageRunControls from '../stages/StageRunControls';
 import StageDecisionTable from '../../components/stages/StageDecisionTable';
-import GateNotice from '../../components/wizard/GateNotice';
 import { STAGE_STATUS, criticalityClass } from '../../utils/labels';
 
-export default function StagePage() {
-  const { n } = useParams();
-  const stage = Number(n);
-  const navigate = useNavigate();
+/**
+ * Содержимое одной стадии анализа (без shell-обёртки).
+ * Используется внутри AnalysisOverview как контент tile-card.
+ */
+export default function StagePanel({ stage }) {
   const tenderId = useTenderStore((s) => s.tenderId);
   const stages = useTenderStore((s) => s.stages);
   const refreshStages = useTenderStore((s) => s.refreshStages);
   const refreshTender = useTenderStore((s) => s.refreshTender);
-  const { steps } = useWizardState();
 
-  const goOverview = () => withViewTransition('back', () => navigate(`/tenders/${tenderId}`));
-
-  const stageStep = steps.find((s) => s.stage === stage);
   const config = STAGE_CONFIG[stage];
+  const stageInfo = stages?.find((s) => s.stage === stage);
+  const status = stageInfo?.status;
+  const summary = stageInfo?.summary?.summary;
+  const isReadOnly = status === 'finished';
 
   const filterKey = useMemo(
     () => `tz-opti.tender:${tenderId}.stage:${stage}.filter`,
-    [tenderId, stage]
+    [tenderId, stage],
   );
   const [filter, setFilter] = useState(() => {
     try {
       const saved = sessionStorage.getItem(filterKey);
       return saved ? JSON.parse(saved) : { criticality: '', review_status: '' };
-    } catch {
-      return { criticality: '', review_status: '' };
-    }
+    } catch { return { criticality: '', review_status: '' }; }
   });
-
   const [issues, setIssues] = useState([]);
   const [loadingIssues, setLoadingIssues] = useState(false);
 
@@ -46,14 +40,8 @@ export default function StagePage() {
     try { sessionStorage.setItem(filterKey, JSON.stringify(filter)); } catch { /* ignore */ }
   }, [filter, filterKey]);
 
-  const stageInfo = stages?.find((s) => s.stage === stage);
-  const status = stageInfo?.status;
-  const summary = stageInfo?.summary?.summary;
-  const isReadOnly = status === 'finished';
-
   const loadIssues = useCallback(async () => {
     if (!tenderId) return;
-    if (stageStep?.status === 'locked') return;
     setLoadingIssues(true);
     try {
       const params = {};
@@ -63,55 +51,34 @@ export default function StagePage() {
       setIssues(data.items || []);
     } catch (err) { toastError(err.message); }
     setLoadingIssues(false);
-  }, [tenderId, stage, filter.criticality, filter.review_status, stageStep?.status]);
+  }, [tenderId, stage, filter.criticality, filter.review_status]);
 
   useEffect(() => { loadIssues(); }, [loadIssues]);
 
-  if (!stageStep || !config) return null;
-
-  if (stageStep.status === 'locked') {
-    return <GateNotice stepId={stageStep.id} />;
-  }
-
+  if (!config) return null;
   const counts = summary?.by_criticality || {};
   const ContextSlot = config.ContextSlot;
 
   return (
     <div className="space-y-4">
-      <div>
-        <button
-          type="button"
-          onClick={goOverview}
-          className="inline-flex items-center gap-3 px-7 py-4 rounded-lg text-base font-medium bg-gray-600 text-white hover:bg-gray-500 transition"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 14 4 9l5-5" />
-            <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
-          </svg>
-          К обзору
-        </button>
-      </div>
-
-      <div className="card p-4">
-        <div className="flex items-start justify-between flex-wrap gap-3">
-          <div>
-            <h2 className="font-semibold text-lg">{config.label}</h2>
-            <p className="text-sm text-gray-600 mt-1">{config.description}</p>
-            <p className="text-xs text-gray-500 mt-2">Статус: {STAGE_STATUS[status] || status}</p>
-            {summary && (
-              <div className="text-xs text-gray-600 mt-2">
-                Замечаний: <strong>{summary.issues_count}</strong>
-                {' '}{Object.entries(counts).map(([k, v]) => (
-                  <span key={k} className={`tag ml-1 ${criticalityClass(k)}`}>{k}: {v}</span>
-                ))}
-              </div>
-            )}
-          </div>
-          <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="font-semibold text-lg">{config.label}</h2>
+          <p className="text-sm text-gray-600 mt-1">{config.description}</p>
+          <p className="text-xs text-gray-500 mt-2">Статус: {STAGE_STATUS[status] || status || '—'}</p>
+          {summary && (
+            <div className="text-xs text-gray-600 mt-2">
+              Замечаний: <strong>{summary.issues_count}</strong>
+              {' '}{Object.entries(counts).map(([k, v]) => (
+                <span key={k} className={`tag ml-1 ${criticalityClass(k)}`}>{k}: {v}</span>
+              ))}
+            </div>
+          )}
         </div>
-
-        {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}
+        <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
       </div>
+
+      {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}
 
       {summary && (
         <div className="flex items-center gap-3 flex-wrap">
@@ -160,7 +127,6 @@ export default function StagePage() {
           }}
         />
       )}
-
     </div>
   );
 }

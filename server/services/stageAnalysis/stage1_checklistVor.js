@@ -13,110 +13,73 @@ const { findInParagraphs, normalize } = require('./shared/fragmentMatcher');
  *   0 — не учтено
  *   NULL — не отвечал
  *
- * Логика выявления расхождений:
- *   • работа упоминается в ТЗ, но помечена «не учтено» → высокий риск
- *     («может потребоваться выполнить без оплаты»)
- *   • работа упоминается в ВОР, но помечена «не учтено» → высокий риск
- *   • работа помечена «учтено», но не находится ни в ТЗ, ни в ВОР →
- *     средний риск («заложили в КП без подтверждения документами»)
- *   • работа не отмечена («не указано») и упоминается в ТЗ → подсказка
- *     («работа описана в ТЗ — определитесь, учитывать ли её в КП»)
+ * Принцип: замечание имеет смысл только если работа описана в ТЗ.
+ * Если работы нет в ТЗ — её невозможно ни «удалить», ни «изменить» в ТЗ,
+ * поэтому такие случаи НЕ выносим как замечания.
+ *
+ * Что флагуем:
+ *   • работа упоминается в ТЗ, но помечена «не учтено» в КП → высокий риск
+ *     («работа описана, но не оплачена — выполнят без оплаты»)
+ *   • работа упоминается в ТЗ, статус в чек-листе не определён → средний риск
+ *     («непонятно, входит в расчёт или нет — определитесь»)
+ *
+ * Что НЕ флагуем (отброшено по требованию пользователя):
+ *   • работа отсутствует в ТЗ — независимо от статуса «учтено / не учтено / в ВОР»
  */
 function runStage1(context) {
-  const { paragraphs, vorText, checklist, sourceDocumentId } = context;
+  const { paragraphs, vorText: _vorText, checklist, sourceDocumentId } = context;
   const issues = [];
   const tzNorm = normalize(paragraphs.map((p) => p.text).join('\n'));
-  const vorNorm = normalize(vorText || '');
 
   for (const item of checklist) {
     const work = (item.work_name || '').trim();
     if (!work) continue;
-    const inTzActual = tzNorm.includes(normalize(work));
-    const inVorActual = vorNorm.includes(normalize(work));
-    const accounted = item.in_calc;       // 1 / 0 / null
 
-    if (accounted === 1) {
-      // учтено в КП
-      if (!inTzActual && !inVorActual) {
-        issues.push(buildIssue({
-          sourceDocumentId,
-          paragraph: null,
-          fragment: work,
-          problem_type: 'учтено_в_кп_без_подтверждения',
-          risk_category: 'покрытие_расчёта',
-          criticality: 'medium',
-          price_impact: 'возможно',
-          schedule_impact: 'нет',
-          basis: `Работа «${work}» помечена «учтено в КП», но в текстах ТЗ и ВОР не найдена.`,
-          suggested_action: 'clarify',
-          suggested_redaction: `Запросить у Заказчика подтверждение по позиции «${work}» или скорректировать КП.`,
-          review_comment: 'Работа учтена в расчёте, но не подтверждена документально. Возможна избыточная стоимость.',
-          confidence: 0.65,
-        }));
-      }
-      continue;
-    }
+    // Без присутствия в ТЗ — нечего флагать.
+    const inTzActual = tzNorm.includes(normalize(work));
+    if (!inTzActual) continue;
+
+    const accounted = item.in_calc; // 1 / 0 / null
+    if (accounted === 1) continue;  // в ТЗ есть и в КП учтено — всё ок
+
+    const hits = findInParagraphs(paragraphs, work);
+    const hit = hits[0] || null;
 
     if (accounted === 0) {
-      // не учтено в КП
-      if (inTzActual) {
-        const hits = findInParagraphs(paragraphs, work);
-        const hit = hits[0] || null;
-        issues.push(buildIssue({
-          sourceDocumentId,
-          paragraph: hit,
-          fragment: hit ? hit.fragment : work,
-          problem_type: 'не_учтено_но_есть_в_ТЗ',
-          risk_category: 'покрытие_расчёта',
-          criticality: 'high',
-          price_impact: 'высокое',
-          schedule_impact: 'возможно',
-          basis: `Работа «${work}» упоминается в ТЗ, но в чек-листе помечена как НЕ учтённая в КП.`,
-          suggested_action: 'clarify',
-          suggested_redaction: `Учесть в КП или вынести в допущения: «${work}».`,
-          review_comment: 'Риск выполнения без оплаты. Требуется добавить позицию в КП либо явно исключить из объёма.',
-          confidence: 0.8,
-        }));
-      } else if (inVorActual) {
-        issues.push(buildIssue({
-          sourceDocumentId,
-          paragraph: null,
-          fragment: work,
-          problem_type: 'не_учтено_но_есть_в_ВОР',
-          risk_category: 'покрытие_расчёта',
-          criticality: 'high',
-          price_impact: 'высокое',
-          schedule_impact: 'возможно',
-          basis: `Работа «${work}» отражена в ВОР, но в чек-листе помечена как НЕ учтённая в КП.`,
-          suggested_action: 'clarify',
-          suggested_redaction: `Учесть в КП объёмы по позиции «${work}» из ВОР.`,
-          review_comment: 'Заказчик ожидает выполнение по ВОР, но в КП объём не заложен.',
-          confidence: 0.75,
-        }));
-      }
-      continue;
-    }
-
-    // accounted == null: статус не указан
-    if (inTzActual) {
-      const hits = findInParagraphs(paragraphs, work);
-      const hit = hits[0] || null;
       issues.push(buildIssue({
         sourceDocumentId,
         paragraph: hit,
         fragment: hit ? hit.fragment : work,
-        problem_type: 'статус_не_определён',
+        problem_type: 'не_учтено_но_есть_в_ТЗ',
         risk_category: 'покрытие_расчёта',
-        criticality: 'medium',
-        price_impact: 'возможно',
-        schedule_impact: 'нет',
-        basis: `Работа «${work}» упоминается в ТЗ, но в чек-листе по ней не указан статус «учтено / не учтено».`,
+        criticality: 'high',
+        price_impact: 'высокое',
+        schedule_impact: 'возможно',
+        basis: `Работа «${work}» упоминается в ТЗ, но в чек-листе помечена как НЕ учтённая в КП.`,
         suggested_action: 'clarify',
-        suggested_redaction: `Принять решение по позиции «${work}» в чек-листе.`,
-        review_comment: 'Не определён статус в чек-листе. Уточните, входит ли работа в КП.',
-        confidence: 0.55,
+        suggested_redaction: `Учесть в КП или вынести в допущения: «${work}».`,
+        review_comment: 'Риск выполнения без оплаты. Требуется добавить позицию в КП либо явно исключить из объёма.',
+        confidence: 0.8,
       }));
+      continue;
     }
+
+    // accounted === null: статус не указан, но работа в ТЗ есть.
+    issues.push(buildIssue({
+      sourceDocumentId,
+      paragraph: hit,
+      fragment: hit ? hit.fragment : work,
+      problem_type: 'статус_не_определён',
+      risk_category: 'покрытие_расчёта',
+      criticality: 'medium',
+      price_impact: 'возможно',
+      schedule_impact: 'нет',
+      basis: `Работа «${work}» упоминается в ТЗ, но в чек-листе по ней не указан статус «учтено / не учтено».`,
+      suggested_action: 'clarify',
+      suggested_redaction: `Принять решение по позиции «${work}» в чек-листе.`,
+      review_comment: 'Не определён статус в чек-листе. Уточните, входит ли работа в КП.',
+      confidence: 0.55,
+    }));
   }
 
   return issues;

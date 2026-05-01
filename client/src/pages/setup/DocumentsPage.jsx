@@ -9,11 +9,13 @@ const SLOTS = [
   {
     type: 'tz',
     label: 'ТЗ',
-    hint: 'Техническое задание (.docx + .md-копия для AI)',
-    accept: '.docx,.doc,.pdf,.md',
+    hint: 'Техническое задание (Word/PDF + .md-копия для AI)',
     badge: 'ТЗ',
     color: 'blue',
-    multiple: true,
+    subSlots: [
+      { key: 'word', label: 'Word / PDF', accept: '.docx,.doc,.pdf', match: /\.(docx?|pdf)$/i },
+      { key: 'md', label: 'Markdown (.md)', accept: '.md,text/markdown', match: /\.md$/i },
+    ],
   },
   {
     type: 'pd_rd',
@@ -88,26 +90,20 @@ export default function DocumentsPage() {
 
   const docsFor = (type) => items.filter((d) => d.doc_type === type);
 
-  const handleUpload = async (slot, files) => {
+  const handleUpload = async (slot, files, subSlot = null) => {
     const list = Array.from(files || []).filter(Boolean);
     if (!list.length || !tenderId) return;
     setBusyType(slot.type);
     try {
-      if (slot.type === 'tz') {
-        // ТЗ: умная замена по расширению — новый .docx вытесняет старый .docx,
-        // новый .md — старый .md; второй формат не трогается.
-        const before = docsFor('tz');
-        for (const f of list) {
-          const ext = f.name.toLowerCase().split('.').pop();
-          const existing = before.find(
-            (d) => d.name.toLowerCase().split('.').pop() === ext,
-          );
-          await api.uploadDocument(tenderId, f, 'tz', '');
-          if (existing) {
-            try { await api.deleteDocument(existing.id); } catch (_e) { /* swallow */ }
-          }
+      if (subSlot) {
+        // Подслот: один файл, замена существующего того же формата.
+        const file = list[0];
+        const existing = docsFor(slot.type).find((d) => subSlot.match.test(d.name));
+        await api.uploadDocument(tenderId, file, slot.type, '');
+        if (existing) {
+          try { await api.deleteDocument(existing.id); } catch (_e) { /* swallow */ }
         }
-        toastSuccess(`ТЗ: загружено`);
+        toastSuccess(`${slot.label} · ${subSlot.label}: загружено`);
       } else if (slot.multiple) {
         // ПД/РД: добавляем все файлы, ничего не удаляем
         for (const f of list) {
@@ -147,7 +143,8 @@ export default function DocumentsPage() {
       <div>
         <h2 className="text-lg font-semibold">Документы тендера</h2>
         <p className="text-sm text-gray-600 mt-0.5">
-          ТЗ и ВОР — по одному файлу на слот, повторная загрузка заменяет предыдущий.
+          ТЗ — отдельные подслоты для Word/PDF и Markdown-копии (для AI).
+          ВОР — один файл (повторная загрузка заменяет предыдущий).
           В разделе ПД/РД можно держать несколько файлов одновременно.
         </p>
       </div>
@@ -161,7 +158,7 @@ export default function DocumentsPage() {
             busy={busyType === slot.type}
             disabled={loading || (busyType !== null && busyType !== slot.type)}
             tenderId={tenderId}
-            onUpload={(files) => handleUpload(slot, files)}
+            onUpload={(files, subSlot) => handleUpload(slot, files, subSlot)}
             onDelete={(doc) => handleDelete(slot, doc)}
           />
         ))}
@@ -175,8 +172,127 @@ export default function DocumentsPage() {
 }
 
 function SlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDelete }) {
-  const inputRef = useRef(null);
   const c = COLOR_CLASSES[slot.color];
+
+  // Слот с подслотами (ТЗ: Word/PDF + Markdown).
+  if (slot.subSlots) {
+    const anyDoc = docs.length > 0;
+    return (
+      <div className={`card p-4 flex flex-col gap-3 ${anyDoc ? c.border + ' ' + c.bg : 'border-dashed'}`}>
+        <SlotHeader slot={slot} c={c} />
+        <div className="flex flex-col gap-2 flex-1">
+          {slot.subSlots.map((sub) => (
+            <SubSlotRow
+              key={sub.key}
+              sub={sub}
+              doc={docs.find((d) => sub.match.test(d.name))}
+              busy={busy}
+              disabled={disabled}
+              onUpload={(files) => onUpload(files, sub)}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Обычный слот (один файл или multi).
+  return (
+    <RegularSlotCard
+      slot={slot} docs={docs} busy={busy} disabled={disabled}
+      tenderId={tenderId} onUpload={onUpload} onDelete={onDelete} c={c}
+    />
+  );
+}
+
+function SlotHeader({ slot, c, count }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className={`flex items-center justify-center w-12 h-12 rounded-lg font-bold text-sm flex-shrink-0 ${c.badge}`}>
+        {slot.badge}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold leading-tight flex items-center gap-2">
+          {slot.label}
+          {typeof count === 'number' && count > 0 && (
+            <span className="text-xs bg-white border border-gray-300 text-gray-700 px-1.5 py-0.5 rounded-full font-normal">
+              {count}
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-gray-500 mt-0.5">{slot.hint}</div>
+      </div>
+    </div>
+  );
+}
+
+function SubSlotRow({ sub, doc, busy, disabled, onUpload, onDelete }) {
+  const inputRef = useRef(null);
+  const trigger = () => inputRef.current?.click();
+  const onPick = (e) => {
+    const fs = e.target.files;
+    if (fs && fs.length) onUpload(fs);
+    if (inputRef.current) inputRef.current.value = '';
+  };
+  const empty = !doc;
+  const status = doc?.processing_status;
+  const statusLabel =
+    status === 'extracted' ? 'извлечён' :
+    status === 'failed' ? 'ошибка' :
+    status === 'pending' ? 'обработка' : status;
+  const statusClass =
+    status === 'extracted' ? 'text-green-700' :
+    status === 'failed' ? 'text-red-700' : 'text-amber-700';
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-md p-2.5 flex flex-col gap-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-gray-700">{sub.label}</span>
+        {!empty && (
+          <span className="text-[11px] text-gray-500 truncate">
+            {formatDateTime(doc.uploaded_at)} · <span className={statusClass}>{statusLabel}</span>
+          </span>
+        )}
+      </div>
+      {empty ? (
+        <div className="text-xs text-gray-400 italic">Не загружено</div>
+      ) : (
+        <div className="text-sm font-medium break-all" title={doc.name}>{doc.name}</div>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept={sub.accept}
+        onChange={onPick}
+        className="hidden"
+        disabled={busy}
+      />
+      <div className="flex items-center gap-1.5 mt-0.5">
+        <button
+          className={`flex-1 ${empty ? 'btn btn-primary' : 'btn btn-secondary'}`}
+          onClick={trigger}
+          disabled={busy || disabled}
+        >
+          {busy ? 'Загрузка…' : empty ? '+ Загрузить' : 'Заменить'}
+        </button>
+        {!empty && (
+          <button
+            type="button"
+            className="btn btn-secondary text-red-600"
+            onClick={() => onDelete(doc)}
+            disabled={busy || disabled}
+            title="Удалить"
+            aria-label="Удалить"
+          >×</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RegularSlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDelete, c }) {
+  const inputRef = useRef(null);
   const empty = docs.length === 0;
   const multi = !!slot.multiple;
 
@@ -189,22 +305,7 @@ function SlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDelete }) 
 
   return (
     <div className={`card p-4 flex flex-col gap-3 ${empty ? 'border-dashed' : c.border + ' ' + c.bg}`}>
-      <div className="flex items-center gap-3">
-        <div className={`flex items-center justify-center w-12 h-12 rounded-lg font-bold text-sm flex-shrink-0 ${c.badge}`}>
-          {slot.badge}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="font-semibold leading-tight flex items-center gap-2">
-            {slot.label}
-            {multi && docs.length > 0 && (
-              <span className="text-xs bg-white border border-gray-300 text-gray-700 px-1.5 py-0.5 rounded-full font-normal">
-                {docs.length}
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-gray-500 mt-0.5">{slot.hint}</div>
-        </div>
-      </div>
+      <SlotHeader slot={slot} c={c} count={multi ? docs.length : undefined} />
 
       <div className="flex-1 min-h-[64px]">
         {empty ? (
@@ -235,22 +336,14 @@ function SlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDelete }) 
           {busy ? 'Загрузка…' : empty ? '+ Загрузить' : multi ? '+ Добавить файл' : 'Заменить'}
         </button>
         {!multi && !empty && (
-          <>
-            <a
-              href={api.documentDownloadUrl(docs[0].id)}
-              className="btn btn-secondary"
-              title="Скачать"
-              aria-label="Скачать"
-            >↓</a>
-            <button
-              type="button"
-              className="btn btn-secondary text-red-600"
-              onClick={() => onDelete(docs[0])}
-              disabled={busy || disabled}
-              title="Удалить"
-              aria-label="Удалить"
-            >×</button>
-          </>
+          <button
+            type="button"
+            className="btn btn-secondary text-red-600"
+            onClick={() => onDelete(docs[0])}
+            disabled={busy || disabled}
+            title="Удалить"
+            aria-label="Удалить"
+          >×</button>
         )}
       </div>
 
@@ -305,12 +398,6 @@ function DocList({ docs, onDelete, disabled }) {
                 </span>
               </div>
             </div>
-            <a
-              href={api.documentDownloadUrl(d.id)}
-              className="text-brand-700 hover:text-brand-900 text-sm px-1.5"
-              title="Скачать"
-              aria-label="Скачать"
-            >↓</a>
             <button
               type="button"
               className="text-red-600 hover:text-red-800 text-sm px-1.5"

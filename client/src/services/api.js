@@ -105,8 +105,11 @@ export const api = {
 
   // Превью + экспорт
   reviewPreviewUrl: (tenderId) => `${BASE}/tenders/${tenderId}/review/preview`,
-  exportDocxUrl: (tenderId) => `${BASE}/tenders/${tenderId}/export/docx`,
+  exportDocxUrl: (tenderId, stage = null) =>
+    `${BASE}/tenders/${tenderId}/export/docx${stage ? `?stage=${stage}` : ''}`,
   exportCsvUrl: (tenderId) => `${BASE}/tenders/${tenderId}/export/issues.csv`,
   exportJsonUrl: (tenderId) => `${BASE}/tenders/${tenderId}/export/issues.json`,
   exportSummaryUrl: (tenderId) => `${BASE}/tenders/${tenderId}/export/summary.md`,
+  exportReviewMdUrl: (tenderId, stage = null) =>
+    `${BASE}/tenders/${tenderId}/export/review.md${stage ? `?stage=${stage}` : ''}`,
 };

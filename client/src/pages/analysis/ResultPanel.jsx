@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useTenderStore } from '../../store/useTenderStore';
+import { api } from '../../services/api';
 
 /**
  * Финальная плитка «Результат» — рецензия + экспорт.
@@ -48,6 +49,13 @@ export default function ResultPanel() {
         >
           📋 Открыть рецензию
         </Link>
+        <a
+          href={api.exportReviewMdUrl(tenderId)}
+          className="btn btn-secondary"
+          download
+        >
+          ⤓ Скачать review.md
+        </a>
         <Link
           to={`/tenders/${tenderId}/export`}
           className="btn btn-control"

@@ -28,9 +28,12 @@ export default function StagePanel({ stage }) {
     [tenderId, stage],
   );
   const [filter, setFilter] = useState(() => {
+    // sessionStorage помнит только критичность, статус всегда стартует «Любой»,
+    // чтобы только что принятое решение не скрыло строку из списка.
     try {
       const saved = sessionStorage.getItem(filterKey);
-      return saved ? JSON.parse(saved) : { criticality: '', review_status: '' };
+      const parsed = saved ? JSON.parse(saved) : null;
+      return { criticality: parsed?.criticality || '', review_status: '' };
     } catch { return { criticality: '', review_status: '' }; }
   });
   const [issues, setIssues] = useState([]);
@@ -40,9 +43,14 @@ export default function StagePanel({ stage }) {
     try { sessionStorage.setItem(filterKey, JSON.stringify(filter)); } catch { /* ignore */ }
   }, [filter, filterKey]);
 
-  const loadIssues = useCallback(async () => {
+  // analysis_run_id меняется при «Перезапустить анализ» (новый run)
+  // и при «Сбросить стадию» (становится undefined). Используем как
+  // триггер автоматической перезагрузки списка замечаний.
+  const runId = stageInfo?.summary?.id;
+
+  const loadIssues = useCallback(async ({ silent = false } = {}) => {
     if (!tenderId) return;
-    setLoadingIssues(true);
+    if (!silent) setLoadingIssues(true);
     try {
       const params = {};
       if (filter.criticality) params.criticality = filter.criticality;
@@ -50,8 +58,8 @@ export default function StagePanel({ stage }) {
       const data = await api.listStageIssues(tenderId, stage, params);
       setIssues(data.items || []);
     } catch (err) { toastError(err.message); }
-    setLoadingIssues(false);
-  }, [tenderId, stage, filter.criticality, filter.review_status]);
+    if (!silent) setLoadingIssues(false);
+  }, [tenderId, stage, filter.criticality, filter.review_status, runId]);
 
   useEffect(() => { loadIssues(); }, [loadIssues]);
 
@@ -75,7 +83,29 @@ export default function StagePanel({ stage }) {
             </div>
           )}
         </div>
-        <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
+        <div className="flex flex-col items-end gap-2">
+          <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
+          {tenderId && summary && (
+            <div className="flex gap-2 flex-wrap justify-end">
+              <a
+                href={api.exportReviewMdUrl(tenderId, stage)}
+                className="btn btn-secondary text-xs"
+                download
+                title={`Скачать review.md только с решениями стадии ${stage}`}
+              >
+                ⤓ review.md (ст. {stage})
+              </a>
+              <a
+                href={api.exportDocxUrl(tenderId, stage)}
+                className="btn btn-secondary text-xs"
+                download
+                title={`Скачать ТЗ.docx с правками режима рецензии — только решения стадии ${stage}`}
+              >
+                ⤓ ТЗ с правками .docx (ст. {stage})
+              </a>
+            </div>
+          )}
+        </div>
       </div>
 
       {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}
@@ -121,9 +151,13 @@ export default function StagePanel({ stage }) {
           issues={issues}
           readOnly={isReadOnly}
           onChanged={async () => {
-            await loadIssues();
-            await refreshStages();
-            await refreshTender();
+            // Awaitим только loadIssues — это нужно для апдейта бейджа решения
+            // в таблице. refreshStages/refreshTender обновляют шапку и счётчики
+            // в дашборде — они тяжёлые, пускаем в фон без await.
+            const promise = loadIssues({ silent: true });
+            refreshStages();
+            refreshTender();
+            await promise;
           }}
         />
       )}

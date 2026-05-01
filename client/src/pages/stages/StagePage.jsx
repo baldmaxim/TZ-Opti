@@ -51,10 +51,12 @@ export default function StagePage() {
   const summary = stageInfo?.summary?.summary;
   const isReadOnly = status === 'finished';
 
-  const loadIssues = useCallback(async () => {
+  const runId = stageInfo?.summary?.id;
+
+  const loadIssues = useCallback(async ({ silent = false } = {}) => {
     if (!tenderId) return;
     if (stageStep?.status === 'locked') return;
-    setLoadingIssues(true);
+    if (!silent) setLoadingIssues(true);
     try {
       const params = {};
       if (filter.criticality) params.criticality = filter.criticality;
@@ -62,8 +64,8 @@ export default function StagePage() {
       const data = await api.listStageIssues(tenderId, stage, params);
       setIssues(data.items || []);
     } catch (err) { toastError(err.message); }
-    setLoadingIssues(false);
-  }, [tenderId, stage, filter.criticality, filter.review_status, stageStep?.status]);
+    if (!silent) setLoadingIssues(false);
+  }, [tenderId, stage, filter.criticality, filter.review_status, stageStep?.status, runId]);
 
   useEffect(() => { loadIssues(); }, [loadIssues]);
 
@@ -154,9 +156,10 @@ export default function StagePage() {
           issues={issues}
           readOnly={isReadOnly}
           onChanged={async () => {
-            await loadIssues();
-            await refreshStages();
-            await refreshTender();
+            const promise = loadIssues({ silent: true });
+            refreshStages();
+            refreshTender();
+            await promise;
           }}
         />
       )}

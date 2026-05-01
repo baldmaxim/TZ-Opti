@@ -59,6 +59,14 @@ export default function StageRunControls({ stage, status, hasSummary }) {
         {!isReadOnly && !isLocked && hasSummary && (
           <button className="btn btn-secondary" onClick={onFinish} disabled={busy}>Завершить стадию</button>
         )}
+        {!isReadOnly && !isLocked && hasSummary && (
+          <button
+            className="btn btn-secondary text-red-600"
+            onClick={() => setResetTo(stage)}
+            disabled={busy}
+            title="Удалить все замечания и решения этой стадии"
+          >Сбросить стадию</button>
+        )}
         {isReadOnly && (
           <button className="btn btn-secondary" onClick={() => setResetTo(stage)}>Вернуться и пересмотреть</button>
         )}

@@ -10,5 +10,6 @@ router.get('/tenders/:id/export/docx', asyncHandler(ctrl.docx));
 router.get('/tenders/:id/export/issues.csv', asyncHandler(ctrl.csv));
 router.get('/tenders/:id/export/issues.json', asyncHandler(ctrl.json));
 router.get('/tenders/:id/export/summary.md', asyncHandler(ctrl.summary));
+router.get('/tenders/:id/export/review.md', asyncHandler(ctrl.reviewMd));
 
 module.exports = router;

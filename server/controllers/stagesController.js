@@ -9,7 +9,7 @@ exports.getState = async (req, res) => {
   if (!tender) throw notFound('Тендер не найден');
   const state = await engine.getStageState(req.params.id);
   const stages = await Promise.all(
-    [1, 2, 3, 4].map(async (n) => ({
+    [1, 2, 3, 4, 5].map(async (n) => ({
       stage: n,
       label: engine.STAGE_LABELS[n],
       status: state[`stage${n}_status`],
@@ -21,21 +21,21 @@ exports.getState = async (req, res) => {
 
 exports.run = async (req, res) => {
   const stage = Number(req.params.n);
-  if (![1, 2, 3, 4].includes(stage)) throw badRequest('Допустимы стадии 1..4');
+  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
   const result = await engine.runStage(req.params.id, stage);
   res.json({ ok: true, ...result });
 };
 
 exports.finish = async (req, res) => {
   const stage = Number(req.params.n);
-  if (![1, 2, 3, 4].includes(stage)) throw badRequest('Допустимы стадии 1..4');
+  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
   const state = await engine.finishStage(req.params.id, stage);
   res.json({ ok: true, state });
 };
 
 exports.reset = async (req, res) => {
   const stage = Number(req.params.n);
-  if (![1, 2, 3, 4].includes(stage)) throw badRequest('Допустимы стадии 1..4');
+  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
   const state = await engine.resetStage(req.params.id, stage);
   res.json({ ok: true, state });
 };

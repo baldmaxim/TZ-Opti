@@ -32,7 +32,7 @@ async function loadDecisions(tenderId, stageFilter = null) {
     sql += ' AND i.analysis_stage = ?';
     params.push(stageFilter);
   }
-  sql += ' ORDER BY i.analysis_stage ASC, i.paragraph_index ASC, i.char_start ASC';
+  sql += ' ORDER BY i.analysis_stage ASC, i.paragraph_index ASC NULLS LAST, i.char_start ASC NULLS LAST';
   const rows = await db.queryAll(sql, ...params);
   return rows.map((r) => ({
     issue: r,

@@ -42,7 +42,7 @@ async function loadDecisions(tenderId, stageFilter = null) {
       FROM issues i
       INNER JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.analysis_stage = ?
-      ORDER BY i.paragraph_index ASC, i.char_start ASC
+      ORDER BY i.paragraph_index ASC NULLS LAST, i.char_start ASC NULLS LAST
       `,
       tenderId,
       stageFilter,
@@ -55,7 +55,7 @@ async function loadDecisions(tenderId, stageFilter = null) {
     FROM issues i
     INNER JOIN review_decisions d ON d.issue_id = i.id
     WHERE i.tender_id = ?
-    ORDER BY i.analysis_stage ASC, i.paragraph_index ASC, i.char_start ASC
+    ORDER BY i.analysis_stage ASC, i.paragraph_index ASC NULLS LAST, i.char_start ASC NULLS LAST
     `,
     tenderId,
   );

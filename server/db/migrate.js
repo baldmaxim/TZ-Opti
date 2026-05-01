@@ -43,6 +43,31 @@ async function runMigration() {
   await ensureColumn('qa_entries', 'affects_contract', 'INTEGER DEFAULT 0');
   await ensureColumn('qa_entries', 'affects_schedule', 'INTEGER DEFAULT 0');
 
+  // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
+  // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,
+  // 3 = locked (новая пустая стадия).
+  const stage5Added = await ensureColumn('tender_stage_state', 'stage5_status', "TEXT DEFAULT 'locked'");
+  if (stage5Added) {
+    // Сдвигаем статусы стадий: текущий stage4 (selfAnalysis) → stage5,
+    // текущий stage3 (risks) → stage4, новый stage3 (conditions) = locked.
+    await db.exec(`
+      UPDATE tender_stage_state
+         SET stage5_status = stage4_status,
+             stage4_status = stage3_status,
+             stage3_status = 'locked';
+    `);
+    // Сдвигаем номера стадий в issues: 4→5, 3→4 (порядок важен — сначала 4→5 чтобы не наложились).
+    await db.exec(`UPDATE issues SET analysis_stage = 5 WHERE analysis_stage = 4;`);
+    await db.exec(`UPDATE issues SET analysis_stage = 4 WHERE analysis_stage = 3;`);
+    // Аналогично в analysis_runs.
+    await db.exec(`UPDATE analysis_runs SET stage = 5 WHERE stage = 4;`);
+    await db.exec(`UPDATE analysis_runs SET stage = 4 WHERE stage = 3;`);
+    // И в tz_excluded_ranges (after_stage).
+    await db.exec(`UPDATE tz_excluded_ranges SET after_stage = 5 WHERE after_stage = 4;`);
+    await db.exec(`UPDATE tz_excluded_ranges SET after_stage = 4 WHERE after_stage = 3;`);
+    console.log('[migrate] stages renumbered: 3=conditions(new), 4=risks(was 3), 5=selfAnalysis(was 4)');
+  }
+
   // Порядок ручного ввода характеристик (для отображения в UI).
   const added = await ensureColumn('characteristics', 'sort_order', 'INTEGER DEFAULT 0');
   if (added) {

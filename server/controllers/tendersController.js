@@ -14,8 +14,8 @@ async function ensureStageState(tenderId) {
   if (!row) {
     await db.queryRun(
       `
-      INSERT INTO tender_stage_state (tender_id, current_stage, stage1_status, stage2_status, stage3_status, stage4_status)
-      VALUES (?, 1, 'open', 'locked', 'locked', 'locked')
+      INSERT INTO tender_stage_state (tender_id, current_stage, stage1_status, stage2_status, stage3_status, stage4_status, stage5_status)
+      VALUES (?, 1, 'open', 'locked', 'locked', 'locked', 'locked')
     `,
       tenderId,
     );

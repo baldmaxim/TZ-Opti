@@ -26,7 +26,7 @@ export default function ResultPanel() {
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="card p-3">
-          <div className="text-2xl font-semibold tracking-tight tabular-nums">{finishedStages}/4</div>
+          <div className="text-2xl font-semibold tracking-tight tabular-nums">{finishedStages}/5</div>
           <div className="text-xs text-gray-500 mt-1">Стадий завершено</div>
         </div>
         <div className="card p-3">
@@ -53,14 +53,23 @@ export default function ResultPanel() {
           href={api.exportReviewMdUrl(tenderId)}
           className="btn btn-secondary"
           download
+          title="review.md со всеми правками со всех стадий"
         >
-          ⤓ Скачать review.md
+          ⤓ Скачать review.md (все стадии)
+        </a>
+        <a
+          href={api.exportDocxUrl(tenderId)}
+          className="btn btn-primary"
+          download
+          title="Итоговый .docx с правками Track Changes из всех стадий — открывается в Word"
+        >
+          ⤓ ТЗ с правками .docx (все стадии)
         </a>
         <Link
           to={`/tenders/${tenderId}/export`}
-          className="btn btn-control"
+          className="btn btn-secondary"
         >
-          ⤓ Экспорт ТЗ с правками (.docx)
+          Расширенный экспорт →
         </Link>
       </div>
     </div>

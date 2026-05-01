@@ -85,7 +85,7 @@ export default function StagePanel({ stage }) {
         </div>
         <div className="flex flex-col items-end gap-2">
           <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
-          {tenderId && summary && (
+          {tenderId && summary && isReadOnly && (
             <div className="flex gap-2 flex-wrap justify-end">
               <a
                 href={api.exportReviewMdUrl(tenderId, stage)}

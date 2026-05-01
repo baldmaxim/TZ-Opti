@@ -4,14 +4,17 @@ const { findInParagraphs } = require('./shared/fragmentMatcher');
 const { listForTender } = require('../risksService');
 
 /**
- * Стадия 3: ТЗ vs типовые риски.
+ * Стадия 4: ТЗ vs типовые риски.
  * context = { tenderId, paragraphs, sourceDocumentId }
  *
  * Использует стандартную библиотеку рисков (server/db/standardRisks.js)
  * + per-tender оверлей tender_risk_state (Да/Нет/auto).
  * Применяет только риски с effective === true.
+ *
+ * Прим.: ранее эта стадия была под номером 3. После добавления Стадии 3
+ * «Существенные условия» сдвинута на 4.
  */
-async function runStage3(context) {
+async function runStage4(context) {
   const { tenderId, paragraphs, sourceDocumentId } = context;
   const allRisks = await listForTender(tenderId);
   const risks = allRisks.filter((r) => r.effective);
@@ -52,4 +55,4 @@ async function runStage3(context) {
   return issues;
 }
 
-module.exports = { runStage3 };
+module.exports = { runStage4 };

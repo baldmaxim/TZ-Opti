@@ -50,8 +50,7 @@ const TILES = [
   },
   {
     id: 'stage3',
-    stage: null,
-    placeholder: true,
+    stage: 3,
     label: 'Стадия 3',
     sublabel: 'Существенные условия',
     accent: 'from-violet-50 to-purple-50',
@@ -70,7 +69,7 @@ const TILES = [
   },
   {
     id: 'stage4',
-    stage: 3,
+    stage: 4,
     label: 'Стадия 4',
     sublabel: 'Типовые риски',
     accent: 'from-amber-50 to-orange-50',
@@ -85,7 +84,7 @@ const TILES = [
   },
   {
     id: 'stage5',
-    stage: 4,
+    stage: 5,
     label: 'Стадия 5',
     sublabel: 'Самоанализ ТЗ',
     accent: 'from-cyan-50 to-sky-50',
@@ -132,6 +131,70 @@ export default function AnalysisOverview() {
   const [origins, setOrigins] = useState({});
   const tileRefs = useRef({});
   const panelsWrapperRef = useRef(null);
+  const tilesGridRef = useRef(null);
+  const lastWheelAtRef = useRef(0);
+  const activeTileRef = useRef(null);
+  const tilesStateRef = useRef({ steps, tender });
+
+  useEffect(() => { activeTileRef.current = activeTile; }, [activeTile]);
+  useEffect(() => { tilesStateRef.current = { steps, tender }; }, [steps, tender]);
+
+  useEffect(() => {
+    const node = tilesGridRef.current;
+    if (!node) return undefined;
+    const onWheel = (e) => {
+      const delta = e.deltaY || e.deltaX;
+      if (Math.abs(delta) < 1) return;
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastWheelAtRef.current < 90) return;
+      const dir = delta > 0 ? 1 : -1;
+      const jumps = Math.max(1, Math.min(TILES.length, Math.round(Math.abs(delta) / 100)));
+
+      // Скипаем заблокированные плитки — навигация только по доступным.
+      const localSteps = tilesStateRef.current.steps;
+      const stepStatus = (backendStage) => {
+        if (backendStage == null) return 'available';
+        return localSteps.find((s) => s.id === `stage${backendStage}`)?.status || 'available';
+      };
+      const isAvailable = (tile) => {
+        if (tile.id === 'result') {
+          return [1, 2, 3, 4, 5].every((n) => stepStatus(n) === 'finished');
+        }
+        return stepStatus(tile.stage) !== 'locked';
+      };
+
+      const cur = activeTileRef.current;
+      const curIdx = cur ? TILES.findIndex((t) => t.id === cur) : -1;
+      let nextIdx = curIdx;
+      let remaining = jumps;
+      if (curIdx === -1 && dir < 0) return;
+      if (curIdx === -1) nextIdx = -1;
+      while (remaining > 0) {
+        const candidate = nextIdx + dir;
+        if (candidate < 0 || candidate >= TILES.length) break;
+        nextIdx = candidate;
+        if (isAvailable(TILES[candidate])) remaining -= 1;
+      }
+      if (nextIdx === curIdx || nextIdx < 0 || nextIdx >= TILES.length) return;
+      if (!isAvailable(TILES[nextIdx])) return;
+
+      lastWheelAtRef.current = now;
+      const nextId = TILES[nextIdx].id;
+      const tileEl = tileRefs.current[nextId];
+      const wrapEl = panelsWrapperRef.current;
+      if (tileEl && wrapEl) {
+        const t = tileEl.getBoundingClientRect();
+        const w = wrapEl.getBoundingClientRect();
+        const x = t.left + t.width / 2 - w.left;
+        const y = t.top + t.height / 2 - w.top;
+        setOrigins((prev) => ({ ...prev, [nextId]: `${x}px ${y}px` }));
+      }
+      setActiveTile(nextId);
+    };
+    node.addEventListener('wheel', onWheel, { passive: false });
+    return () => node.removeEventListener('wheel', onWheel);
+  }, []);
 
   if (!tender || !tenderId) return null;
 
@@ -141,13 +204,9 @@ export default function AnalysisOverview() {
   };
   const stageFinished = (backendStage) => backendStepStatus(backendStage) === 'finished';
   const tileStatus = (tile) => {
-    if (tile.placeholder) {
-      // Stage 3 (заглушка) — открывается только после Stage 2 (backend 2).
-      return stageFinished(2) ? 'available' : 'locked';
-    }
     if (tile.id === 'result') {
-      // Результат — после завершения всех 4 реальных стадий анализа.
-      const allDone = [1, 2, 3, 4].every((n) => stageFinished(n));
+      // Результат — после завершения всех 5 реальных стадий анализа.
+      const allDone = [1, 2, 3, 4, 5].every((n) => stageFinished(n));
       return allDone ? 'available' : 'locked';
     }
     return backendStepStatus(tile.stage);
@@ -212,7 +271,10 @@ export default function AnalysisOverview() {
         </span>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div
+        ref={tilesGridRef}
+        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4"
+      >
         {TILES.map((t) => {
           const isActive = activeTile === t.id;
           const locked = isLocked(t);

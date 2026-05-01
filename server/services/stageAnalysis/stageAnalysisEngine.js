@@ -6,14 +6,17 @@ const { badRequest } = require('../../utils/errors');
 const { getActiveTzText, getDocumentByType } = require('../tzActiveTextService');
 const { runStage1 } = require('./stage1_checklistVor');
 const { runStage2 } = require('./stage2_qaDecisions');
-const { runStage3 } = require('./stage3_risks');
-const { runStage4 } = require('./stage4_selfAnalysis');
+const { runStage3 } = require('./stage3_companyConditions');
+const { runStage4 } = require('./stage4_risks');
+const { runStage5 } = require('./stage5_selfAnalysis');
+const { importQaXlsx } = require('../qaImportService');
 
 const STAGE_LABELS = {
   1: 'ТЗ + Чек-лист + ВОР',
   2: 'Q&A → правки в ТЗ (решения СУ-10)',
-  3: 'ТЗ + Типовые риски',
-  4: 'Самоанализ ТЗ (скрытые работы, двусмыслия, срок)',
+  3: 'ТЗ + Существенные условия компании',
+  4: 'ТЗ + Типовые риски',
+  5: 'Самоанализ ТЗ (скрытые работы, двусмыслия, срок)',
 };
 
 async function getStageState(tenderId) {
@@ -21,8 +24,8 @@ async function getStageState(tenderId) {
   if (!state) {
     await db.queryRun(
       `
-      INSERT INTO tender_stage_state (tender_id, current_stage, stage1_status, stage2_status, stage3_status, stage4_status)
-      VALUES (?, 1, 'open', 'locked', 'locked', 'locked')
+      INSERT INTO tender_stage_state (tender_id, current_stage, stage1_status, stage2_status, stage3_status, stage4_status, stage5_status)
+      VALUES (?, 1, 'open', 'locked', 'locked', 'locked', 'locked')
     `,
       tenderId,
     );
@@ -50,7 +53,7 @@ async function setStageStatus(tenderId, stage, status, runner = db) {
 }
 
 async function unlockNextStage(tenderId, stage, runner = db) {
-  if (stage >= 4) return;
+  if (stage >= 5) return;
   const nextCol = `stage${stage + 1}_status`;
   await runner.queryRun(
     `UPDATE tender_stage_state SET ${nextCol} = 'open', current_stage = ? WHERE tender_id = ?`,
@@ -79,12 +82,9 @@ async function buildContextForStage(tenderId, stage) {
   if (stage === 2) {
     ctx.qaEntries = await db.queryAll('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC', tenderId);
   }
-  if (stage === 3) {
-    ctx.riskTemplates = await db.queryAll(
-      'SELECT * FROM risk_templates WHERE tender_id = ? OR is_global = 1',
-      tenderId,
-    );
-  }
+  // Стадия 3 (Существенные условия) и Стадия 4 (Типовые риски) сами загружают
+  // нужные данные из БД (company_conditions / risks_state) — отдельный
+  // ctx-prefetch не требуется.
   return ctx;
 }
 
@@ -94,21 +94,45 @@ function runStageOrchestrator(stage, ctx) {
     case 2: return runStage2(ctx);
     case 3: return runStage3(ctx);
     case 4: return runStage4(ctx);
-    default: throw badRequest('Допустимы стадии 1..4');
+    case 5: return runStage5(ctx);
+    default: throw badRequest('Допустимы стадии 1..5');
   }
 }
 
 async function runStage(tenderId, stage) {
   const state = await getStageState(tenderId);
-  if (stage < 1 || stage > 4) throw badRequest('Допустимы стадии 1..4');
+  if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
   if (!isStageRunnable(state, stage)) {
     throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
   }
   if (stage === 2) {
     const qaCountRow = await db.queryOne('SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?', tenderId);
-    const qaCount = Number(qaCountRow?.c || 0);
+    let qaCount = Number(qaCountRow?.c || 0);
     if (!qaCount) {
-      throw badRequest('Загрузите Q&A форму на вкладке «Q&A форма» — без переписки стадия 2 не запускается.');
+      // qa_entries пуст — пробуем авто-импортировать из загруженного на вкладке
+      // «Документация» Q&A-файла. Это типичный кейс: пользователь залил .xlsx,
+      // но импорт по какой-то причине не отработал.
+      const qaDoc = await db.queryOne(
+        `SELECT * FROM documents
+         WHERE tender_id = ? AND doc_type = 'qa'
+         ORDER BY uploaded_at DESC LIMIT 1`,
+        tenderId,
+      );
+      if (qaDoc?.file_path) {
+        try {
+          await importQaXlsx(tenderId, qaDoc.file_path);
+          const recheck = await db.queryOne(
+            'SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?',
+            tenderId,
+          );
+          qaCount = Number(recheck?.c || 0);
+        } catch (e) {
+          // ignore — попадаем в ошибку ниже с исходным текстом
+        }
+      }
+    }
+    if (!qaCount) {
+      throw badRequest('Загрузите Q&A форму (.xlsx) на вкладке «Документация» — без переписки стадия 2 не запускается.');
     }
   }
 
@@ -251,7 +275,7 @@ async function resetStage(tenderId, stage) {
     await tx.queryRun('DELETE FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage >= ?', tenderId, stage);
 
     // Возвращаем статусы
-    for (let s = stage; s <= 4; s += 1) {
+    for (let s = stage; s <= 5; s += 1) {
       const status = s === stage ? 'open' : 'locked';
       await tx.queryRun(`UPDATE tender_stage_state SET stage${s}_status = ? WHERE tender_id = ?`, status, tenderId);
     }

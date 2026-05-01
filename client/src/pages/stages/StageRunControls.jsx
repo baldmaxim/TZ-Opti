@@ -1,11 +1,9 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useTenderStore } from '../../store/useTenderStore';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import ResetStageModal from '../../components/stages/ResetStageModal';
 
 export default function StageRunControls({ stage, status, hasSummary }) {
-  const tenderId = useTenderStore((s) => s.tenderId);
   const runStage = useTenderStore((s) => s.runStage);
   const finishStage = useTenderStore((s) => s.finishStage);
   const resetStage = useTenderStore((s) => s.resetStage);
@@ -13,7 +11,6 @@ export default function StageRunControls({ stage, status, hasSummary }) {
   const [busy, setBusy] = useState(false);
   const [resetTo, setResetTo] = useState(null);
   const [resetting, setResetting] = useState(false);
-  const navigate = useNavigate();
 
   const isReadOnly = status === 'finished';
   const isLocked = status === 'locked';
@@ -42,7 +39,9 @@ export default function StageRunControls({ stage, status, hasSummary }) {
     try {
       await resetStage(resetTo);
       toastSuccess(`Сброс стадий ${resetTo}+ выполнен`);
-      navigate(`/tenders/${tenderId}/stage/${resetTo}`);
+      // Не делаем navigate — после refreshStages в store панель этой же
+      // стадии переключится на status='open' и UI обновится сам, оставаясь
+      // в текущем view (новый Анализ-обзор с плитками).
     } catch (err) { toastError(err.message); }
     setResetting(false);
     setResetTo(null);

@@ -8,10 +8,13 @@ const {
 } = require('./shared/phrases');
 
 /**
- * Стадия 4: самоанализ ТЗ — скрытые работы / двусмыслия / срок.
+ * Стадия 5: самоанализ ТЗ — скрытые работы / двусмыслия / срок.
  * context = { tenderId, paragraphs, sourceDocumentId }
+ *
+ * Прим.: ранее эта стадия была под номером 4. После добавления Стадии 3
+ * «Существенные условия» сдвинута на 5.
  */
-function runStage4(context) {
+function runStage5(context) {
   const { paragraphs, sourceDocumentId } = context;
   const issues = [];
 
@@ -106,4 +109,4 @@ function makeIssue(p) {
   };
 }
 
-module.exports = { runStage4 };
+module.exports = { runStage5 };

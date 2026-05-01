@@ -236,6 +236,7 @@ CREATE TABLE IF NOT EXISTS tender_stage_state (
   stage2_status  TEXT DEFAULT 'locked',
   stage3_status  TEXT DEFAULT 'locked',
   stage4_status  TEXT DEFAULT 'locked',
+  stage5_status  TEXT DEFAULT 'locked',
   finished_at    TEXT,
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );

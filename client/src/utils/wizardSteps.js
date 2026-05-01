@@ -12,8 +12,9 @@ export const STEPS = [
   { id: 'qa', section: 'setup', label: 'Q&A форма', sub: 'qa' },
   { id: 'stage1', section: 'analysis', label: 'Стадия 1: ТЗ + Чек-лист + ВОР', shortLabel: 'Стадия 1', stage: 1 },
   { id: 'stage2', section: 'analysis', label: 'Стадия 2: Q&A → правки в ТЗ', shortLabel: 'Стадия 2', stage: 2 },
-  { id: 'stage3', section: 'analysis', label: 'Стадия 3: Типовые риски', shortLabel: 'Стадия 3', stage: 3 },
-  { id: 'stage4', section: 'analysis', label: 'Стадия 4: Самоанализ ТЗ', shortLabel: 'Стадия 4', stage: 4 },
+  { id: 'stage3', section: 'analysis', label: 'Стадия 3: Существенные условия', shortLabel: 'Стадия 3', stage: 3 },
+  { id: 'stage4', section: 'analysis', label: 'Стадия 4: Типовые риски', shortLabel: 'Стадия 4', stage: 4 },
+  { id: 'stage5', section: 'analysis', label: 'Стадия 5: Самоанализ ТЗ', shortLabel: 'Стадия 5', stage: 5 },
   { id: 'review', section: 'result', label: 'Рецензия', tail: 'review' },
   { id: 'export', section: 'result', label: 'Экспорт', tail: 'export' },
 ];
@@ -93,8 +94,18 @@ export function gateForStep(step, ctx) {
     }
     return { open: true };
   }
+  if (step.id === 'stage5') {
+    if (stageStatus(ctx, 4) !== 'finished') {
+      return {
+        open: false,
+        reason: 'Сначала завершите Стадию 4.',
+        cta: { label: 'Перейти к Стадии 4', stepId: 'stage4' },
+      };
+    }
+    return { open: true };
+  }
   if (step.section === 'result') {
-    const anyFinished = [1, 2, 3, 4].some((n) => stageStatus(ctx, n) === 'finished');
+    const anyFinished = [1, 2, 3, 4, 5].some((n) => stageStatus(ctx, n) === 'finished');
     if (!anyFinished) {
       return {
         open: false,

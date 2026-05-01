@@ -9,11 +9,11 @@ const SLOTS = [
   {
     type: 'tz',
     label: 'ТЗ',
-    hint: 'Техническое задание',
-    accept: '.docx,.doc,.pdf',
+    hint: 'Техническое задание (.docx + .md-копия для AI)',
+    accept: '.docx,.doc,.pdf,.md',
     badge: 'ТЗ',
     color: 'blue',
-    multiple: false,
+    multiple: true,
   },
   {
     type: 'pd_rd',
@@ -93,7 +93,22 @@ export default function DocumentsPage() {
     if (!list.length || !tenderId) return;
     setBusyType(slot.type);
     try {
-      if (slot.multiple) {
+      if (slot.type === 'tz') {
+        // ТЗ: умная замена по расширению — новый .docx вытесняет старый .docx,
+        // новый .md — старый .md; второй формат не трогается.
+        const before = docsFor('tz');
+        for (const f of list) {
+          const ext = f.name.toLowerCase().split('.').pop();
+          const existing = before.find(
+            (d) => d.name.toLowerCase().split('.').pop() === ext,
+          );
+          await api.uploadDocument(tenderId, f, 'tz', '');
+          if (existing) {
+            try { await api.deleteDocument(existing.id); } catch (_e) { /* swallow */ }
+          }
+        }
+        toastSuccess(`ТЗ: загружено`);
+      } else if (slot.multiple) {
         // ПД/РД: добавляем все файлы, ничего не удаляем
         for (const f of list) {
           await api.uploadDocument(tenderId, f, slot.type, '');

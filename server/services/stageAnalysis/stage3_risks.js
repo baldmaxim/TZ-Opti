@@ -11,9 +11,10 @@ const { listForTender } = require('../risksService');
  * + per-tender оверлей tender_risk_state (Да/Нет/auto).
  * Применяет только риски с effective === true.
  */
-function runStage3(context) {
+async function runStage3(context) {
   const { tenderId, paragraphs, sourceDocumentId } = context;
-  const risks = listForTender(tenderId).filter((r) => r.effective);
+  const allRisks = await listForTender(tenderId);
+  const risks = allRisks.filter((r) => r.effective);
   if (!risks.length) return [];
 
   const issues = [];

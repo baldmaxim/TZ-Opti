@@ -26,11 +26,7 @@ export const useTenderStore = create((set, get) => ({
     set({ loading: true });
     try {
       const tender = await api.getTender(id);
-      set({
-        tender,
-        loading: false,
-        hasQa: (tender?.counts?.qa_entries || 0) > 0,
-      });
+      set({ tender, loading: false });
     } catch (err) {
       toastError(err.message);
       set({ loading: false });
@@ -57,6 +53,7 @@ export const useTenderStore = create((set, get) => ({
       set({
         documents: items,
         hasTz: items.some((d) => d.doc_type === 'tz'),
+        hasQa: items.some((d) => d.doc_type === 'qa'),
       });
     } catch (err) {
       toastError(err.message);

@@ -1,0 +1,79 @@
+# devtools — локальный Claude-бридж для Стадии 1
+
+> ⚠️ **Dev-only. Не продакшен.** Это локальный костыль для разработки/демо, а не
+> часть production-архитектуры. Не коммитить как штатный путь LLM.
+
+## Что это
+
+`claudeBridge.js` — крошечный HTTP-сервер, который снаружи говорит на диалекте
+OpenAI (`POST /v1/chat/completions`), а внутри вызывает **Claude** через
+`@anthropic-ai/claude-agent-sdk`.
+
+Стадия 1 (`server/services/stageAnalysis/stage1_llm.js`) ходит в LLM через
+`llm/openaiClient.js`, которому нужен `OPENAI_API_KEY`. Ключа OpenAI нет. Бридж
+закрывает эту дыру **без единого API-ключа** — он переиспользует авторизацию
+**подписки Claude Code** пользователя (SDK сам берёт креды из `~/.claude`).
+`ANTHROPIC_API_KEY` намеренно стирается на старте, чтобы не уйти на платный API.
+
+```
+Стадия 1 → openaiClient (OPENAI_BASE_URL) → claudeBridge :4010
+         → Agent SDK query() → Claude Sonnet 4.6 (подписка Claude Code)
+```
+
+Существующий серверный код **не меняется**: `isConfigured()` в `openaiClient.js`
+проверяет лишь непустоту `OPENAI_API_KEY`, поэтому фиктивного значения хватает,
+а `OPENAI_BASE_URL` уводит все вызовы Стадии 1 на бридж.
+
+## Включение (`.env` в корне репозитория)
+
+```
+OPENAI_BASE_URL=http://127.0.0.1:4010/v1
+OPENAI_API_KEY=local-claude-bridge   # фиктивный — проходит гард, в Claude не уходит
+BRIDGE_MODEL=claude-sonnet-4-6
+BRIDGE_PORT=4010
+BRIDGE_TIMEOUT_MS=180000
+```
+
+`OPENAI_MODEL` НЕ задавать — бридж игнорирует поле `model` из запроса и всегда
+использует `BRIDGE_MODEL`.
+
+## Запуск
+
+`npm run dev` (в корне) теперь поднимает три процесса: `server`, `client`,
+`bridge`. Бридж стартует обычным `node` (не nodemon), чтобы переживать рестарты
+Express во время долгого вызова Claude.
+
+Отдельно: `npm run bridge`. Проверка: `GET http://127.0.0.1:4010/health`.
+
+## Структурированный вывод
+
+Claude не поддерживает OpenAI `strict` json_schema. Бридж: схема в промпт →
+извлечение JSON (срез ```` ``` ````-заборов + баланс-скан) → валидация `ajv`
+против переданной схемы → **один** repair-retry. Если и после ретрая ответ
+невалиден по схеме, но синтаксически JSON — отдаётся best-effort: downstream
+`fragmentMatcher` в `stage1_llm.js` всё равно отбрасывает находки без дословного
+совпадения фрагмента.
+
+## ⚠️ Безопасность временного Cloudflare-туннеля
+
+`cloudflared tunnel --url http://localhost:5173` даёт **публичный** URL. CORS на
+сервере открыт (`app.use(cors())`), API ходит к **реальной БД на чтение И
+запись**. Любой со ссылкой может создавать/удалять тендеры и менять данные.
+
+- Туннель — короткоживущий: поднять перед демо, Ctrl-C сразу после.
+- Не публиковать URL в каналах, переживающих сессию.
+- Для не-соло-использования — `cloudflared access` (Zero Trust, одноразовый PIN)
+  или Basic Auth.
+
+## Полный откат
+
+```
+git checkout client/vite.config.js
+# удалить строки OPENAI_*/BRIDGE_* из корневого .env
+# убрать "bridge" из package.json (скрипт + 3-й процесс в dev)
+rm -r server/devtools
+# Ctrl-C терминалов бриджа и cloudflared
+```
+
+Обычный `npm run dev` на localhost при невыставленном `TUNNEL` и отсутствии
+`OPENAI_*` остаётся нетронутым.

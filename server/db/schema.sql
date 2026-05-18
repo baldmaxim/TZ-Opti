@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS issues (
   suggested_redaction  TEXT,
   review_comment       TEXT,
   confidence           REAL DEFAULT 0.6,
+  section_path         TEXT,         -- путь заголовков из .md ТЗ (например: "1. Введение › 1.2 Объём работ")
   review_status        TEXT DEFAULT 'pending', -- 'pending' | 'accepted' | 'rejected' | 'edited'
   edited_redaction     TEXT,
   manually_edited      INTEGER DEFAULT 0,

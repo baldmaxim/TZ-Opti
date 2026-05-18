@@ -4,12 +4,13 @@ const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { badRequest } = require('../../utils/errors');
 const { getActiveTzText, getDocumentByType } = require('../tzActiveTextService');
-const { runStage1 } = require('./stage1_checklistVor');
+const { runStage1Llm } = require('./stage1_llm');
 const { runStage2 } = require('./stage2_qaDecisions');
 const { runStage3 } = require('./stage3_companyConditions');
 const { runStage4 } = require('./stage4_risks');
 const { runStage5 } = require('./stage5_selfAnalysis');
 const { importQaXlsx } = require('../qaImportService');
+const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 
 const STAGE_LABELS = {
   1: 'ТЗ + Чек-лист + ВОР',
@@ -63,16 +64,18 @@ async function unlockNextStage(tenderId, stage, runner = db) {
 }
 
 async function buildContextForStage(tenderId, stage) {
-  const { document: tzDoc, paragraphs, activeText, rawText } = await getActiveTzText(tenderId, stage);
-  if (!tzDoc) {
-    throw badRequest('В тендер не загружен документ типа «ТЗ» (doc_type=tz). Стадии анализа недоступны.');
+  const { document: tzDoc, paragraphs, blocks, activeText, rawText, missingMd } = await getActiveTzText(tenderId, stage);
+  if (missingMd || !tzDoc) {
+    throw badRequest('Загрузите .md-копию ТЗ в слот «ТЗ → Markdown» — анализ ведётся только по .md.');
   }
   const ctx = {
     tenderId,
     sourceDocumentId: tzDoc.id,
     paragraphs,
+    blocks,
     activeText,
     rawText,
+    rawMd: rawText,
   };
   if (stage === 1) {
     const vorDoc = await getDocumentByType(tenderId, 'vor');
@@ -90,7 +93,7 @@ async function buildContextForStage(tenderId, stage) {
 
 function runStageOrchestrator(stage, ctx) {
   switch (stage) {
-    case 1: return runStage1(ctx);
+    case 1: return runStage1Llm(ctx);
     case 2: return runStage2(ctx);
     case 3: return runStage3(ctx);
     case 4: return runStage4(ctx);
@@ -104,6 +107,9 @@ async function runStage(tenderId, stage) {
   if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
   if (!isStageRunnable(state, stage)) {
     throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
+  }
+  if (stage === 1 && !isOpenAiConfigured()) {
+    throw badRequest('OPENAI_API_KEY не настроен на сервере. Стадия 1 (LLM-агент GPT-4) недоступна.');
   }
   if (stage === 2) {
     const qaCountRow = await db.queryOne('SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?', tenderId);
@@ -178,9 +184,9 @@ async function runStage(tenderId, stage) {
           source_fragment, paragraph_index, char_start, char_end,
           problem_type, risk_category, criticality, price_impact, schedule_impact,
           basis, suggested_action, suggested_redaction, review_comment, confidence,
-          review_status, selected_for_export
+          section_path, review_status, selected_for_export
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1
         )
       `,
         newId(),
@@ -203,6 +209,7 @@ async function runStage(tenderId, stage) {
         issue.suggested_redaction || null,
         issue.review_comment || null,
         issue.confidence ?? 0.6,
+        issue.section_path || null,
       );
     }
 

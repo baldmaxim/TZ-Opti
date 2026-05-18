@@ -43,6 +43,10 @@ async function runMigration() {
   await ensureColumn('qa_entries', 'affects_contract', 'INTEGER DEFAULT 0');
   await ensureColumn('qa_entries', 'affects_schedule', 'INTEGER DEFAULT 0');
 
+  // section_path — для Стадии 1 (LLM-агент GPT-4o): путь заголовков из .md ТЗ.
+  // Сохраняется как «1. Введение › 1.2 Объём работ», NULL для старых rule-based записей.
+  await ensureColumn('issues', 'section_path', 'TEXT');
+
   // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
   // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,
   // 3 = locked (новая пустая стадия).

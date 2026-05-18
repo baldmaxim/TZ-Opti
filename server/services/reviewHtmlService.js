@@ -1,7 +1,7 @@
 'use strict';
 
 const db = require('../db/connection');
-const { getActiveTzText, getTzDocument, splitParagraphs } = require('./tzActiveTextService');
+const { getActiveTzText } = require('./tzActiveTextService');
 
 function escapeHtml(s) {
   return (s || '')
@@ -15,12 +15,16 @@ function escapeHtml(s) {
 async function renderReviewHtml(tenderId) {
   const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!tender) return '<h1>Тендер не найден</h1>';
-  const tzDoc = await getTzDocument(tenderId);
-  if (!tzDoc) {
-    return wrap(`<h1>${escapeHtml(tender.title)}</h1><p>В тендер не загружен документ типа «ТЗ».</p>`);
+  const tz = await getActiveTzText(tenderId, 99);
+  if (!tz.document) {
+    return wrap(
+      `<h1>${escapeHtml(tender.title)}</h1>`
+        + '<p>В слот ТЗ не загружена .md-копия. HTML-рецензия строится только по .md-варианту.</p>',
+      tender.title,
+    );
   }
 
-  const paragraphs = splitParagraphs(tzDoc.extracted_text || '');
+  const paragraphs = tz.blocks;
   const issues = await db.queryAll(
     `
       SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction

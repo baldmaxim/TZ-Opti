@@ -94,7 +94,9 @@ export default function ReviewPage() {
           <span className="text-xs text-gray-500">{STAGE_LABELS[cur.analysis_stage]}</span>
           <span className={`tag ${criticalityClass(cur.criticality)}`}>{CRITICALITY[cur.criticality]}</span>
           <span className="tag bg-blue-100 text-blue-800">{ACTIONS[cur.suggested_action] || cur.suggested_action}</span>
-          <span className="tag bg-gray-100 text-gray-700 text-xs">эвристика, {(cur.confidence * 100).toFixed(0)}%</span>
+          <span className="tag bg-gray-100 text-gray-700 text-xs">
+            {cur.analysis_stage === 1 ? 'GPT-4' : 'эвристика'}, {(cur.confidence * 100).toFixed(0)}%
+          </span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

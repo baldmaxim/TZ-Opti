@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
-import { toastError } from './useToastStore';
+import { toastError, toastSuccess } from './useToastStore';
+
+// Реестр активных опросов (вне store — реактивность не нужна), ключ
+// `${tenderId}:${stage}`. Стадия 1 считается в фоне на сервере; клиент
+// опрашивает /stages, пока status==='running'.
+const activePolls = new Set();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const useTenderStore = create((set, get) => ({
   tenderId: null,
@@ -39,8 +45,56 @@ export const useTenderStore = create((set, get) => ({
     try {
       const data = await api.getStages(id);
       set({ stages: data.stages, stageState: data.state });
+      // Авто-возобновление опроса: если стадия считается (например, страницу
+      // перезагрузили во время 15-мин анализа) — продолжаем следить.
+      for (const s of data.stages || []) {
+        if (data.state?.[`stage${s.stage}_status`] === 'running') {
+          get()._pollStage(s.stage);
+        }
+      }
     } catch (err) {
       toastError(err.message);
+    }
+  },
+
+  // Опрос статуса фоновой стадии до завершения. Идемпотентен (один опрос
+  // на tender:stage). Закрытие вкладки опрос прервёт, но сервер досчитает —
+  // при следующем заходе refreshStages возобновит слежение.
+  async _pollStage(n) {
+    const id = get().tenderId;
+    if (!id) return;
+    const key = `${id}:${n}`;
+    if (activePolls.has(key)) return;
+    activePolls.add(key);
+    try {
+      for (;;) {
+        await sleep(7000);
+        if (get().tenderId !== id) return; // ушли на другой тендер
+        let data;
+        try {
+          data = await api.getStages(id);
+        } catch {
+          continue; // временная сетевая ошибка — продолжаем опрос
+        }
+        set({ stages: data.stages, stageState: data.state });
+        const st = data.state?.[`stage${n}_status`];
+        if (st !== 'running') {
+          const info = (data.stages || []).find((s) => s.stage === n);
+          const sm = info && info.summary;
+          if (sm && sm.status === 'failed') {
+            toastError(
+              `Стадия ${n}: анализ не удался — ${
+                (sm.summary && sm.summary.error) || 'см. логи'
+              }. Повторите запуск.`,
+            );
+          } else {
+            toastSuccess(`Стадия ${n}: анализ завершён`);
+          }
+          return;
+        }
+      }
+    } finally {
+      activePolls.delete(key);
     }
   },
 
@@ -69,8 +123,11 @@ export const useTenderStore = create((set, get) => ({
   async runStage(n) {
     const id = get().tenderId;
     if (!id) return null;
+    // Сервер отвечает сразу (202 {status:'running'}) или кидает 400
+    // (уже идёт / стадия недоступна) — её обработает вызывающий.
     const result = await api.runStage(id, n);
-    await get().refreshStages();
+    await get().refreshStages(); // сервер уже выставил 'running'
+    get()._pollStage(n); // следим за фоновым прогоном (без await)
     return result;
   },
 

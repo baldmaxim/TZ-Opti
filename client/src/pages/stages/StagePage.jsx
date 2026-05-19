@@ -48,7 +48,10 @@ export default function StagePage() {
 
   const stageInfo = stages?.find((s) => s.stage === stage);
   const status = stageInfo?.status;
-  const summary = stageInfo?.summary?.summary;
+  // failed-run помечается status='failed' (его озвучит тост опроса); не
+  // показываем его как «сводку», иначе будет «Замечаний: undefined».
+  const runFailed = stageInfo?.summary?.status === 'failed';
+  const summary = runFailed ? null : stageInfo?.summary?.summary;
   const isReadOnly = status === 'finished';
 
   const runId = stageInfo?.summary?.id;

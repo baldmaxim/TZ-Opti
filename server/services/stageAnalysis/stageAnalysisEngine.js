@@ -125,6 +125,62 @@ async function runStage(tenderId, stage) {
   }
 }
 
+// Падение фонового прогона: фиксируем failed-run (его увидит опрос статуса
+// клиентом) и возвращаем статус стадии в исходное (re-runnable). Никогда не
+// бросаем — это финализатор фоновой задачи.
+async function recordFailedRun(tenderId, stage, prevStatus, err) {
+  const msg = (err && err.message) || 'неизвестная ошибка анализа';
+  try {
+    await db.queryRun(
+      `INSERT INTO analysis_runs (id, tender_id, stage, started_at, finished_at, status, summary)
+       VALUES (?, ?, ?, ?, ?, 'failed', ?)`,
+      newId(),
+      tenderId,
+      stage,
+      nowIso(),
+      nowIso(),
+      JSON.stringify({ stage, label: STAGE_LABELS[stage], failed: true, error: msg }),
+    );
+    await setStageStatus(tenderId, stage, prevStatus);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(`[stageEngine] recordFailedRun сбой: ${e.message}`);
+  }
+}
+
+// Фоновый запуск: быстрые проверки синхронно (гард/доступность → понятная
+// 400 сразу), затем стадия считается В ФОНЕ сколько нужно. Клиент опрашивает
+// статус (state.stageN_status) и узнаёт исход по последнему analysis_run.
+// Это снимает «Failed to fetch»/таймаут: нет висящего HTTP-запроса.
+async function startStageBackground(tenderId, stage) {
+  const key = `${tenderId}:${stage}`;
+  if (RUNNING_STAGES.has(key)) {
+    throw badRequest(
+      `Анализ стадии ${stage} уже выполняется. Дождитесь завершения — ` +
+        `портал сам покажет результат (вкладку можно закрыть).`,
+    );
+  }
+  const state = await getStageState(tenderId);
+  if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
+  if (!isStageRunnable(state, stage)) {
+    throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
+  }
+  const prevStatus = state[`stage${stage}_status`];
+  RUNNING_STAGES.add(key);
+  await setStageStatus(tenderId, stage, 'running');
+  // Не ждём: ответ уходит сразу, анализ идёт в фоне.
+  (async () => {
+    try {
+      await runStageInner(tenderId, stage);
+    } catch (e) {
+      await recordFailedRun(tenderId, stage, prevStatus, e);
+    } finally {
+      RUNNING_STAGES.delete(key);
+    }
+  })();
+  return { status: 'running' };
+}
+
 async function runStageInner(tenderId, stage) {
   const state = await getStageState(tenderId);
   if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
@@ -355,6 +411,7 @@ module.exports = {
   STAGE_LABELS,
   getStageState,
   runStage,
+  startStageBackground,
   finishStage,
   resetStage,
   listStageIssues,

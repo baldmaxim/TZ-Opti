@@ -15,6 +15,7 @@ export default function StageRunControls({ stage, status, hasSummary }) {
 
   const isReadOnly = status === 'finished';
   const isLocked = status === 'locked';
+  const isRunning = status === 'running'; // фоновый анализ идёт
 
   // Стадия 1 (LLM-агент GPT-4) запускается только когда в слот ТЗ загружена .md-копия.
   const hasTzMd = documents.some((d) => d.doc_type === 'tz' && /\.md$/i.test(d.name || ''));
@@ -24,7 +25,8 @@ export default function StageRunControls({ stage, status, hasSummary }) {
     setBusy(true);
     try {
       await runStage(stage);
-      toastSuccess('Анализ выполнен');
+      // Анализ идёт в фоне — успех/ошибку покажет опрос по завершении.
+      toastSuccess('Анализ запущен — идёт в фоне. Можно закрыть вкладку, результат появится сам.');
     } catch (err) { toastError(err.message); }
     setBusy(false);
   };
@@ -59,21 +61,30 @@ export default function StageRunControls({ stage, status, hasSummary }) {
           <button
             className="btn btn-primary"
             onClick={onRun}
-            disabled={busy || stage1Blocked}
+            disabled={busy || stage1Blocked || isRunning}
             title={stage1Blocked ? 'Загрузите .md-копию ТЗ — анализ ведётся только по .md' : undefined}
           >
-            {busy ? 'Анализ…' : (hasSummary ? 'Перезапустить анализ' : 'Запустить анализ')}
+            {isRunning
+              ? 'Анализ идёт…'
+              : busy
+                ? 'Запуск…'
+                : (hasSummary ? 'Перезапустить анализ' : 'Запустить анализ')}
           </button>
+        )}
+        {isRunning && (
+          <span className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1 self-center">
+            Идёт фоновый анализ (Стадия 1 — до ~15 мин). Можно закрыть вкладку — результат появится сам.
+          </span>
         )}
         {stage1Blocked && (
           <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 self-center">
             Загрузите .md-копию ТЗ для запуска
           </span>
         )}
-        {!isReadOnly && !isLocked && hasSummary && (
+        {!isReadOnly && !isLocked && hasSummary && !isRunning && (
           <button className="btn btn-secondary" onClick={onFinish} disabled={busy}>Завершить стадию</button>
         )}
-        {!isReadOnly && !isLocked && hasSummary && (
+        {!isReadOnly && !isLocked && hasSummary && !isRunning && (
           <button
             className="btn btn-secondary text-red-600"
             onClick={() => setResetTo(stage)}

@@ -16,11 +16,17 @@
 //              response_format:{ json_schema:{ name, schema, strict } } }
 //   ответ   : { choices:[{ message:{ content: "<JSON-строка>" } }] }
 //
+// Диагностика: каждый запрос пишет полный дамп (subtype, наличие
+// structured_output, num_turns, ошибки, сырой ответ Claude целиком) в
+// server/devtools/.debug/ — каталог под .gitignore, dev-only.
+//
 // НЕ продакшен-код. Подробности и предупреждения — server/devtools/README.md.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 // .env лежит в корне репозитория (см. server/app.js). Бридж — отдельный
 // процесс, поэтому грузит .env сам.
@@ -35,8 +41,16 @@ const Ajv = require('ajv');
 
 const PORT = Number(process.env.BRIDGE_PORT) || 4010;
 const MODEL = (process.env.BRIDGE_MODEL || 'claude-sonnet-4-6').trim();
-const TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS) || 180000;
+// 10 мин/вызов: анализ ТЗ ~50-160K токенов через Agent SDK идёт минутами
+// (~6 мин на тендере 311). 180с было мало → таймауты. См. README.
+const TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS) || 600000;
 const MAX_BODY = 32 * 1024 * 1024; // полный ТЗ + ВОР + чек-лист
+
+// Диагностические дампы (dev-only, под .gitignore).
+const DEBUG_DIR = path.join(__dirname, '.debug');
+const DEBUG_REL = 'server/devtools/.debug'; // путь для сообщений пользователю
+const MAX_RAW = 200 * 1024; // потолок на сырой ответ Claude в дампе
+const KEEP_DUMPS = 50; // держим последние N дампов, остальное чистим
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 
@@ -45,6 +59,59 @@ let _sdkPromise = null;
 function loadSdk() {
   if (!_sdkPromise) _sdkPromise = import('@anthropic-ai/claude-agent-sdk');
   return _sdkPromise;
+}
+
+// ── Диагностический дамп ─────────────────────────────────────────────────────
+// Пишем полную картину запроса в .debug/ + лёгкий prune (последние KEEP_DUMPS).
+// Любой сбой записи проглатываем — диагностика не должна ломать запрос.
+function writeDebugDump(fileName, record) {
+  try {
+    fs.mkdirSync(DEBUG_DIR, { recursive: true });
+    fs.writeFileSync(
+      path.join(DEBUG_DIR, fileName),
+      JSON.stringify(record, null, 2),
+      'utf8',
+    );
+    const files = fs
+      .readdirSync(DEBUG_DIR)
+      .filter((f) => f.startsWith('bridge-') && f.endsWith('.json'))
+      .sort();
+    for (const stale of files.slice(0, Math.max(0, files.length - KEEP_DUMPS))) {
+      try {
+        fs.unlinkSync(path.join(DEBUG_DIR, stale));
+      } catch (_) {
+        /* не критично */
+      }
+    }
+  } catch (e) {
+    console.error('[claudeBridge] не удалось записать дамп:', e.message);
+  }
+}
+
+// ── Санитайзер JSON Schema для нативного structured output ────────────────────
+// Anthropic structured output строг к форме схемы: union-типы вида
+// type:['string','null'] заставляют харнесс игнорировать outputFormat и вернуть
+// прозу-резюме вместо структуры. Схлопываем union в первый не-null примитив.
+// enum / minimum / maximum / additionalProperties:false оставляем как есть —
+// они принимаются по отдельности, реальный блокер именно union-type.
+// Чистая функция: возвращает глубокую копию, оригинал (для ajv) не трогаем.
+function sanitizeSchemaForStructuredOutput(schema) {
+  if (Array.isArray(schema)) {
+    return schema.map((s) => sanitizeSchemaForStructuredOutput(s));
+  }
+  if (!schema || typeof schema !== 'object') return schema;
+  const out = {};
+  for (const [key, val] of Object.entries(schema)) {
+    if (key === 'type' && Array.isArray(val)) {
+      const primitive = val.find((t) => t !== 'null');
+      out[key] = primitive || 'string';
+    } else if (val && typeof val === 'object') {
+      out[key] = sanitizeSchemaForStructuredOutput(val);
+    } else {
+      out[key] = val;
+    }
+  }
+  return out;
 }
 
 // ── Извлечение JSON из ответа модели ─────────────────────────────────────────
@@ -88,10 +155,11 @@ function extractJson(text) {
 // нативный structured output SDK (options.outputFormat) — модель форсируется
 // под JSON Schema, результат приходит готовым объектом в result.structured_output
 // (надёжнее, чем парсить свободный текст).
-// Возвращает { obj } (структурированный объект) либо { text } (сырой текст).
+// Возвращает { obj?, text?, subtype, structuredOutputPresent, numTurns, errors }.
+// На не-success subtype / таймаут / отсутствие result — бросает Error с
+// прикреплёнными .subtype/.numTurns/.errors (вызывающий их логирует).
 async function callClaude(systemPrompt, userPrompt, schema) {
   const { query } = await loadSdk();
-  const os = require('os');
 
   const options = {
     model: MODEL,
@@ -102,7 +170,13 @@ async function callClaude(systemPrompt, userPrompt, schema) {
     allowDangerouslySkipPermissions: true,
     cwd: os.tmpdir(),
   };
-  if (schema) options.outputFormat = { type: 'json_schema', schema };
+  // В нативный outputFormat отдаём САНИТАЙЗЕННУЮ схему (без union-типов).
+  if (schema) {
+    options.outputFormat = {
+      type: 'json_schema',
+      schema: sanitizeSchemaForStructuredOutput(schema),
+    };
+  }
 
   const iterator = query({ prompt: userPrompt, options });
 
@@ -117,17 +191,37 @@ async function callClaude(systemPrompt, userPrompt, schema) {
   const run = (async () => {
     for await (const msg of iterator) {
       if (msg && msg.type === 'result') {
+        const numTurns = typeof msg.num_turns === 'number' ? msg.num_turns : null;
         if (msg.subtype === 'success') {
-          if (msg.structured_output && typeof msg.structured_output === 'object') {
-            return { obj: msg.structured_output };
+          const hasObj =
+            msg.structured_output && typeof msg.structured_output === 'object';
+          if (hasObj) {
+            return {
+              obj: msg.structured_output,
+              subtype: 'success',
+              structuredOutputPresent: true,
+              numTurns,
+              errors: [],
+            };
           }
-          return { text: msg.result };
+          return {
+            text: msg.result,
+            subtype: 'success',
+            structuredOutputPresent: false,
+            numTurns,
+            errors: [],
+          };
         }
-        throw new Error(
+        const errs = msg.errors || [];
+        const e = new Error(
           `Claude вернул ошибку (${msg.subtype}): ${
-            (msg.errors || []).join('; ') || 'нет деталей'
+            errs.join('; ') || 'нет деталей'
           }`,
         );
+        e.subtype = msg.subtype;
+        e.numTurns = numTurns;
+        e.errors = errs;
+        throw e;
       }
     }
     throw new Error('Claude завершился без result-сообщения');
@@ -143,75 +237,143 @@ async function callClaude(systemPrompt, userPrompt, schema) {
   }
 }
 
-// ── Структурированный вывод: схема-в-промпт + валидация + 1 repair-retry ──────
-async function getSchemaConformingJson(systemContent, userContent, schema) {
+// ── Структурированный вывод: outputFormat → repair → noOutputFormat → fail ────
+// Каждая попытка пишет запись в debugRecord.attempts и безусловно логируется.
+async function getSchemaConformingJson(systemContent, userContent, schema, debugRecord) {
   const sys = `${systemContent}
 
 Отвечай ТОЛЬКО структурированными данными по заданной JSON Schema — без пояснений и текста вокруг.`;
 
-  const validate = schema ? ajv.compile(schema) : null;
-
-  // Попытка 1 — нативный structured output SDK (если есть схема)
-  const r1 = await callClaude(sys, userContent, schema);
-
-  if (r1.obj) {
-    // structured_output от SDK уже форсирован под схему — отдаём как есть
-    // (downstream fragmentMatcher в stage1_llm.js всё равно фильтрует мусор).
-    if (validate && !validate(r1.obj)) {
-      console.warn(
-        `[claudeBridge] structured_output не идеален по схеме: ${ajv.errorsText(
-          validate.errors,
-        )} — отдаю best-effort`,
-      );
+  // Валидируем против ОРИГИНАЛЬНОЙ (строгой) схемы; outputFormat получает
+  // санитайзенную внутри callClaude.
+  let validate = null;
+  if (schema) {
+    try {
+      validate = ajv.compile(schema);
+      debugRecord.schema.ajvCompileOk = true;
+    } catch (e) {
+      debugRecord.schema.ajvCompileOk = false;
+      debugRecord.schema.ajvCompileError = e.message;
+      console.warn(`[claudeBridge] ajv.compile упал: ${e.message} — без валидации`);
     }
-    return r1.obj;
   }
 
-  // SDK вернул свободный текст — пытаемся извлечь JSON
-  let obj;
-  let parseErr = null;
-  try {
-    obj = extractJson(r1.text);
-  } catch (e) {
-    parseErr = e;
+  // Один прогон callClaude с диагностикой. Никогда не бросает — нормализует
+  // успех/ошибку в { obj?, text?, subtype, ... } и пушит attempts[].
+  async function attempt(phase, sysPrompt, userPrompt, schemaArg) {
+    let r = null;
+    let err = null;
+    try {
+      r = await callClaude(sysPrompt, userPrompt, schemaArg);
+    } catch (e) {
+      err = e;
+    }
+    const subtype = r ? r.subtype : (err && err.subtype) || 'error';
+    const structuredOutputPresent = !!(r && r.obj);
+    const numTurns = r ? r.numTurns : (err && err.numTurns) != null ? err.numTurns : null;
+    const errors = r
+      ? r.errors
+      : (err && err.errors && err.errors.length ? err.errors : [err && err.message].filter(Boolean));
+    const rawText = r && r.text != null ? String(r.text) : '';
+    debugRecord.attempts.push({
+      phase,
+      subtype,
+      structuredOutputPresent,
+      numTurns,
+      errors,
+      rawLen: rawText.length,
+      rawFull: structuredOutputPresent
+        ? '[structured_output]'
+        : rawText
+          ? rawText.slice(0, MAX_RAW)
+          : err
+            ? `[error] ${err.message}`
+            : '',
+    });
+    console.log(
+      `[claudeBridge] attempt=${phase} subtype=${subtype} structured_output=${structuredOutputPresent} num_turns=${numTurns} raw_len=${rawText.length}`,
+    );
+    return { r, err };
   }
-  if (obj && (!validate || validate(obj))) return obj;
 
-  // Repair-retry со схемой-в-промпте + причиной
-  const reason = parseErr
-    ? `JSON не распарсился: ${parseErr.message}`
-    : `JSON не прошёл схему: ${ajv.errorsText(validate.errors)}`;
+  // Пытаемся достать валидный объект из результата попытки.
+  function pick(res) {
+    if (!res.r) return null;
+    if (res.r.obj) {
+      if (validate && !validate(res.r.obj)) {
+        console.warn(
+          `[claudeBridge] structured_output не идеален по схеме: ${ajv.errorsText(
+            validate.errors,
+          )} — отдаю best-effort`,
+        );
+      }
+      return res.r.obj; // structured_output форсирован под схему — best-effort
+    }
+    try {
+      const obj = extractJson(res.r.text);
+      if (!validate || validate(obj)) return obj;
+    } catch (_) {
+      /* нет JSON в тексте — идём дальше */
+    }
+    return null;
+  }
+
+  // Попытка 1 — нативный structured output (санитайзенная схема).
+  const a1 = await attempt('outputFormat', sys, userContent, schema);
+  const p1 = pick(a1);
+  if (p1) return p1;
+
+  // Таймаут — не ретраим: repair/noOutputFormat (с тем же/бо́льшим промптом)
+  // тоже упрутся в дедлайн, только утроят ожидание. Fail-fast с понятным
+  // сообщением.
+  if (a1.err && /не ответил за/.test(a1.err.message)) {
+    throw new Error(
+      `ИИ не успел проанализировать ТЗ за ${Math.round(
+        TIMEOUT_MS / 60000,
+      )} мин (промпт ~${debugRecord.promptSizes.approxTokens} токенов — это долго). ` +
+        `Полный отчёт: ${DEBUG_REL}/${debugRecord.file}. Повторите запуск.`,
+    );
+  }
+
+  // Попытка 2 — repair: схема-в-промпте + причина + предыдущий ответ.
+  const reason = a1.err
+    ? `вызов упал: ${a1.err.message}`
+    : 'ответ без валидного JSON';
   console.warn(
-    `[claudeBridge] попытка 1 без валидного JSON (${reason}); raw[0..500]=${String(
-      r1.text,
-    ).slice(0, 500)}`,
+    `[claudeBridge] попытка 1 без JSON (${reason}); полный дамп: ${DEBUG_REL}/${debugRecord.file}`,
   );
-
   const repairUser = `${userContent}
 
 --- JSON SCHEMA (ответ обязан ей соответствовать) ---
 ${JSON.stringify(schema)}
 
 --- ТВОЙ ПРЕДЫДУЩИЙ ОТВЕТ (НЕВАЛИДЕН) ---
-${String(r1.text).slice(0, 8000)}
+${String(a1.r && a1.r.text ? a1.r.text : '').slice(0, 8000)}
 
 --- ПРОБЛЕМА ---
 ${reason}
 
 Верни ИСПРАВЛЕННЫЙ JSON-объект строго по схеме. Только JSON.`;
 
-  const r2 = await callClaude(sys, repairUser, schema);
-  if (r2.obj) return r2.obj;
-  obj = extractJson(r2.text); // если и тут не парсится — бросаем наверх
+  const a2 = await attempt('repair', sys, repairUser, schema);
+  const p2 = pick(a2);
+  if (p2) return p2;
 
-  if (validate && !validate(obj)) {
-    console.warn(
-      `[claudeBridge] ответ не прошёл схему даже после repair: ${ajv.errorsText(
-        validate.errors,
-      )} — отдаю best-effort`,
-    );
-  }
-  return obj;
+  // Попытка 3 — без outputFormat: убираем structured-output-машинерию SDK,
+  // просим чистый JSON в промпте, тащим баланс-сканом.
+  const sysPureJson = `${systemContent}
+
+Ответь ОДНИМ JSON-объектом по схеме. Никакого текста до или после. Без markdown-заборов.`;
+  const a3 = await attempt('noOutputFormat', sysPureJson, repairUser, null);
+  const p3 = pick(a3);
+  if (p3) return p3;
+
+  // Всё провалилось — fail-loud с понятным actionable-сообщением.
+  const origSubtype = (debugRecord.attempts[0] && debugRecord.attempts[0].subtype) || 'error';
+  throw new Error(
+    `ИИ не смог проанализировать ТЗ (ответ без JSON, subtype=${origSubtype}). ` +
+      `Полный отчёт: ${DEBUG_REL}/${debugRecord.file}. Нажмите «Запустить» ещё раз.`,
+  );
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
@@ -262,6 +424,24 @@ const server = http.createServer(async (req, res) => {
   }
 
   const t0 = Date.now();
+  const reqId =
+    Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const dumpName = `bridge-${new Date()
+    .toISOString()
+    .replace(/[:.]/g, '-')}-${reqId}.json`;
+  const debugRecord = {
+    ts: new Date().toISOString(),
+    reqId,
+    model: MODEL,
+    elapsedMs: 0,
+    file: dumpName,
+    promptSizes: { systemChars: 0, userChars: 0, approxTokens: 0 },
+    schema: { present: false, ajvCompileOk: null, ajvCompileError: null },
+    attempts: [],
+    outcome: null,
+    finalError: null,
+  };
+
   try {
     const body = await readBody(req);
     const reqJson = JSON.parse(body);
@@ -271,24 +451,41 @@ const server = http.createServer(async (req, res) => {
     const userContent = messages.find((m) => m.role === 'user')?.content || '';
     const schema = reqJson.response_format?.json_schema?.schema || null;
 
+    debugRecord.promptSizes = {
+      systemChars: systemContent.length,
+      userChars: userContent.length,
+      approxTokens: Math.round((systemContent.length + userContent.length) / 2.5),
+    };
+    debugRecord.schema.present = !!schema;
+
     if (!userContent) {
+      debugRecord.outcome = 'error';
+      debugRecord.finalError = 'в запросе нет user-сообщения';
+      debugRecord.elapsedMs = Date.now() - t0;
+      writeDebugDump(dumpName, debugRecord);
       sendError(res, 'в запросе нет user-сообщения');
       return;
     }
 
     console.log(
-      `[claudeBridge] входящий промпт: system=${systemContent.length} ch, user=${userContent.length} ch, ~${Math.round(
-        (systemContent.length + userContent.length) / 2.5,
-      )} токенов (грубо)`,
+      `[claudeBridge] входящий промпт: system=${systemContent.length} ch, user=${userContent.length} ch, ~${debugRecord.promptSizes.approxTokens} токенов (грубо)`,
     );
 
-    const resultObj = await getSchemaConformingJson(systemContent, userContent, schema);
+    const resultObj = await getSchemaConformingJson(
+      systemContent,
+      userContent,
+      schema,
+      debugRecord,
+    );
 
     const findingsCount = Array.isArray(resultObj?.findings)
       ? resultObj.findings.length
       : '—';
+    debugRecord.outcome = 'success';
+    debugRecord.elapsedMs = Date.now() - t0;
+    writeDebugDump(dumpName, debugRecord);
     console.log(
-      `[claudeBridge] ${MODEL} ok за ${Date.now() - t0} мс, findings=${findingsCount}`,
+      `[claudeBridge] ${MODEL} ok за ${debugRecord.elapsedMs} мс, findings=${findingsCount}`,
     );
 
     // Точная OpenAI-форма, которую читает openaiClient.js:65-74
@@ -307,19 +504,27 @@ const server = http.createServer(async (req, res) => {
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
   } catch (err) {
-    console.error(`[claudeBridge] ошибка за ${Date.now() - t0} мс:`, err.message);
-    sendError(res, err.message || 'неизвестная ошибка бриджа');
+    debugRecord.outcome = 'error';
+    debugRecord.finalError = err.message || 'неизвестная ошибка бриджа';
+    debugRecord.elapsedMs = Date.now() - t0;
+    writeDebugDump(dumpName, debugRecord);
+    console.error(
+      `[claudeBridge] ошибка за ${debugRecord.elapsedMs} мс: ${debugRecord.finalError}; дамп: ${DEBUG_REL}/${dumpName}`,
+    );
+    sendError(res, debugRecord.finalError);
   }
 });
 
-// Длинный анализ ТЗ Claude (Sonnet 4.6 ~20–60с). Не даём HTTP-серверу
-// самому оборвать запрос раньше внутреннего дедлайна.
-server.requestTimeout = 240000;
+// Анализ ~110-160K токенов идёт минутами. HTTP-сервер не должен рвать запрос
+// раньше внутреннего дедлайна (TIMEOUT_MS) — иначе openai SDK видит обрыв
+// соединения и делает скрытый ретрай (дублирующиеся параллельные запросы).
+// Держим запас НАД TIMEOUT_MS.
+server.requestTimeout = TIMEOUT_MS + 60000;
 server.headersTimeout = 65000;
-server.keepAliveTimeout = 240000;
+server.keepAliveTimeout = TIMEOUT_MS + 60000;
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(
-    `[claudeBridge] listening on http://127.0.0.1:${PORT}  model=${MODEL}  timeout=${TIMEOUT_MS}ms`,
+    `[claudeBridge] listening on http://127.0.0.1:${PORT}  model=${MODEL}  timeout=${TIMEOUT_MS}ms  debug=${DEBUG_REL}/`,
   );
 });

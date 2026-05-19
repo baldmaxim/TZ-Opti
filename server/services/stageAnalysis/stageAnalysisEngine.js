@@ -153,6 +153,7 @@ async function runStage(tenderId, stage) {
     issues_count: issues.length,
     by_criticality: countBy(issues, 'criticality'),
     by_problem_type: countBy(issues, 'problem_type'),
+    notes: issues.analysisNote || null,
   };
 
   await db.transaction(async (tx) => {

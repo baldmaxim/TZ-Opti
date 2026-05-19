@@ -6,17 +6,19 @@
 // Контракт: (context) → Issue[]
 // context = {
 //   tenderId, sourceDocumentId,
-//   blocks,        // плоский массив блоков из parseMdToBlocks (с section_path)
-//   rawMd,         // исходный текст .md (передаём агенту целиком)
+//   blocks,        // плоский массив блоков из parseMdToBlocks (с section_path);
+//                  // ТЗ для модели рендерим из блоков посегментно (rawMd не шлём)
 //   vorText,       // текст ВОР (plain или CSV)
 //   checklist,     // строки work_checklist_items: { work_name, in_calc, ... }
 // }
 //
 // Поток:
-// 1. Сформировать system + user сообщения с контекстом.
-// 2. Вызвать chat.completions со structured output (JSON schema).
-// 3. Получить findings[] — список фрагментов ТЗ с описаниями неучтённых работ.
-// 4. Для каждого finding — найти точную позицию во входных блоках через locateInBlocks.
+// 1. Разбить блоки ТЗ на сегменты под бюджет контекста (крупные ТЗ не влезают
+//    в стандартное окно Claude целиком — см. project_stage1_context_limit).
+// 2. Для КАЖДОГО сегмента: system + user (сегмент ТЗ + полный ВОР + чек-лист),
+//    вызов chat.completions со structured output (JSON schema).
+// 3. Слить findings[] всех сегментов → дедуп.
+// 4. Для каждого finding — найти точную позицию во ВСЕХ блоках через locateInBlocks.
 // 5. Дропнуть finding'и, чьи фрагменты не находятся в исходном тексте (не выдумываем позицию).
 // 6. Построить Issue[] для записи в БД.
 
@@ -60,8 +62,6 @@ const RESPONSE_SCHEMA = {
           'criticality',
           'suggested_action',
           'basis',
-          'suggested_redaction',
-          'review_comment',
           'confidence',
         ],
         properties: {
@@ -87,12 +87,12 @@ const RESPONSE_SCHEMA = {
             description: 'Рекомендация агента; инженер может выбрать своё действие в UI.',
           },
           suggested_redaction: {
-            type: ['string', 'null'],
-            description: 'Если suggested_action=replace — текст замены. Иначе null.',
+            type: 'string',
+            description: 'Если suggested_action=replace — текст замены. Иначе пустая строка.',
           },
           review_comment: {
-            type: ['string', 'null'],
-            description: 'Краткий комментарий инженеру (на русском). Может быть null.',
+            type: 'string',
+            description: 'Краткий комментарий инженеру (на русском). Может быть пустым.',
           },
           basis: {
             type: 'string',
@@ -123,13 +123,134 @@ function formatChecklist(checklist) {
   return lines.join('\n');
 }
 
-function buildUserMessage({ rawMd, vorText, checklist }) {
-  const md = rawMd && rawMd.trim() ? rawMd : '(пусто)';
+// ── Компактизация ВОР (только наименования) ──────────────────────────────────
+// xlsx-экстракт ВОР («Форма КП СМР») — многостраничная таблица на ~30 колонок,
+// сотни строк, ~440K симв. Для Стадии 1 нужно одно: СПИСОК НАИМЕНОВАНИЙ работ
+// (учтена работа в КП или нет) — не цены, объёмы, ед.изм., примечания, повторы
+// по корпусам. Поэтому из каждой строки берём ТОЛЬКО самую длинную осмысленную
+// ячейку (это и есть наименование работы), плюс:
+//   • пустые ячейки/строки, кавычки, схлопывание пробелов;
+//   • ячейки без букв (цены, объёмы, %, даты, номера колонок);
+//   • служебные блоки «Фиксированная/Переменная часть (… руб …)»;
+//   • ссылки на ПД («ПД-00232130-…», «лист(ы) …»);
+//   • строки, где осталась лишь ед.изм. / слишком короткий огрызок;
+//   • ГЛОБАЛЬНЫЙ дедуп (КП повторяет одну работу по корпусам 36/39/40).
+// Заточено под формат «Форма КП СМР». Сырой extracted_text в БД не трогаем —
+// компактим только для LLM. См. project_stage1_context_limit.
+const VOR_MIN_NAME_LEN = 5; // короче — это не наименование работы
+const VOR_UNIT_TOKENS = new Set([
+  'м2', 'м3', 'м', 'м.п', 'м.п.', 'пог.м', 'мп', 'шт', 'шт.', 'к-с', 'к/с',
+  'компл', 'компл.', 'т', 'кг', 'чел', '%', 'маш-ч', 'маш.-ч', 'м.куб',
+  'м.кв', 'ед', 'ед.', 'усл', 'усл.',
+]);
+const VOR_HAS_LETTER = /[A-Za-zА-Яа-яЁё]/;
+const VOR_BOILERPLATE = /(Фиксированная|Переменная)\s+часть\s*(\([^)]*\))?/gi;
+const VOR_PD_REF = /^(ПД[\s-]?\d|лист[ыа]?\b|листы\b)/i;
+
+function cleanVorCell(raw) {
+  let c = raw.trim().replace(/^"+|"+$/g, '').replace(/\s+/g, ' ').trim();
+  c = c.replace(VOR_BOILERPLATE, '').replace(/\s+/g, ' ').trim();
+  if (!c) return '';
+  if (VOR_PD_REF.test(c)) return '';
+  if (!VOR_HAS_LETTER.test(c)) return ''; // цены, объёмы, %, даты, № колонок
+  return c;
+}
+
+function compactVor(text) {
+  if (!text) return '';
+  const out = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith('#')) {
+      out.push(t.replace(/\s+/g, ' '));
+      continue;
+    }
+    const cells = (t.includes('|') ? t.split('|') : [t])
+      .map(cleanVorCell)
+      .filter((c) => c.length);
+    if (!cells.length) continue;
+    // Берём только самую длинную ячейку строки — это наименование работы
+    // (ед.изм. короткие, примечания короче полного описания работы).
+    const name = cells.reduce((a, b) => (b.length > a.length ? b : a), '');
+    if (name.length < VOR_MIN_NAME_LEN) continue;
+    if (VOR_UNIT_TOKENS.has(name.toLowerCase())) continue;
+    out.push(name);
+  }
+  // Глобальный дедуп с сохранением порядка первого вхождения.
+  const seen = new Set();
+  const dedup = [];
+  for (const l of out) {
+    if (seen.has(l)) continue;
+    seen.add(l);
+    dedup.push(l);
+  }
+  return dedup.join('\n');
+}
+
+// ── Сегментация ТЗ под бюджет контекста ──────────────────────────────────────
+// Крупные ТЗ (~574K симв ≈ ~230K токенов) переполняют стандартное окно Claude
+// (см. project_stage1_context_limit). Режем блоки ТЗ на части так, чтобы
+// каждый запрос (сегмент + полный ВОР + чек-лист + каркас) влезал в бюджет.
+// ВОР и чек-лист идут с КАЖДЫМ сегментом — без них модель не оценит покрытие.
+// 400K симв ≈ ~160K токенов — с запасом под 200K стандартного контекста
+// (переполнение 1M было при ~574K симв / ~230K токенов). Чем больше бюджет,
+// тем меньше сегментов → меньше вызовов Claude и цельнее анализ ТЗ.
+const CHAR_BUDGET = Number(process.env.STAGE1_CHAR_BUDGET) || 400000;
+const PER_BLOCK_OVERHEAD = 8; // заголовок-разметка + переводы строк
+const SCAFFOLD_OVERHEAD = 600; // фиксированный текст шаблона user-сообщения
+// Порог скорости: ВОР даже после «только наименований» бывает крупным
+// (Символ: 440K→112K). Большой ВОР в каждом вызове = анализ не успевает за
+// таймаут. Если компакт-ВОР > порога — авто-уход в запасной режим (только
+// чек-лист, быстро и надёжно, с пометкой ⚠). Настраивается env.
+const VOR_MAX_CHARS = Number(process.env.STAGE1_VOR_MAX_CHARS) || 90000;
+
+// Рендер сегмента: заголовки как markdown (#), прочее — дословный block.text
+// (fragment в ответе модели должен дословно совпасть с block.text — это нужно
+// locateInBlocks). Дословность не нарушаем.
+function renderSegment(segBlocks) {
+  const parts = [];
+  for (const b of segBlocks) {
+    if (b.type === 'heading') {
+      parts.push(`${'#'.repeat(Math.max(1, b.level || 1))} ${b.text}`);
+    } else {
+      parts.push(b.text);
+    }
+  }
+  return parts.join('\n');
+}
+
+// Жадная упаковка блоков в сегменты под tzBudget. Блок крупнее бюджета
+// уходит в собственный (одиночный) сегмент — дробить его нельзя без потери
+// дословности; крайний случай отловит fail-loud бриджа с понятной ошибкой.
+function segmentBlocks(blocks, tzBudget) {
+  const segments = [];
+  let cur = [];
+  let curLen = 0;
+  for (const b of blocks) {
+    const blockLen = (b.text || '').length + PER_BLOCK_OVERHEAD;
+    if (cur.length && curLen + blockLen > tzBudget) {
+      segments.push(cur);
+      cur = [];
+      curLen = 0;
+    }
+    cur.push(b);
+    curLen += blockLen;
+  }
+  if (cur.length) segments.push(cur);
+  return segments;
+}
+
+function buildSegmentUserMessage({ tzText, vorText, checklist, partIdx, partTotal }) {
   const vor = vorText && vorText.trim() ? vorText : '(ВОР не загружен или пуст)';
+  const partNote =
+    partTotal > 1
+      ? `## ТЗ — часть ${partIdx}/${partTotal} (markdown)\n\nЭто ФРАГМЕНТ ТЗ. Анализируй только приведённый ниже текст; остальные части ТЗ обрабатываются отдельно.`
+      : '## ТЗ (markdown)';
   return [
-    '## ТЗ (markdown)',
+    partNote,
     '',
-    md,
+    tzText && tzText.trim() ? tzText : '(пусто)',
     '',
     '---',
     '## ВОР',
@@ -142,7 +263,7 @@ function buildUserMessage({ rawMd, vorText, checklist }) {
     formatChecklist(checklist),
     '',
     '---',
-    'Найди в ТЗ фрагменты, описывающие работы, не учтённые в ВОР и в чек-листе как in_calc=1.',
+    'Найди в приведённой части ТЗ фрагменты, описывающие работы, не учтённые в ВОР и в чек-листе как in_calc=1.',
     'Верни их списком в JSON по схеме (поле findings).',
   ].join('\n');
 }
@@ -222,7 +343,7 @@ function dedupe(findings) {
 }
 
 async function runStage1Llm(context) {
-  const { sourceDocumentId, blocks, rawMd, vorText, checklist } = context;
+  const { sourceDocumentId, blocks, vorText, checklist } = context;
 
   if (!Array.isArray(blocks) || !blocks.length) {
     const err = new Error('ТЗ.md пуст или не парсится. Загрузите корректный .md в слот ТЗ.');
@@ -231,20 +352,98 @@ async function runStage1Llm(context) {
   }
 
   const systemMsg = SYSTEM_PROMPT;
-  const userMsg = buildUserMessage({ rawMd: rawMd || '', vorText: vorText || '', checklist: checklist || [] });
+  const vorRaw = vorText || '';
+  const vor = compactVor(vorRaw);
+  const cl = checklist || [];
+  const clText = formatChecklist(cl);
+  // eslint-disable-next-line no-console
+  console.log(`[stage1_llm] ВОР: ${vorRaw.length}ch → компакт ${vor.length}ch`);
+
+  // ВОР + чек-лист + каркас идут с каждым сегментом — вычитаем их из бюджета.
+  // Если ВОР даже после глубокой чистки не оставляет места под ТЗ — запасной
+  // режим: ВОР пропускаем, сверяем ТЗ только с чек-листом (решение владельца).
+  const VOR_SKIPPED_MARKER =
+    '(ВОР пропущен — слишком большой для бесплатного контекста; сверяй только с чек-листом)';
+  const overheadWith = (v) =>
+    v.length + clText.length + SCAFFOLD_OVERHEAD + systemMsg.length;
+
+  let vorForLlm = vor;
+  let analysisNote = null;
+  // Запасной режим, если: (а) ВОР слишком большой даже после чистки (анализ
+  // не успеет за таймаут) ИЛИ (б) ВОР не оставляет места под ТЗ в бюджете.
+  const vorTooBig = vor.length > VOR_MAX_CHARS;
+  let tzBudget = CHAR_BUDGET - overheadWith(vorForLlm);
+  if (vorTooBig || tzBudget <= 0) {
+    vorForLlm = VOR_SKIPPED_MARKER;
+    analysisNote = vorTooBig
+      ? `ВОР пропущен: после чистки до наименований ${vor.length} симв — это ` +
+        `слишком много, анализ с ВОР не успевает. Стадия 1 свела ТЗ только с ` +
+        `чек-листом компании; кросс-сверка с ВОР не выполнялась.`
+      : `ВОР пропущен: после глубокой чистки ${vor.length} симв — не влезает в ` +
+        `бесплатный контекст вместе с ТЗ. Стадия 1 свела ТЗ только с чек-листом ` +
+        `компании; кросс-сверка с ВОР не выполнялась.`;
+    tzBudget = CHAR_BUDGET - overheadWith(vorForLlm);
+    // eslint-disable-next-line no-console
+    console.warn(`[stage1_llm] ЗАПАСНОЙ РЕЖИМ: ${analysisNote}`);
+  }
+  if (tzBudget <= 0) {
+    const err = new Error(
+      'Чек-лист сам по себе превышает бюджет контекста — даже без ВОР ТЗ не влезает. ' +
+        'Нужно сократить чек-лист (отдельная задача).',
+    );
+    err.status = 400;
+    throw err;
+  }
+
+  const segments = segmentBlocks(blocks, tzBudget);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[stage1_llm] model=${getModel()} blocks=${blocks.length} segments=${segments.length} tzBudget=${tzBudget}ch vorSkipped=${!!analysisNote}`,
+  );
 
   const startedAt = Date.now();
-  const json = await chatJson({
-    system: systemMsg,
-    user: userMsg,
-    jsonSchema: RESPONSE_SCHEMA,
-    schemaName: 'stage1_findings',
-  });
+  const allFindings = [];
+  for (let i = 0; i < segments.length; i += 1) {
+    const tzText = renderSegment(segments[i]);
+    const userMsg = buildSegmentUserMessage({
+      tzText,
+      vorText: vorForLlm,
+      checklist: cl,
+      partIdx: i + 1,
+      partTotal: segments.length,
+    });
+    let json;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      json = await chatJson({
+        system: systemMsg,
+        user: userMsg,
+        jsonSchema: RESPONSE_SCHEMA,
+        schemaName: 'stage1_findings',
+      });
+    } catch (e) {
+      // fail-loud, с указанием какой части ТЗ не хватило (см. решение владельца)
+      const err = new Error(
+        `Стадия 1: часть ${i + 1}/${segments.length} — ${e.message}`,
+      );
+      err.status = e.status || 502;
+      err.cause = e;
+      throw err;
+    }
+    const segFindings = Array.isArray(json?.findings) ? json.findings : [];
+    // eslint-disable-next-line no-console
+    console.log(
+      `[stage1_llm] часть ${i + 1}/${segments.length}: tz=${tzText.length}ch findings=${segFindings.length}`,
+    );
+    allFindings.push(...segFindings);
+  }
   const elapsedMs = Date.now() - startedAt;
   // eslint-disable-next-line no-console
-  console.log(`[stage1_llm] model=${getModel()} elapsed=${elapsedMs}ms findings=${(json?.findings || []).length}`);
+  console.log(
+    `[stage1_llm] все ${segments.length} частей за ${elapsedMs}ms, findings(сырых)=${allFindings.length}`,
+  );
 
-  const findings = dedupe(Array.isArray(json?.findings) ? json.findings : []);
+  const findings = dedupe(allFindings);
 
   const issues = [];
   let dropped = 0;
@@ -263,6 +462,9 @@ async function runStage1Llm(context) {
     console.log(`[stage1_llm] dropped ${dropped} findings out of ${findings.length}`);
   }
 
+  // Запасной режим: помечаем результат, чтобы движок положил note в summary,
+  // а UI показал пользователю, что ВОР не сверялся.
+  if (analysisNote) issues.analysisNote = analysisNote;
   return issues;
 }
 

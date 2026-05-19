@@ -27,7 +27,17 @@ function getClient() {
     throw err;
   }
   const baseURL = (process.env.OPENAI_BASE_URL || '').trim() || undefined;
-  _client = new OpenAI({ apiKey, baseURL });
+  // Анализ через локальный бридж идёт минутами. Таймаут SDK должен быть ВЫШЕ
+  // BRIDGE_TIMEOUT_MS, иначе SDK оборвёт соединение раньше бриджа и сделает
+  // скрытый ретрай (дублирующиеся параллельные запросы). maxRetries:0 — на
+  // 4xx бридж не ретраим (медленный сбой не множим).
+  const bridgeTimeout = Number(process.env.BRIDGE_TIMEOUT_MS) || 600000;
+  _client = new OpenAI({
+    apiKey,
+    baseURL,
+    timeout: bridgeTimeout + 120000,
+    maxRetries: 0,
+  });
   return _client;
 }
 

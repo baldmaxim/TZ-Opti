@@ -21,3 +21,6 @@ memory/
 
 # scratch для чтения xlsx-фикстур (локальный)
 .tmp_xlsx/
+
+# диагностические дампы dev-бриджа (локальный, dev-only)
+server/devtools/.debug/

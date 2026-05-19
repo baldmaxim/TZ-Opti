@@ -173,10 +173,14 @@ function compactVor(text) {
 // (см. project_stage1_context_limit). Режем блоки ТЗ на части так, чтобы
 // каждый запрос (сегмент + полный ВОР + чек-лист + каркас) влезал в бюджет.
 // ВОР и чек-лист идут с КАЖДЫМ сегментом — без них модель не оценит покрытие.
-// 400K симв ≈ ~160K токенов — с запасом под 200K стандартного контекста
-// (переполнение 1M было при ~574K симв / ~230K токенов). Чем больше бюджет,
-// тем меньше сегментов → меньше вызовов Claude и цельнее анализ ТЗ.
+// ПРОВЕРЕНО ЭМПИРИЧЕСКИ (тендер 311): подписка Claude Code НЕ держит
+// параллель — конкурентные вызовы троттлятся, голодают и ловят таймаут;
+// мелкие сегменты последовательно тоже медленнее (больше вызовов, фикс.
+// оверхед на каждый). Поэтому дефолт — один большой сегмент + sequential
+// (CONCURRENCY=1) = единственный надёжный/самый быстрый путь (~6-7 мин).
+// Параллель оставлена за env на случай платного API в будущем.
 const CHAR_BUDGET = Number(process.env.STAGE1_CHAR_BUDGET) || 400000;
+const CONCURRENCY = Math.max(1, Number(process.env.STAGE1_CONCURRENCY) || 1);
 const PER_BLOCK_OVERHEAD = 8; // заголовок-разметка + переводы строк
 const SCAFFOLD_OVERHEAD = 600; // фиксированный текст шаблона user-сообщения
 // Порог скорости: ВОР даже после «только наименований» бывает крупным
@@ -198,6 +202,20 @@ function renderSegment(segBlocks) {
     }
   }
   return parts.join('\n');
+}
+
+// Стандартные НЕ-рабочие разделы ТЗ — прямо в анти-критериях промта (никогда
+// не флагаются). Не шлём их в LLM: 0 влияния на находки, меньше токенов.
+// Узкие паттерны заголовков, чтобы случайно не срезать раздел с работами.
+const VOR_BOILERPLATE_HEADING =
+  /^\s*(?:\d+[.\d\s]*)?(термины и определения|определения и сокращения|термины,?\s*определения и сокращения|(?:список|перечень|обозначения и)\s+сокращени\w*|нормативн\w+\s+(?:ссылк\w+|документ\w+)|перечень нормативн\w+|реквизиты сторон|(?:юридические )?адреса и реквизиты|содержание|оглавление)\s*$/i;
+
+function isBoilerplateBlock(b) {
+  if (b && b.type === 'heading' && VOR_BOILERPLATE_HEADING.test(b.text || '')) {
+    return true;
+  }
+  const sp = (b && b.section_path) || [];
+  return sp.some((h) => VOR_BOILERPLATE_HEADING.test(h || ''));
 }
 
 // Жадная упаковка блоков в сегменты под tzBudget. Блок крупнее бюджета
@@ -376,48 +394,68 @@ async function runStage1Llm(context) {
     throw err;
   }
 
-  const segments = segmentBlocks(blocks, tzBudget);
+  // Анализируем без стандартных НЕ-рабочих разделов (меньше токенов, 0
+  // влияния на находки). Локализация фрагментов идёт по ПОЛНЫМ blocks ниже —
+  // их не трогаем.
+  const analyzedBlocks = blocks.filter((b) => !isBoilerplateBlock(b));
+  const droppedBoiler = blocks.length - analyzedBlocks.length;
+  const segments = segmentBlocks(
+    analyzedBlocks.length ? analyzedBlocks : blocks,
+    tzBudget,
+  );
   // eslint-disable-next-line no-console
   console.log(
-    `[stage1_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} segments=${segments.length} tzBudget=${tzBudget}ch vorSkipped=${!!analysisNote}`,
+    `[stage1_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} (boilerplate-=${droppedBoiler}) segments=${segments.length} concurrency=${CONCURRENCY} tzBudget=${tzBudget}ch vorSkipped=${!!analysisNote}`,
   );
 
   const startedAt = Date.now();
-  const allFindings = [];
-  for (let i = 0; i < segments.length; i += 1) {
-    const tzText = renderSegment(segments[i]);
-    const userMsg = buildSegmentUserMessage({
-      tzText,
-      vorText: vorForLlm,
-      checklist: cl,
-      partIdx: i + 1,
-      partTotal: segments.length,
-    });
-    let json;
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      json = await chatJson({
-        system: systemMsg,
-        user: userMsg,
-        jsonSchema: RESPONSE_SCHEMA,
-        schemaName: 'stage1_findings',
+  // Параллельный запуск волнами по CONCURRENCY (супер-линейная кривая: мелкие
+  // вызовы параллельно сильно быстрее одного большого). Та же модель/промт/
+  // охват → качество не меняется. fail-loud сохранён (номер части в ошибке).
+  const results = new Array(segments.length);
+  for (let start = 0; start < segments.length; start += CONCURRENCY) {
+    const wave = [];
+    for (let i = start; i < Math.min(start + CONCURRENCY, segments.length); i += 1) {
+      const idx = i;
+      const tzText = renderSegment(segments[idx]);
+      const userMsg = buildSegmentUserMessage({
+        tzText,
+        vorText: vorForLlm,
+        checklist: cl,
+        partIdx: idx + 1,
+        partTotal: segments.length,
       });
-    } catch (e) {
-      // fail-loud, с указанием какой части ТЗ не хватило (см. решение владельца)
-      const err = new Error(
-        `Стадия 1: часть ${i + 1}/${segments.length} — ${e.message}`,
+      wave.push(
+        chatJson({
+          system: systemMsg,
+          user: userMsg,
+          jsonSchema: RESPONSE_SCHEMA,
+          schemaName: 'stage1_findings',
+        })
+          .then((json) => {
+            const segFindings = Array.isArray(json?.findings) ? json.findings : [];
+            // eslint-disable-next-line no-console
+            console.log(
+              `[stage1_llm] часть ${idx + 1}/${segments.length}: tz=${tzText.length}ch findings=${segFindings.length}`,
+            );
+            results[idx] = segFindings;
+          })
+          .catch((e) => {
+            // fail-loud с указанием части (решение владельца)
+            const err = new Error(
+              `Стадия 1: часть ${idx + 1}/${segments.length} — ${e.message}`,
+            );
+            err.status = e.status || 502;
+            err.cause = e;
+            throw err;
+          }),
       );
-      err.status = e.status || 502;
-      err.cause = e;
-      throw err;
     }
-    const segFindings = Array.isArray(json?.findings) ? json.findings : [];
-    // eslint-disable-next-line no-console
-    console.log(
-      `[stage1_llm] часть ${i + 1}/${segments.length}: tz=${tzText.length}ch findings=${segFindings.length}`,
-    );
-    allFindings.push(...segFindings);
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.all(wave);
   }
+  const allFindings = [];
+  for (const r of results) if (r) allFindings.push(...r);
   const elapsedMs = Date.now() - startedAt;
   // eslint-disable-next-line no-console
   console.log(

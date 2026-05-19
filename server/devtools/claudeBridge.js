@@ -164,12 +164,20 @@ async function callClaude(systemPrompt, userPrompt, schema) {
   const options = {
     model: MODEL,
     systemPrompt,
-    maxTurns: 4,
+    // 2 раунда достаточно (успешный ответ = num_turns=2, инструментов нет);
+    // 4 лишь тратили время.
+    maxTurns: 2,
     allowedTools: [],
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
     cwd: os.tmpdir(),
   };
+  // Опционально (по умолчанию ВЫКЛ — поведение/качество не меняются):
+  // отключить extended thinking для ускорения. Принимать только после
+  // A/B-сравнения с эталоном (см. план/README).
+  if (/^(1|true|on|yes)$/i.test(String(process.env.STAGE1_FAST_THINKING || ''))) {
+    options.thinking = { type: 'disabled' };
+  }
   // В нативный outputFormat отдаём САНИТАЙЗЕННУЮ схему (без union-типов).
   if (schema) {
     options.outputFormat = {

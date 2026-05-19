@@ -41,9 +41,10 @@ const Ajv = require('ajv');
 
 const PORT = Number(process.env.BRIDGE_PORT) || 4010;
 const MODEL = (process.env.BRIDGE_MODEL || 'claude-sonnet-4-6').trim();
-// 10 мин/вызов: анализ ТЗ ~50-160K токенов через Agent SDK идёт минутами
-// (~6 мин на тендере 311). 180с было мало → таймауты. См. README.
-const TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS) || 600000;
+// 15 мин/вызов: один НЕпараллельный прогон Стадии 1 на тендере 311 — ~8 мин
+// (489с), но с вариативностью LLM близко к 10-мин лимиту → 600000 иногда не
+// хватало. 900000 даёт надёжный запас. См. README / project_stage1_context_limit.
+const TIMEOUT_MS = Number(process.env.BRIDGE_TIMEOUT_MS) || 900000;
 const MAX_BODY = 32 * 1024 * 1024; // полный ТЗ + ВОР + чек-лист
 
 // Диагностические дампы (dev-only, под .gitignore).

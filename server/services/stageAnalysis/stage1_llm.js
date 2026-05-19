@@ -307,13 +307,18 @@ function locateInBlocks(blocks, fragment) {
 
 function buildIssue({ sourceDocumentId, finding, located }) {
   const sectionPath = (finding.section_path || '').trim() || (located?.block?.section_path?.join(' › ') || null);
+  // Короткая дословная цитата модели нужна лишь чтобы НАЙТИ нужный пункт ТЗ.
+  // В замечание кладём ВЕСЬ пункт (блок mdParser = пункт/абзац), а не огрызок,
+  // — иначе теряется смысл и контекст. char-диапазон тоже на весь пункт,
+  // чтобы экспорт (review.md / .docx) метил пункт целиком и согласованно.
+  const blockText = located?.block?.text || null;
   return {
     source_document_id: sourceDocumentId || null,
     source_clause: located?.block ? `п. ${located.block.index + 1}` : null,
-    source_fragment: located?.fragment || finding.fragment,
+    source_fragment: blockText || located?.fragment || finding.fragment,
     paragraph_index: located?.block?.index ?? null,
-    char_start: located?.char_start ?? null,
-    char_end: located?.char_end ?? null,
+    char_start: blockText ? 0 : (located?.char_start ?? null),
+    char_end: blockText ? blockText.length : (located?.char_end ?? null),
     problem_type: finding.problem_type || null,
     risk_category: 'покрытие_расчёта',
     criticality: finding.criticality || 'medium',
@@ -487,4 +492,5 @@ async function runStage1Llm(context) {
   return issues;
 }
 
-module.exports = { runStage1Llm };
+// buildIssue/locateInBlocks экспортируются для офлайн-тестов (детерминированы).
+module.exports = { runStage1Llm, buildIssue, locateInBlocks };

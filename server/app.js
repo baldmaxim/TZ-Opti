@@ -73,9 +73,11 @@ app.use(errorHandler);
     // выше всей цепочки. headersTimeout > keepAliveTimeout (рекомендация
     // Node), server.timeout=0 — без сокет-таймаута простоя (данные не
     // текут до самого ответа).
-    server.requestTimeout = 900000;
-    server.keepAliveTimeout = 905000;
-    server.headersTimeout = 910000;
+    // Цепочка таймаутов (каждый внешний > внутреннего):
+    // бридж 900000 < openai-клиент 1020000 < сервер 1140000 < Vite-прокси.
+    server.requestTimeout = 1140000;
+    server.keepAliveTimeout = 1145000;
+    server.headersTimeout = 1150000;
     server.timeout = 0;
   } catch (err) {
     console.error('[tz-opti-server] startup failed:', err);

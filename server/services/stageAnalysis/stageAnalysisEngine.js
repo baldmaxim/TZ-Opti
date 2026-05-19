@@ -102,7 +102,30 @@ function runStageOrchestrator(stage, ctx) {
   }
 }
 
+// Подписка Claude Code НЕ держит параллель: одновременные прогоны Стадии 1
+// душат друг друга и ловят таймаут (см. project_stage1_context_limit).
+// Гард: один прогон на (tender,stage) за раз — второй клик/запрос получает
+// понятную ошибку, а не сабботирует идущий анализ.
+const RUNNING_STAGES = new Set();
+
 async function runStage(tenderId, stage) {
+  const key = `${tenderId}:${stage}`;
+  if (RUNNING_STAGES.has(key)) {
+    throw badRequest(
+      `Анализ стадии ${stage} уже выполняется. Дождитесь завершения ` +
+        `(Стадия 1 — до ~15 минут) и не запускайте повторно: параллельные ` +
+        `прогоны мешают друг другу и приводят к таймауту.`,
+    );
+  }
+  RUNNING_STAGES.add(key);
+  try {
+    return await runStageInner(tenderId, stage);
+  } finally {
+    RUNNING_STAGES.delete(key);
+  }
+}
+
+async function runStageInner(tenderId, stage) {
   const state = await getStageState(tenderId);
   if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
   if (!isStageRunnable(state, stage)) {

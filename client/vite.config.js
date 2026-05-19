@@ -19,8 +19,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:4000',
         changeOrigin: true,
-        timeout: 900000,
-        proxyTimeout: 900000,
+        timeout: 1140000,
+        proxyTimeout: 1140000,
       },
     },
     // Случайный сабдомен *.trycloudflare.com → суффикс-матч (безопаснее, чем

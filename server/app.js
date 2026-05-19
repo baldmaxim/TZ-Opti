@@ -64,9 +64,19 @@ app.use(errorHandler);
   try {
     await runMigration();
     await runSeedIfEmpty();
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`[tz-opti-server] listening on http://localhost:${PORT}`);
     });
+    // Стадия 1 — синхронный POST на ~6-7 мин (worst ~12: бридж 600с +
+    // запас openai-клиента). Node по умолчанию рвёт запрос на 5-й мин
+    // (requestTimeout=300000) → в браузере «Failed to fetch». Поднимаем
+    // выше всей цепочки. headersTimeout > keepAliveTimeout (рекомендация
+    // Node), server.timeout=0 — без сокет-таймаута простоя (данные не
+    // текут до самого ответа).
+    server.requestTimeout = 900000;
+    server.keepAliveTimeout = 905000;
+    server.headersTimeout = 910000;
+    server.timeout = 0;
   } catch (err) {
     console.error('[tz-opti-server] startup failed:', err);
     process.exit(1);

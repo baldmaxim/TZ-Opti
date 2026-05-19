@@ -13,13 +13,14 @@ export default defineConfig({
     host: TUNNEL ? true : 'localhost',
     proxy: {
       // Объектная форма + большие тайм-ауты: синхронный запуск Стадии 1
-      // (анализ ТЗ Claude) занимает 20–60с — дефолтный сокет-таймаут прокси
-      // оборвал бы запрос.
+      // (анализ ТЗ Claude) занимает ~6-7 мин (worst ~12) — дефолтный
+      // сокет-таймаут прокси оборвал бы запрос («Failed to fetch»).
+      // Согласовано с server.requestTimeout в server/app.js (900000).
       '/api': {
         target: 'http://localhost:4000',
         changeOrigin: true,
-        timeout: 600000,
-        proxyTimeout: 600000,
+        timeout: 900000,
+        proxyTimeout: 900000,
       },
     },
     // Случайный сабдомен *.trycloudflare.com → суффикс-матч (безопаснее, чем

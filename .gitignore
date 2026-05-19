@@ -16,6 +16,7 @@ server/db/*.db-wal
 
 # локальные настройки и memory Claude Code
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 memory.md
 memory/
 

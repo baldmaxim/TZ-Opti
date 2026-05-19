@@ -24,27 +24,7 @@
 
 const { findInParagraphs } = require('./shared/fragmentMatcher');
 const { chatJson, getModel } = require('./llm/openaiClient');
-
-const SYSTEM_PROMPT = [
-  'Ты — инженер тендерного отдела строительной компании.',
-  'На входе у тебя: техническое задание (ТЗ) в формате Markdown с заголовками,',
-  'ведомость объёмов работ (ВОР) и чек-лист работ компании (наименование + флаг in_calc:',
-  '1 — учтена в КП, 0 — не учтена, null — статус не определён).',
-  '',
-  'Твоя задача — найти в ТЗ фрагменты, описывающие работы, которые НЕ УЧТЕНЫ',
-  'ни в ВОР, ни в чек-листе как in_calc=1. То есть работа описана в ТЗ, но',
-  'наша компания её в КП/ВОР не положила — это риск выполнения без оплаты.',
-  '',
-  'Правила:',
-  '• Возвращай ТОЛЬКО реально упомянутые в ТЗ работы. Не выдумывай.',
-  '• Поле fragment должно быть ДОСЛОВНОЙ цитатой из ТЗ (несколько слов или короткое предложение).',
-  '• section_path — путь заголовков, в котором найден фрагмент, например «1. Введение › 1.2 Объём работ».',
-  '• Если работа есть в ТЗ И уже учтена (в ВОР или в чек-листе с in_calc=1) — пропускай.',
-  '• Если работа есть в ТЗ И в чек-листе с in_calc=0 → criticality=high, problem_type=не_учтено_в_кп.',
-  '• Если работа есть в ТЗ И в чек-листе с in_calc=null → criticality=medium, problem_type=статус_не_определён.',
-  '• Если работа есть в ТЗ И отсутствует в ВОР и в чек-листе → criticality=high, problem_type=не_в_обоих.',
-  '• Только то, что выглядит как работа/услуга подрядчика. Пропускай общие положения, реквизиты, описания объекта.',
-].join('\n');
+const { buildSystemPrompt, resolveVariant } = require('./stage1Prompts');
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -351,7 +331,8 @@ async function runStage1Llm(context) {
     throw err;
   }
 
-  const systemMsg = SYSTEM_PROMPT;
+  const promptVariant = resolveVariant();
+  const systemMsg = buildSystemPrompt(promptVariant);
   const vorRaw = vorText || '';
   const vor = compactVor(vorRaw);
   const cl = checklist || [];
@@ -398,7 +379,7 @@ async function runStage1Llm(context) {
   const segments = segmentBlocks(blocks, tzBudget);
   // eslint-disable-next-line no-console
   console.log(
-    `[stage1_llm] model=${getModel()} blocks=${blocks.length} segments=${segments.length} tzBudget=${tzBudget}ch vorSkipped=${!!analysisNote}`,
+    `[stage1_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} segments=${segments.length} tzBudget=${tzBudget}ch vorSkipped=${!!analysisNote}`,
   );
 
   const startedAt = Date.now();

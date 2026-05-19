@@ -37,7 +37,9 @@ BRIDGE_TIMEOUT_MS=600000   # анализ ТЗ через Agent SDK идёт м�
 Доп. тюнинг Стадии 1 (опционально, есть разумные дефолты в коде):
 `STAGE1_CHAR_BUDGET` (400000 — бюджет промпта; больше → меньше сегментов ТЗ),
 `STAGE1_VOR_MAX_CHARS` (90000 — если компакт-ВОР больше, авто-уход в запасной
-режим «только чек-лист» с пометкой в summary).
+режим «только чек-лист» с пометкой в summary),
+`STAGE1_PROMPT_VARIANT` (`structural` дефолт | `strict` | `full` — режим
+системного промта агента; см. server/services/stageAnalysis/stage1Prompts.js).
 
 `OPENAI_MODEL` НЕ задавать — бридж игнорирует поле `model` из запроса и всегда
 использует `BRIDGE_MODEL`.

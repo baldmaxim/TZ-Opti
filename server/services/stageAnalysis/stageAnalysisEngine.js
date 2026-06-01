@@ -5,10 +5,10 @@ const { newId, nowIso } = require('../../utils/ids');
 const { badRequest } = require('../../utils/errors');
 const { getActiveTzText, getDocumentByType } = require('../tzActiveTextService');
 const { runStage1Llm } = require('./stage1_llm');
-const { runStage2 } = require('./stage2_qaDecisions');
-const { runStage3 } = require('./stage3_companyConditions');
-const { runStage4 } = require('./stage4_risks');
-const { runStage5 } = require('./stage5_selfAnalysis');
+const { runStage2Llm } = require('./stage2_llm');
+const { runStage3Llm } = require('./stage3_llm');
+const { runStage4Llm } = require('./stage4_llm');
+const { runStage5Llm } = require('./stage5_llm');
 const { importQaXlsx } = require('../qaImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 
@@ -84,6 +84,12 @@ async function buildContextForStage(tenderId, stage) {
   }
   if (stage === 2) {
     ctx.qaEntries = await db.queryAll('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC', tenderId);
+    // Таблица характеристик — второй справочник принятого (значения, принятые
+    // компанией в расчёт). Стадия 2 сверяет ТЗ и с Q&A-решениями, и с ней.
+    ctx.characteristics = await db.queryAll(
+      'SELECT * FROM characteristics WHERE tender_id = ? ORDER BY sort_order ASC, name ASC',
+      tenderId,
+    );
   }
   // Стадия 3 (Существенные условия) и Стадия 4 (Типовые риски) сами загружают
   // нужные данные из БД (company_conditions / risks_state) — отдельный
@@ -94,10 +100,10 @@ async function buildContextForStage(tenderId, stage) {
 function runStageOrchestrator(stage, ctx) {
   switch (stage) {
     case 1: return runStage1Llm(ctx);
-    case 2: return runStage2(ctx);
-    case 3: return runStage3(ctx);
-    case 4: return runStage4(ctx);
-    case 5: return runStage5(ctx);
+    case 2: return runStage2Llm(ctx);
+    case 3: return runStage3Llm(ctx);
+    case 4: return runStage4Llm(ctx);
+    case 5: return runStage5Llm(ctx);
     default: throw badRequest('Допустимы стадии 1..5');
   }
 }
@@ -187,8 +193,9 @@ async function runStageInner(tenderId, stage) {
   if (!isStageRunnable(state, stage)) {
     throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
   }
-  if (stage === 1 && !isOpenAiConfigured()) {
-    throw badRequest('OPENAI_API_KEY не настроен на сервере. Стадия 1 (LLM-агент GPT-4) недоступна.');
+  // Все стадии 1–5 — LLM-агенты, требуют настроенного ключа.
+  if (!isOpenAiConfigured()) {
+    throw badRequest(`OPENAI_API_KEY не настроен на сервере. Стадия ${stage} (LLM-агент) недоступна.`);
   }
   if (stage === 2) {
     const qaCountRow = await db.queryOne('SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?', tenderId);

@@ -1,30 +1,20 @@
 'use strict';
 
-// Стадия 1 — LLM-агент (OpenAI GPT-4o).
-// Заменяет rule-based runStage1 (сохранён в stage1_checklistVor.js как fallback/история).
+// Стадия 1 — LLM-агент: ТЗ vs ВОР/чек-лист (что ГП не выполняет по объёму).
+// Generic-каркас (сегментация/locate/весь-пункт/дедуп/раннер) — в
+// shared/llmStage.js. Здесь только Stage-1-специфика: компактизация ВОР,
+// чек-лист, запасной режим (ВОР пропущен), схема и сборка user-сообщения.
 //
-// Контракт: (context) → Issue[]
-// context = {
-//   tenderId, sourceDocumentId,
-//   blocks,        // плоский массив блоков из parseMdToBlocks (с section_path);
-//                  // ТЗ для модели рендерим из блоков посегментно (rawMd не шлём)
-//   vorText,       // текст ВОР (plain или CSV)
-//   checklist,     // строки work_checklist_items: { work_name, in_calc, ... }
-// }
-//
-// Поток:
-// 1. Разбить блоки ТЗ на сегменты под бюджет контекста (крупные ТЗ не влезают
-//    в стандартное окно Claude целиком — см. project_stage1_context_limit).
-// 2. Для КАЖДОГО сегмента: system + user (сегмент ТЗ + полный ВОР + чек-лист),
-//    вызов chat.completions со structured output (JSON schema).
-// 3. Слить findings[] всех сегментов → дедуп.
-// 4. Для каждого finding — найти точную позицию во ВСЕХ блоках через locateInBlocks.
-// 5. Дропнуть finding'и, чьи фрагменты не находятся в исходном тексте (не выдумываем позицию).
-// 6. Построить Issue[] для записи в БД.
+// Контракт: (context{ sourceDocumentId, blocks, vorText, checklist }) → Issue[]
 
-const { findInParagraphs } = require('./shared/fragmentMatcher');
-const { chatJson, getModel } = require('./llm/openaiClient');
+const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage1Prompts');
+const {
+  renderSegment,
+  runLlmStage,
+  buildIssue,
+  locateInBlocks,
+} = require('./shared/llmStage');
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -104,20 +94,11 @@ function formatChecklist(checklist) {
 }
 
 // ── Компактизация ВОР (только наименования) ──────────────────────────────────
-// xlsx-экстракт ВОР («Форма КП СМР») — многостраничная таблица на ~30 колонок,
-// сотни строк, ~440K симв. Для Стадии 1 нужно одно: СПИСОК НАИМЕНОВАНИЙ работ
-// (учтена работа в КП или нет) — не цены, объёмы, ед.изм., примечания, повторы
-// по корпусам. Поэтому из каждой строки берём ТОЛЬКО самую длинную осмысленную
-// ячейку (это и есть наименование работы), плюс:
-//   • пустые ячейки/строки, кавычки, схлопывание пробелов;
-//   • ячейки без букв (цены, объёмы, %, даты, номера колонок);
-//   • служебные блоки «Фиксированная/Переменная часть (… руб …)»;
-//   • ссылки на ПД («ПД-00232130-…», «лист(ы) …»);
-//   • строки, где осталась лишь ед.изм. / слишком короткий огрызок;
-//   • ГЛОБАЛЬНЫЙ дедуп (КП повторяет одну работу по корпусам 36/39/40).
-// Заточено под формат «Форма КП СМР». Сырой extracted_text в БД не трогаем —
-// компактим только для LLM. См. project_stage1_context_limit.
-const VOR_MIN_NAME_LEN = 5; // короче — это не наименование работы
+// xlsx-экстракт ВОР («Форма КП СМР») — таблица на ~30 колонок, ~440K симв.
+// Для Стадии 1 нужен СПИСОК НАИМЕНОВАНИЙ работ: из строки берём самую длинную
+// осмысленную ячейку, режем цены/ед.изм./служебные блоки/ссылки на ПД,
+// глобальный дедуп. Сырой extracted_text в БД не трогаем.
+const VOR_MIN_NAME_LEN = 5;
 const VOR_UNIT_TOKENS = new Set([
   'м2', 'м3', 'м', 'м.п', 'м.п.', 'пог.м', 'мп', 'шт', 'шт.', 'к-с', 'к/с',
   'компл', 'компл.', 'т', 'кг', 'чел', '%', 'маш-ч', 'маш.-ч', 'м.куб',
@@ -132,7 +113,7 @@ function cleanVorCell(raw) {
   c = c.replace(VOR_BOILERPLATE, '').replace(/\s+/g, ' ').trim();
   if (!c) return '';
   if (VOR_PD_REF.test(c)) return '';
-  if (!VOR_HAS_LETTER.test(c)) return ''; // цены, объёмы, %, даты, № колонок
+  if (!VOR_HAS_LETTER.test(c)) return '';
   return c;
 }
 
@@ -150,14 +131,11 @@ function compactVor(text) {
       .map(cleanVorCell)
       .filter((c) => c.length);
     if (!cells.length) continue;
-    // Берём только самую длинную ячейку строки — это наименование работы
-    // (ед.изм. короткие, примечания короче полного описания работы).
     const name = cells.reduce((a, b) => (b.length > a.length ? b : a), '');
     if (name.length < VOR_MIN_NAME_LEN) continue;
     if (VOR_UNIT_TOKENS.has(name.toLowerCase())) continue;
     out.push(name);
   }
-  // Глобальный дедуп с сохранением порядка первого вхождения.
   const seen = new Set();
   const dedup = [];
   for (const l of out) {
@@ -168,76 +146,13 @@ function compactVor(text) {
   return dedup.join('\n');
 }
 
-// ── Сегментация ТЗ под бюджет контекста ──────────────────────────────────────
-// Крупные ТЗ (~574K симв ≈ ~230K токенов) переполняют стандартное окно Claude
-// (см. project_stage1_context_limit). Режем блоки ТЗ на части так, чтобы
-// каждый запрос (сегмент + полный ВОР + чек-лист + каркас) влезал в бюджет.
-// ВОР и чек-лист идут с КАЖДЫМ сегментом — без них модель не оценит покрытие.
-// ПРОВЕРЕНО ЭМПИРИЧЕСКИ (тендер 311): подписка Claude Code НЕ держит
-// параллель — конкурентные вызовы троттлятся, голодают и ловят таймаут;
-// мелкие сегменты последовательно тоже медленнее (больше вызовов, фикс.
-// оверхед на каждый). Поэтому дефолт — один большой сегмент + sequential
-// (CONCURRENCY=1) = единственный надёжный/самый быстрый путь (~6-7 мин).
-// Параллель оставлена за env на случай платного API в будущем.
+// Бюджет/конкурентность Стадии 1. Подписка не держит параллель → дефолт
+// один большой сегмент, sequential. Параллель за env (на платный API).
 const CHAR_BUDGET = Number(process.env.STAGE1_CHAR_BUDGET) || 400000;
 const CONCURRENCY = Math.max(1, Number(process.env.STAGE1_CONCURRENCY) || 1);
-const PER_BLOCK_OVERHEAD = 8; // заголовок-разметка + переводы строк
-const SCAFFOLD_OVERHEAD = 600; // фиксированный текст шаблона user-сообщения
-// Порог скорости: ВОР даже после «только наименований» бывает крупным
-// (Символ: 440K→112K). Большой ВОР в каждом вызове = анализ не успевает за
-// таймаут. Если компакт-ВОР > порога — авто-уход в запасной режим (только
-// чек-лист, быстро и надёжно, с пометкой ⚠). Настраивается env.
+const SCAFFOLD_OVERHEAD = 600;
+// Если компакт-ВОР > порога — запасной режим (ВОР пропущен, только чек-лист).
 const VOR_MAX_CHARS = Number(process.env.STAGE1_VOR_MAX_CHARS) || 90000;
-
-// Рендер сегмента: заголовки как markdown (#), прочее — дословный block.text
-// (fragment в ответе модели должен дословно совпасть с block.text — это нужно
-// locateInBlocks). Дословность не нарушаем.
-function renderSegment(segBlocks) {
-  const parts = [];
-  for (const b of segBlocks) {
-    if (b.type === 'heading') {
-      parts.push(`${'#'.repeat(Math.max(1, b.level || 1))} ${b.text}`);
-    } else {
-      parts.push(b.text);
-    }
-  }
-  return parts.join('\n');
-}
-
-// Стандартные НЕ-рабочие разделы ТЗ — прямо в анти-критериях промта (никогда
-// не флагаются). Не шлём их в LLM: 0 влияния на находки, меньше токенов.
-// Узкие паттерны заголовков, чтобы случайно не срезать раздел с работами.
-const VOR_BOILERPLATE_HEADING =
-  /^\s*(?:\d+[.\d\s]*)?(термины и определения|определения и сокращения|термины,?\s*определения и сокращения|(?:список|перечень|обозначения и)\s+сокращени\w*|нормативн\w+\s+(?:ссылк\w+|документ\w+)|перечень нормативн\w+|реквизиты сторон|(?:юридические )?адреса и реквизиты|содержание|оглавление)\s*$/i;
-
-function isBoilerplateBlock(b) {
-  if (b && b.type === 'heading' && VOR_BOILERPLATE_HEADING.test(b.text || '')) {
-    return true;
-  }
-  const sp = (b && b.section_path) || [];
-  return sp.some((h) => VOR_BOILERPLATE_HEADING.test(h || ''));
-}
-
-// Жадная упаковка блоков в сегменты под tzBudget. Блок крупнее бюджета
-// уходит в собственный (одиночный) сегмент — дробить его нельзя без потери
-// дословности; крайний случай отловит fail-loud бриджа с понятной ошибкой.
-function segmentBlocks(blocks, tzBudget) {
-  const segments = [];
-  let cur = [];
-  let curLen = 0;
-  for (const b of blocks) {
-    const blockLen = (b.text || '').length + PER_BLOCK_OVERHEAD;
-    if (cur.length && curLen + blockLen > tzBudget) {
-      segments.push(cur);
-      cur = [];
-      curLen = 0;
-    }
-    cur.push(b);
-    curLen += blockLen;
-  }
-  if (cur.length) segments.push(cur);
-  return segments;
-}
 
 function buildSegmentUserMessage({ tzText, vorText, checklist, partIdx, partTotal }) {
   const vor = vorText && vorText.trim() ? vorText : '(ВОР не загружен или пуст)';
@@ -266,87 +181,8 @@ function buildSegmentUserMessage({ tzText, vorText, checklist, partIdx, partTota
   ].join('\n');
 }
 
-// Грубая нормализация для substring-локализации фрагмента в блоках.
-// Совпадение должно быть точным после нормализации пробелов.
-function normalizeForLocate(s) {
-  return (s || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-function locateInBlocks(blocks, fragment) {
-  const ndl = normalizeForLocate(fragment);
-  if (!ndl) return null;
-
-  // 1) Сначала точное вхождение в нормализованной форме.
-  for (const block of blocks) {
-    const haystackNorm = normalizeForLocate(block.text);
-    const idxNorm = haystackNorm.indexOf(ndl);
-    if (idxNorm === -1) continue;
-
-    // Перевести позицию из нормализованного представления в исходное:
-    // findInParagraphs делает substring-поиск с учётом нижнего регистра и ё→е,
-    // что близко по семантике; используем его для позиции внутри ОДНОГО блока.
-    const hits = findInParagraphs([block], fragment);
-    if (hits.length) {
-      const hit = hits[0];
-      return { block, char_start: hit.char_start, char_end: hit.char_end, fragment: hit.fragment };
-    }
-    // Если findInParagraphs не нашёл (различие нормализаций), берём приближение.
-    return {
-      block,
-      char_start: 0,
-      char_end: Math.min(block.text.length, fragment.length),
-      fragment: block.text.slice(0, Math.min(block.text.length, fragment.length)),
-    };
-  }
-
-  return null;
-}
-
-function buildIssue({ sourceDocumentId, finding, located }) {
-  const sectionPath = (finding.section_path || '').trim() || (located?.block?.section_path?.join(' › ') || null);
-  // Короткая дословная цитата модели нужна лишь чтобы НАЙТИ нужный пункт ТЗ.
-  // В замечание кладём ВЕСЬ пункт (блок mdParser = пункт/абзац), а не огрызок,
-  // — иначе теряется смысл и контекст. char-диапазон тоже на весь пункт,
-  // чтобы экспорт (review.md / .docx) метил пункт целиком и согласованно.
-  const blockText = located?.block?.text || null;
-  return {
-    source_document_id: sourceDocumentId || null,
-    source_clause: located?.block ? `п. ${located.block.index + 1}` : null,
-    source_fragment: blockText || located?.fragment || finding.fragment,
-    paragraph_index: located?.block?.index ?? null,
-    char_start: blockText ? 0 : (located?.char_start ?? null),
-    char_end: blockText ? blockText.length : (located?.char_end ?? null),
-    problem_type: finding.problem_type || null,
-    risk_category: 'покрытие_расчёта',
-    criticality: finding.criticality || 'medium',
-    price_impact: finding.criticality === 'high' ? 'высокое' : 'возможно',
-    schedule_impact: 'возможно',
-    basis: finding.basis || null,
-    suggested_action: finding.suggested_action || 'clarify',
-    suggested_redaction: finding.suggested_redaction || null,
-    review_comment: finding.review_comment || null,
-    confidence: typeof finding.confidence === 'number' ? finding.confidence : 0.7,
-    section_path: sectionPath || null,
-  };
-}
-
-function dedupe(findings) {
-  const seen = new Set();
-  const out = [];
-  for (const f of findings) {
-    const key = `${(f.fragment || '').trim()}|${(f.section_path || '').trim()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(f);
-  }
-  return out;
-}
-
 async function runStage1Llm(context) {
-  const { sourceDocumentId, blocks, vorText, checklist } = context;
+  const { blocks, vorText, checklist } = context;
 
   if (!Array.isArray(blocks) || !blocks.length) {
     const err = new Error('ТЗ.md пуст или не парсится. Загрузите корректный .md в слот ТЗ.');
@@ -361,11 +197,10 @@ async function runStage1Llm(context) {
   const cl = checklist || [];
   const clText = formatChecklist(cl);
   // eslint-disable-next-line no-console
-  console.log(`[stage1_llm] ВОР: ${vorRaw.length}ch → компакт ${vor.length}ch`);
+  console.log(
+    `[stage1_llm] model=${getModel()} promptVariant=${promptVariant} ВОР: ${vorRaw.length}ch → компакт ${vor.length}ch`,
+  );
 
-  // ВОР + чек-лист + каркас идут с каждым сегментом — вычитаем их из бюджета.
-  // Если ВОР даже после глубокой чистки не оставляет места под ТЗ — запасной
-  // режим: ВОР пропускаем, сверяем ТЗ только с чек-листом (решение владельца).
   const VOR_SKIPPED_MARKER =
     '(ВОР пропущен — слишком большой для бесплатного контекста; сверяй только с чек-листом)';
   const overheadWith = (v) =>
@@ -373,8 +208,6 @@ async function runStage1Llm(context) {
 
   let vorForLlm = vor;
   let analysisNote = null;
-  // Запасной режим, если: (а) ВОР слишком большой даже после чистки (анализ
-  // не успеет за таймаут) ИЛИ (б) ВОР не оставляет места под ТЗ в бюджете.
   const vorTooBig = vor.length > VOR_MAX_CHARS;
   let tzBudget = CHAR_BUDGET - overheadWith(vorForLlm);
   if (vorTooBig || tzBudget <= 0) {
@@ -399,98 +232,27 @@ async function runStage1Llm(context) {
     throw err;
   }
 
-  // Анализируем без стандартных НЕ-рабочих разделов (меньше токенов, 0
-  // влияния на находки). Локализация фрагментов идёт по ПОЛНЫМ blocks ниже —
-  // их не трогаем.
-  const analyzedBlocks = blocks.filter((b) => !isBoilerplateBlock(b));
-  const droppedBoiler = blocks.length - analyzedBlocks.length;
-  const segments = segmentBlocks(
-    analyzedBlocks.length ? analyzedBlocks : blocks,
+  return runLlmStage(context, {
+    sourceDocumentId: context.sourceDocumentId,
+    systemMsg,
+    schema: RESPONSE_SCHEMA,
+    schemaName: 'stage1_findings',
     tzBudget,
-  );
-  // eslint-disable-next-line no-console
-  console.log(
-    `[stage1_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} (boilerplate-=${droppedBoiler}) segments=${segments.length} concurrency=${CONCURRENCY} tzBudget=${tzBudget}ch vorSkipped=${!!analysisNote}`,
-  );
-
-  const startedAt = Date.now();
-  // Параллельный запуск волнами по CONCURRENCY (супер-линейная кривая: мелкие
-  // вызовы параллельно сильно быстрее одного большого). Та же модель/промт/
-  // охват → качество не меняется. fail-loud сохранён (номер части в ошибке).
-  const results = new Array(segments.length);
-  for (let start = 0; start < segments.length; start += CONCURRENCY) {
-    const wave = [];
-    for (let i = start; i < Math.min(start + CONCURRENCY, segments.length); i += 1) {
-      const idx = i;
-      const tzText = renderSegment(segments[idx]);
-      const userMsg = buildSegmentUserMessage({
-        tzText,
+    concurrency: CONCURRENCY,
+    riskCategory: 'покрытие_расчёта',
+    issueDefaults: { suggestedAction: 'clarify', confidence: 0.7 },
+    analysisNote,
+    logTag: 'stage1_llm',
+    buildUserMessage: (segBlocks, partIdx, partTotal) =>
+      buildSegmentUserMessage({
+        tzText: renderSegment(segBlocks),
         vorText: vorForLlm,
         checklist: cl,
-        partIdx: idx + 1,
-        partTotal: segments.length,
-      });
-      wave.push(
-        chatJson({
-          system: systemMsg,
-          user: userMsg,
-          jsonSchema: RESPONSE_SCHEMA,
-          schemaName: 'stage1_findings',
-        })
-          .then((json) => {
-            const segFindings = Array.isArray(json?.findings) ? json.findings : [];
-            // eslint-disable-next-line no-console
-            console.log(
-              `[stage1_llm] часть ${idx + 1}/${segments.length}: tz=${tzText.length}ch findings=${segFindings.length}`,
-            );
-            results[idx] = segFindings;
-          })
-          .catch((e) => {
-            // fail-loud с указанием части (решение владельца)
-            const err = new Error(
-              `Стадия 1: часть ${idx + 1}/${segments.length} — ${e.message}`,
-            );
-            err.status = e.status || 502;
-            err.cause = e;
-            throw err;
-          }),
-      );
-    }
-    // eslint-disable-next-line no-await-in-loop
-    await Promise.all(wave);
-  }
-  const allFindings = [];
-  for (const r of results) if (r) allFindings.push(...r);
-  const elapsedMs = Date.now() - startedAt;
-  // eslint-disable-next-line no-console
-  console.log(
-    `[stage1_llm] все ${segments.length} частей за ${elapsedMs}ms, findings(сырых)=${allFindings.length}`,
-  );
-
-  const findings = dedupe(allFindings);
-
-  const issues = [];
-  let dropped = 0;
-  for (const f of findings) {
-    const located = locateInBlocks(blocks, f.fragment);
-    if (!located) {
-      dropped += 1;
-      // eslint-disable-next-line no-console
-      console.warn(`[stage1_llm] dropped finding (fragment not located in TZ): ${JSON.stringify(f.fragment).slice(0, 120)}`);
-      continue;
-    }
-    issues.push(buildIssue({ sourceDocumentId, finding: f, located }));
-  }
-  if (dropped) {
-    // eslint-disable-next-line no-console
-    console.log(`[stage1_llm] dropped ${dropped} findings out of ${findings.length}`);
-  }
-
-  // Запасной режим: помечаем результат, чтобы движок положил note в summary,
-  // а UI показал пользователю, что ВОР не сверялся.
-  if (analysisNote) issues.analysisNote = analysisNote;
-  return issues;
+        partIdx,
+        partTotal,
+      }),
+  });
 }
 
-// buildIssue/locateInBlocks экспортируются для офлайн-тестов (детерминированы).
+// buildIssue/locateInBlocks реэкспортируем из shared для офлайн-тестов.
 module.exports = { runStage1Llm, buildIssue, locateInBlocks };

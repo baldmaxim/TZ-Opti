@@ -1,5 +1,8 @@
 'use strict';
 
+// ⚠️ SUPERSEDED: Стадия 5 переведена на LLM-агента (stage5_llm.js). Этот
+// rule-based модуль больше не подключён движком, оставлен для справки/отката.
+
 const { findInParagraphs } = require('./shared/fragmentMatcher');
 const {
   HIDDEN_WORK_TRIGGERS,

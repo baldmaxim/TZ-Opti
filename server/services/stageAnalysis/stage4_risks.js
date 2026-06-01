@@ -1,5 +1,8 @@
 'use strict';
 
+// ⚠️ SUPERSEDED: Стадия 4 переведена на LLM-агента (stage4_llm.js). Этот
+// rule-based модуль больше не подключён движком, оставлен для справки/отката.
+
 const { findInParagraphs } = require('./shared/fragmentMatcher');
 const { listForTender } = require('../risksService');
 

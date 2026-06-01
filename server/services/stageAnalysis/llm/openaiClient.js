@@ -41,6 +41,33 @@ function getClient() {
   return _client;
 }
 
+// Сетевые сбои SDK (нет соединения с baseURL) распознаём и превращаем в
+// инструкцию инженеру: типичная причина на Стадии 1 — не поднят локальный
+// Claude-бридж (npm run bridge). Сырое «Connection error.» инженеру ни о чём
+// не говорит — даём адрес и команду.
+function isConnectionError(err) {
+  const code = err?.code || err?.cause?.code || '';
+  if (['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) return true;
+  const name = err?.name || err?.constructor?.name || '';
+  if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError') return true;
+  return /connection error|fetch failed|connect ECONNREFUSED/i.test(err?.message || '');
+}
+
+function describeLlmError(err) {
+  if (isConnectionError(err)) {
+    const baseURL = (process.env.OPENAI_BASE_URL || '').trim();
+    const isLocalBridge = /127\.0\.0\.1|localhost/.test(baseURL);
+    if (isLocalBridge) {
+      return (
+        `LLM-бридж недоступен по ${baseURL} — он не запущен или упал. ` +
+        'Запустите его командой «npm run bridge» (или весь стек «npm run dev») и повторите анализ.'
+      );
+    }
+    return `Нет соединения с LLM (${baseURL || 'OpenAI API'}). Проверьте сеть/адрес и повторите.`;
+  }
+  return `OpenAI API: ${err?.message || 'unknown error'}`;
+}
+
 // Вызов модели со structured output. Возвращает уже распарсенный JSON.
 // Бросает ошибку с понятным сообщением, если API вернул не-JSON.
 async function chatJson({ system, user, jsonSchema, schemaName = 'response', model, temperature }) {
@@ -66,7 +93,7 @@ async function chatJson({ system, user, jsonSchema, schemaName = 'response', mod
       },
     });
   } catch (err) {
-    const wrapped = new Error(`OpenAI API: ${err.message || 'unknown error'}`);
+    const wrapped = new Error(describeLlmError(err));
     wrapped.status = err.status || 502;
     wrapped.cause = err;
     throw wrapped;

@@ -24,16 +24,13 @@ const RESPONSE_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        additionalProperties: false,
-        required: [
-          'fragment',
-          'section_path',
-          'problem_type',
-          'criticality',
-          'suggested_action',
-          'basis',
-          'confidence',
-        ],
+        // Ослаблено (C6): обязателен только fragment (нужен для локализации
+        // пункта в ТЗ); остальные поля проставит/нормализует сервер в buildIssue,
+        // а бридж отдаёт best-effort при неидеальном JSON. additionalProperties
+        // разрешены — лишнее поле модели не теряет находку. Промт (SHARED) всё
+        // равно просит заполнить все поля — это лишь снимает жёсткость валидации.
+        additionalProperties: true,
+        required: ['fragment'],
         properties: {
           fragment: {
             type: 'string',

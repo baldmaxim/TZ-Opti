@@ -87,6 +87,38 @@ function locateInBlocks(blocks, fragment) {
   return null;
 }
 
+// Нормализация enum-полей находки. Бридж теперь отдаёт best-effort (битый/
+// неидеальный JSON не теряется), поэтому модель может вернуть свободное или
+// иноязычное значение — приводим к словарю, иначе фильтры/экспорт сломаются.
+const CRIT_SET = new Set(['critical', 'high', 'medium', 'low']);
+function normalizeCriticality(v, fallback = 'medium') {
+  if (typeof v !== 'string') return fallback;
+  const s = v.trim().toLowerCase();
+  if (CRIT_SET.has(s)) return s;
+  if (/^(критич|critic|urgent|blocker|крит)/.test(s)) return 'critical';
+  if (/^(выс|high|важн|серьёз|серьез)/.test(s)) return 'high';
+  if (/^(сред|medium|med|умерен)/.test(s)) return 'medium';
+  if (/^(низ|low|minor|незнач)/.test(s)) return 'low';
+  return fallback;
+}
+const ACTION_SET = new Set([
+  'comment', 'replace', 'delete', 'remove_from_scope', 'clarify', 'limit_scope', 'assumption',
+]);
+function normalizeAction(v, fallback = 'clarify') {
+  const fb = ACTION_SET.has(fallback) ? fallback : 'clarify';
+  if (typeof v !== 'string') return fb;
+  const s = v.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (ACTION_SET.has(s)) return s;
+  if (/(вынес|out_of_scope|remove_from|изъ)/.test(s)) return 'remove_from_scope';
+  if (/(удал|delete|remove)/.test(s)) return 'delete';
+  if (/(замен|replace|edit|правк)/.test(s)) return 'replace';
+  if (/(коммент|comment|note|примеч)/.test(s)) return 'comment';
+  if (/(огранич|limit)/.test(s)) return 'limit_scope';
+  if (/(допущ|assum)/.test(s)) return 'assumption';
+  if (/(уточн|clarif|вопрос)/.test(s)) return 'clarify';
+  return fb;
+}
+
 // Generic buildIssue: короткая цитата модели нужна лишь чтобы НАЙТИ пункт;
 // в замечание кладём ВЕСЬ пункт (блок = пункт/абзац) + char-диапазон на
 // весь пункт (экспорт метит пункт целиком). riskCategory и дефолты —
@@ -99,6 +131,7 @@ function buildIssue({ sourceDocumentId, finding, located, riskCategory, defaults
     (finding.section_path || '').trim() ||
     (located?.block?.section_path?.join(' › ') || null);
   const blockText = located?.block?.text || null;
+  const crit = normalizeCriticality(finding.criticality, 'medium');
   return {
     source_document_id: sourceDocumentId || null,
     source_clause: located?.block ? `п. ${located.block.index + 1}` : null,
@@ -108,12 +141,15 @@ function buildIssue({ sourceDocumentId, finding, located, riskCategory, defaults
     char_end: blockText ? blockText.length : (located?.char_end ?? null),
     problem_type: finding.problem_type || null,
     risk_category: finding.risk_category || riskCategory || null,
-    criticality: finding.criticality || 'medium',
+    criticality: crit,
     price_impact:
-      finding.price_impact || (finding.criticality === 'high' ? 'высокое' : 'возможно'),
+      finding.price_impact || (crit === 'high' || crit === 'critical' ? 'высокое' : 'возможно'),
     schedule_impact: finding.schedule_impact || 'возможно',
     basis: finding.basis || null,
-    suggested_action: finding.suggested_action || defaults.suggestedAction || 'clarify',
+    suggested_action: normalizeAction(
+      finding.suggested_action || defaults.suggestedAction,
+      defaults.suggestedAction,
+    ),
     suggested_redaction: finding.suggested_redaction || null,
     review_comment: finding.review_comment || null,
     confidence:

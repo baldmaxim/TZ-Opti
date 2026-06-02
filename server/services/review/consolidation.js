@@ -132,7 +132,7 @@ function buildGroup(members) {
 }
 
 async function loadAllIssues(tenderId) {
-  const db = require('../db/connection');
+  const db = require('../../db/connection');
   return db.queryAll(
     `
       SELECT i.*, d.decision AS decision_kind, d.final_comment AS final_comment,

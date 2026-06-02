@@ -159,7 +159,7 @@ function extractJson(text) {
 // Возвращает { obj?, text?, subtype, structuredOutputPresent, numTurns, errors }.
 // На не-success subtype / таймаут / отсутствие result — бросает Error с
 // прикреплёнными .subtype/.numTurns/.errors (вызывающий их логирует).
-async function callClaude(systemPrompt, userPrompt, schema) {
+async function callClaude(systemPrompt, userPrompt, schema, timeoutMs = TIMEOUT_MS) {
   const { query } = await loadSdk();
 
   const options = {
@@ -192,8 +192,8 @@ async function callClaude(systemPrompt, userPrompt, schema) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`Claude не ответил за ${TIMEOUT_MS} мс`)),
-      TIMEOUT_MS,
+      () => reject(new Error(`Claude не ответил за ${timeoutMs} мс`)),
+      timeoutMs,
     );
   });
 
@@ -269,11 +269,11 @@ async function getSchemaConformingJson(systemContent, userContent, schema, debug
 
   // Один прогон callClaude с диагностикой. Никогда не бросает — нормализует
   // успех/ошибку в { obj?, text?, subtype, ... } и пушит attempts[].
-  async function attempt(phase, sysPrompt, userPrompt, schemaArg) {
+  async function attempt(phase, sysPrompt, userPrompt, schemaArg, timeoutMs = TIMEOUT_MS) {
     let r = null;
     let err = null;
     try {
-      r = await callClaude(sysPrompt, userPrompt, schemaArg);
+      r = await callClaude(sysPrompt, userPrompt, schemaArg, timeoutMs);
     } catch (e) {
       err = e;
     }
@@ -327,31 +327,50 @@ async function getSchemaConformingJson(systemContent, userContent, schema, debug
     return null;
   }
 
-  // Попытка 1 — нативный structured output (санитайзенная схема).
-  const a1 = await attempt('outputFormat', sys, userContent, schema);
-  const p1 = pick(a1);
-  if (p1) return p1;
+  // Свободный JSON-промпт (для noOutputFormat) — самодостаточный, не зависит от
+  // предыдущей попытки. На больших промптах нативный outputFormat-механизм SDK
+  // виснет (num_turns=null, 0 вывода за весь дедлайн), а чистая генерация JSON —
+  // нет (проверено: 31K-вход → 15 находок за ~150с). См. README / дампы .debug.
+  const sysPureJson = `${systemContent}
 
-  // Таймаут — не ретраим: repair/noOutputFormat (с тем же/бо́льшим промптом)
-  // тоже упрутся в дедлайн, только утроят ожидание. Fail-fast с понятным
-  // сообщением.
-  if (a1.err && /не ответил за/.test(a1.err.message)) {
-    throw new Error(
-      `ИИ не успел проанализировать ТЗ за ${Math.round(
-        TIMEOUT_MS / 60000,
-      )} мин (промпт ~${debugRecord.promptSizes.approxTokens} токенов — это долго). ` +
-        `Полный отчёт: ${DEBUG_REL}/${debugRecord.file}. Повторите запуск.`,
-    );
+Ответь ОДНИМ JSON-объектом по схеме. Никакого текста до или после. Без markdown-заборов.`;
+  const pureJsonUser = `${userContent}
+
+--- JSON SCHEMA (ответ обязан ей соответствовать) ---
+${JSON.stringify(schema)}
+
+Верни ОДИН JSON-объект строго по схеме. Только JSON — без markdown и текста вокруг.`;
+
+  // BRIDGE_SKIP_OUTPUT_FORMAT — на этом окружении нативный structured output
+  // надёжно виснет (схема-массив находок + крупный ТЗ). Флаг сразу идёт в
+  // noOutputFormat, не тратя время на заведомо висящий вызов.
+  const skipOutputFormat = /^(1|true|on|yes)$/i.test(
+    String(process.env.BRIDGE_SKIP_OUTPUT_FORMAT || ''),
+  );
+  // Короткий таймаут на outputFormat: если структурный вывод работает — он
+  // быстрый; если виснет — обрываем рано и падаем в свободный JSON (раньше тут
+  // был fail-fast, убивавший рабочий фолбэк).
+  const ofTimeoutMs = Number(process.env.BRIDGE_OUTPUTFORMAT_TIMEOUT_MS) || 180000;
+
+  let a1 = null;
+  if (!skipOutputFormat) {
+    // Попытка 1 — нативный structured output (санитайзенная схема), кор. таймаут.
+    a1 = await attempt('outputFormat', sys, userContent, schema, ofTimeoutMs);
+    const p1 = pick(a1);
+    if (p1) return p1;
   }
 
-  // Попытка 2 — repair: схема-в-промпте + причина + предыдущий ответ.
-  const reason = a1.err
-    ? `вызов упал: ${a1.err.message}`
-    : 'ответ без валидного JSON';
-  console.warn(
-    `[claudeBridge] попытка 1 без JSON (${reason}); полный дамп: ${DEBUG_REL}/${debugRecord.file}`,
-  );
-  const repairUser = `${userContent}
+  const a1TimedOut = a1 && a1.err && /не ответил за/.test(a1.err.message);
+
+  // Попытка 2 — repair: имеет смысл, только если outputFormat вернул что-то
+  // быстро, но невалидное. На таймауте/пропуске repair тоже форсит structured
+  // output → тоже повис бы; пропускаем и идём в свободный JSON.
+  if (a1 && !a1TimedOut) {
+    const reason = a1.err ? `вызов упал: ${a1.err.message}` : 'ответ без валидного JSON';
+    console.warn(
+      `[claudeBridge] попытка 1 без JSON (${reason}); полный дамп: ${DEBUG_REL}/${debugRecord.file}`,
+    );
+    const repairUser = `${userContent}
 
 --- JSON SCHEMA (ответ обязан ей соответствовать) ---
 ${JSON.stringify(schema)}
@@ -363,17 +382,21 @@ ${String(a1.r && a1.r.text ? a1.r.text : '').slice(0, 8000)}
 ${reason}
 
 Верни ИСПРАВЛЕННЫЙ JSON-объект строго по схеме. Только JSON.`;
+    const a2 = await attempt('repair', sys, repairUser, schema, ofTimeoutMs);
+    const p2 = pick(a2);
+    if (p2) return p2;
+  }
 
-  const a2 = await attempt('repair', sys, repairUser, schema);
-  const p2 = pick(a2);
-  if (p2) return p2;
+  if (a1TimedOut) {
+    console.warn(
+      '[claudeBridge] outputFormat таймаут — структурный вывод виснет, ' +
+        'падаю в noOutputFormat (свободный JSON)',
+    );
+  }
 
-  // Попытка 3 — без outputFormat: убираем structured-output-машинерию SDK,
-  // просим чистый JSON в промпте, тащим баланс-сканом.
-  const sysPureJson = `${systemContent}
-
-Ответь ОДНИМ JSON-объектом по схеме. Никакого текста до или после. Без markdown-заборов.`;
-  const a3 = await attempt('noOutputFormat', sysPureJson, repairUser, null);
+  // Попытка 3 (основная при skip/таймауте) — без outputFormat: чистый JSON в
+  // промпте + баланс-скан. Полный дедлайн TIMEOUT_MS.
+  const a3 = await attempt('noOutputFormat', sysPureJson, pureJsonUser, null, TIMEOUT_MS);
   const p3 = pick(a3);
   if (p3) return p3;
 

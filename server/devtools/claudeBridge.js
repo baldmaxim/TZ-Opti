@@ -62,6 +62,15 @@ function loadSdk() {
   return _sdkPromise;
 }
 
+// jsonrepair — ESM-only, сервер CommonJS → ленивый import(). Толерантный ремонт
+// JSON от LLM (неэкранированные кавычки в значениях, висячие запятые, обрыв):
+// один битый символ не должен терять десятки валидных находок.
+let _jrPromise = null;
+function loadJsonRepair() {
+  if (!_jrPromise) _jrPromise = import('jsonrepair').then((m) => m.jsonrepair);
+  return _jrPromise;
+}
+
 // ── Диагностический дамп ─────────────────────────────────────────────────────
 // Пишем полную картину запроса в .debug/ + лёгкий prune (последние KEEP_DUMPS).
 // Любой сбой записи проглатываем — диагностика не должна ломать запрос.
@@ -117,7 +126,9 @@ function sanitizeSchemaForStructuredOutput(schema) {
 
 // ── Извлечение JSON из ответа модели ─────────────────────────────────────────
 // Срезаем ```json-заборы, при наличии прозы — баланс-скан от первой { до парной.
-function extractJson(text) {
+// repair (опц.) — jsonrepair: последний шанс при битом JSON (неэкранированные
+// кавычки в значениях ломают и баланс-скан, поэтому ремонт идёт по всей строке).
+function extractJson(text, repair) {
   if (!text) throw new Error('пустой ответ модели');
   let s = String(text).trim();
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -128,25 +139,40 @@ function extractJson(text) {
     /* падаем в баланс-скан ниже */
   }
   const start = s.indexOf('{');
-  if (start === -1) throw new Error('в ответе модели нет JSON-объекта');
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < s.length; i += 1) {
-    const ch = s[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === '\\') esc = true;
-      else if (ch === '"') inStr = false;
-    } else if (ch === '"') {
-      inStr = true;
-    } else if (ch === '{') {
-      depth += 1;
-    } else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) return JSON.parse(s.slice(start, i + 1));
+  if (start !== -1) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < s.length; i += 1) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+      } else if (ch === '"') {
+        inStr = true;
+      } else if (ch === '{') {
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return JSON.parse(s.slice(start, i + 1));
+          } catch (_) {
+            break; // баланс сбит битым значением — пробуем ремонт ниже
+          }
+        }
+      }
     }
   }
+  if (repair) {
+    try {
+      return JSON.parse(repair(start === -1 ? s : s.slice(start)));
+    } catch (_) {
+      /* ремонт не помог — общий throw ниже */
+    }
+  }
+  if (start === -1) throw new Error('в ответе модели нет JSON-объекта');
   throw new Error('не удалось извлечь сбалансированный JSON-объект');
 }
 
@@ -267,6 +293,15 @@ async function getSchemaConformingJson(systemContent, userContent, schema, debug
     }
   }
 
+  // Толерантный ремонт JSON (jsonrepair) — последний шанс при битом ответе
+  // модели. Грузим один раз; при сбое импорта продолжаем без ремонта.
+  let repair = null;
+  try {
+    repair = await loadJsonRepair();
+  } catch (e) {
+    console.warn(`[claudeBridge] jsonrepair не загрузился: ${e.message} — без ремонта`);
+  }
+
   // Один прогон callClaude с диагностикой. Никогда не бросает — нормализует
   // успех/ошибку в { obj?, text?, subtype, ... } и пушит attempts[].
   async function attempt(phase, sysPrompt, userPrompt, schemaArg, timeoutMs = TIMEOUT_MS) {
@@ -319,8 +354,19 @@ async function getSchemaConformingJson(systemContent, userContent, schema, debug
       return res.r.obj; // structured_output форсирован под схему — best-effort
     }
     try {
-      const obj = extractJson(res.r.text);
+      const obj = extractJson(res.r.text, repair);
       if (!validate || validate(obj)) return obj;
+      // best-effort: распарсилось (возможно через ремонт), но не идеально по
+      // схеме. Одно несоответствие enum / доп. поле / битая находка НЕ должны
+      // терять весь ответ — принимаем, если структура осмысленна (есть findings).
+      if (obj && Array.isArray(obj.findings)) {
+        console.warn(
+          `[claudeBridge] свободный JSON не идеален по схеме: ${ajv.errorsText(
+            validate.errors,
+          )} — отдаю best-effort (${obj.findings.length} находок)`,
+        );
+        return obj;
+      }
     } catch (_) {
       /* нет JSON в тексте — идём дальше */
     }

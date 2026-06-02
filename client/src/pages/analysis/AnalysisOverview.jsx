@@ -5,13 +5,14 @@ import { useWizardState } from '../../hooks/useWizardState';
 import { withViewTransition } from '../../utils/viewTransition';
 import StagePanel from './StagePanel';
 import ResultPanel from './ResultPanel';
+import { stageShort, stageTitle } from '../../utils/labels';
 
 const TILES = [
   {
     id: 'stage1',
     stage: 1,
-    label: 'Стадия 1',
-    sublabel: 'ТЗ + Чек-лист + ВОР',
+    label: stageShort(1),
+    sublabel: stageTitle(1),
     accent: 'from-blue-50 to-indigo-50',
     icon: (
       <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
@@ -33,8 +34,8 @@ const TILES = [
   {
     id: 'stage2',
     stage: 2,
-    label: 'Стадия 2',
-    sublabel: 'Q&A + Характеристики',
+    label: stageShort(2),
+    sublabel: stageTitle(2),
     accent: 'from-emerald-50 to-teal-50',
     icon: (
       <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
@@ -51,8 +52,8 @@ const TILES = [
   {
     id: 'stage3',
     stage: 3,
-    label: 'Стадия 3',
-    sublabel: 'Существенные условия',
+    label: stageShort(3),
+    sublabel: stageTitle(3),
     accent: 'from-violet-50 to-purple-50',
     icon: (
       <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
@@ -70,8 +71,8 @@ const TILES = [
   {
     id: 'stage4',
     stage: 4,
-    label: 'Стадия 4',
-    sublabel: 'Типовые риски',
+    label: stageShort(4),
+    sublabel: stageTitle(4),
     accent: 'from-amber-50 to-orange-50',
     icon: (
       <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
@@ -85,8 +86,8 @@ const TILES = [
   {
     id: 'stage5',
     stage: 5,
-    label: 'Стадия 5',
-    sublabel: 'Самоанализ ТЗ',
+    label: stageShort(5),
+    sublabel: stageTitle(5),
     accent: 'from-cyan-50 to-sky-50',
     icon: (
       <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">

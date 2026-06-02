@@ -1,11 +1,14 @@
 'use strict';
 
 const db = require('../../db/connection');
+const { decisionVisual, resolveRedaction } = require('../review/decisionModel');
 
 /**
  * Рендер review.md — берёт оригинальный текст ТЗ (предпочтительно загруженную
- * .md-копию, иначе extracted_text из .docx) и применяет разметку правок:
- *   delete / remove_from_scope → ~~зачёркнуто~~
+ * .md-копию, иначе extracted_text из .docx) и применяет разметку правок
+ * (единый «вид решения» — decisionModel, как в docx/preview):
+ *   delete → ~~зачёркнуто~~
+ *   remove_from_scope → ~~зачёркнуто~~ _(вынесено из объёма)_
  *   edit → ~~старое~~ **{новое}**
  *   accept (Примечание) → текст[^N] + сноска внизу
  *   reject → не меняется
@@ -109,15 +112,17 @@ async function renderReviewMd(tenderId, { stage = null } = {}) {
       continue;
     }
 
+    const v = decisionVisual(d.decision);
     let replacement;
-    if (d.decision === 'delete' || d.decision === 'remove_from_scope') {
-      replacement = `~~${fragment}~~`;
-    } else if (d.decision === 'edit') {
-      const newText = (d.edited_redaction || '').trim();
+    if (v.mark === 'strike') {
+      // delete / remove_from_scope — зачёркивание; вынос помечаем тегом.
+      replacement = v.tag ? `~~${fragment}~~ _(${v.tag.toLowerCase()})_` : `~~${fragment}~~`;
+    } else if (v.mark === 'replace') {
+      const newText = resolveRedaction({}, d);
       replacement = newText
         ? `~~${fragment}~~ **{${newText}}**`
         : `~~${fragment}~~`;
-    } else if (d.decision === 'accept') {
+    } else if (v.mark === 'note') {
       const note = (d.final_comment || '').trim();
       if (!note) {
         // accept без комментария — пометки не нужно, просто пропускаем.

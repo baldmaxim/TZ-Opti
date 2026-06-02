@@ -2,6 +2,7 @@
 
 const db = require('../db/connection');
 const { getActiveTzText } = require('./tzActiveTextService');
+const { decisionVisual, resolveRedaction } = require('./review/decisionModel');
 
 function escapeHtml(s) {
   return (s || '')
@@ -80,30 +81,36 @@ function renderParagraph(p, paraIssues) {
   </div>`;
 }
 
+// Единый «вид решения» — тот же, что в docx-экспорте и md (decisionModel).
+// Без решения (pending) — нейтральная подсветка «на рассмотрении».
+function issueVisual(issue) {
+  if (!issue.decision_kind && issue.review_status === 'pending') {
+    return { mark: 'pending', label: 'на рассмотрении', tag: null };
+  }
+  const kind = issue.decision_kind || (issue.review_status === 'edited' ? 'edit' : 'accept');
+  const v = decisionVisual(kind);
+  return { mark: v.mark, label: v.label, tag: v.tag || null };
+}
+
 function renderNote(issue) {
-  const status = issue.review_status === 'accepted'
-    ? 'принято'
-    : issue.review_status === 'rejected'
-      ? 'отклонено'
-      : issue.review_status === 'edited'
-        ? 'отредактировано'
-        : 'на рассмотрении';
-  const cls = `note note-${issue.review_status}`;
+  const v = issueVisual(issue);
+  const cls = `note notev-${v.mark}`;
   const lines = [];
   lines.push(`<strong>Стадия ${issue.analysis_stage}: ${escapeHtml(humanize(issue.problem_type))}</strong>`);
   if (issue.criticality) lines.push(`<em>Критичность: ${escapeHtml(humanCrit(issue.criticality))}</em>`);
-  if (issue.review_comment || issue.decision_comment) lines.push(escapeHtml(issue.decision_comment || issue.review_comment));
-  const redaction = issue.decision_redaction || issue.edited_redaction || issue.suggested_redaction;
+  const comment = issue.decision_comment || issue.review_comment;
+  if (comment) lines.push(escapeHtml(comment));
+  const redaction = resolveRedaction(issue, {});
   if (redaction) lines.push(`<span class="redaction">→ ${escapeHtml(redaction)}</span>`);
+  if (v.tag) lines.push(`<span class="tag">${escapeHtml(v.tag)}</span>`);
   if (issue.basis) lines.push(`<span class="basis">${escapeHtml(issue.basis)}</span>`);
-  lines.push(`<span class="status">Статус: ${status}</span>`);
+  lines.push(`<span class="status">Решение: ${escapeHtml(v.label)}</span>`);
   return `<div class="${cls}">${lines.join('<br/>')}</div>`;
 }
 
 function issueCss(issue) {
-  const sev = issue.criticality === 'critical' ? 'crit' : issue.criticality;
-  const status = issue.review_status;
-  return `mark-${sev} mark-${status}`;
+  const sev = issue.criticality || 'low';
+  return `mark-${sev} markv-${issueVisual(issue).mark}`;
 }
 
 function humanize(s) { return (s || '').replace(/_/g, ' '); }
@@ -132,17 +139,23 @@ function wrap(body, title) {
   .mark-critical { background: #fecaca; }
   .mark-medium { background: #fef3c7; }
   .mark-low { background: #e0f2fe; }
-  .mark-accepted { box-shadow: inset 0 -2px 0 0 #16a34a; }
-  .mark-rejected { text-decoration: line-through; opacity: 0.6; }
-  .mark-edited { box-shadow: inset 0 -2px 0 0 #2563eb; }
+  /* Вид решения (единый с docx/md): strike=удалить/вынести, replace=изменить,
+     note=примечание, rejected=отклонено, pending=на рассмотрении. */
+  .markv-strike { text-decoration: line-through; }
+  .markv-replace { box-shadow: inset 0 -2px 0 0 #2563eb; }
+  .markv-note { box-shadow: inset 0 -2px 0 0 #16a34a; }
+  .markv-rejected { text-decoration: line-through; opacity: 0.6; }
+  .markv-pending { box-shadow: inset 0 -2px 0 0 #f59e0b; }
   .badge { font-size: 9px; color: #6b7280; margin-left: 2px; }
   .notes { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
   .note { padding: 8px 10px; border-left: 3px solid #d1d5db; background: white; font-size: 13px; }
-  .note-accepted { border-left-color: #16a34a; }
-  .note-rejected { border-left-color: #9ca3af; }
-  .note-edited { border-left-color: #2563eb; }
-  .note-pending { border-left-color: #f59e0b; }
+  .notev-strike { border-left-color: #dc2626; }
+  .notev-replace { border-left-color: #2563eb; }
+  .notev-note { border-left-color: #16a34a; }
+  .notev-rejected { border-left-color: #9ca3af; }
+  .notev-pending { border-left-color: #f59e0b; }
   .redaction { color: #1d4ed8; }
+  .tag { display: inline-block; font-size: 11px; color: #7c3aed; background: #f3e8ff; border-radius: 4px; padding: 0 6px; }
   .basis { color: #6b7280; font-size: 12px; }
   .status { color: #6b7280; font-size: 12px; }
 </style></head>

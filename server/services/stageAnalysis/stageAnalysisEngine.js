@@ -11,13 +11,16 @@ const { runStage4Llm } = require('./stage4_llm');
 const { runStage5Llm } = require('./stage5_llm');
 const { importQaXlsx } = require('../qaImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
+const { isOwnedBy, stageResultType } = require('../review/stageDomains');
 
+// Единый серверный источник названий стадий (идёт в summary.label).
+// Тексты должны совпадать с STAGE_META на клиенте (client/src/utils/labels.js).
 const STAGE_LABELS = {
   1: 'ТЗ + Чек-лист + ВОР',
-  2: 'Q&A → правки в ТЗ (решения СУ-10)',
-  3: 'ТЗ + Существенные условия компании',
-  4: 'ТЗ + Типовые риски',
-  5: 'Самоанализ ТЗ (скрытые работы, двусмыслия, срок)',
+  2: 'Q&A + Характеристики',
+  3: 'Существенные условия компании',
+  4: 'Типовые риски',
+  5: 'Самоанализ ТЗ',
 };
 
 async function getStageState(tenderId) {
@@ -231,12 +234,25 @@ async function runStageInner(tenderId, stage) {
   const ctx = await buildContextForStage(tenderId, stage);
   const issues = await runStageOrchestrator(stage, ctx);
 
+  // Гард зоны ответственности: стадия должна писать только в свой домен
+  // (см. stageDomains). Backstop против регрессий — не теряем данные, но логируем.
+  const offDomain = issues.filter((i) => i.problem_type && !isOwnedBy(stage, i.problem_type));
+  if (offDomain.length) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[stageEngine] стадия ${stage}: ${offDomain.length} находок с чужим problem_type ` +
+        `(${[...new Set(offDomain.map((i) => i.problem_type))].join(', ')}) — вне домена стадии.`,
+    );
+  }
+
   const runId = newId();
   const startedAt = nowIso();
   const summary = {
     stage,
     label: STAGE_LABELS[stage],
+    result_type: stageResultType(stage),
     issues_count: issues.length,
+    off_domain: offDomain.length,
     by_criticality: countBy(issues, 'criticality'),
     by_problem_type: countBy(issues, 'problem_type'),
     notes: issues.analysisNote || null,

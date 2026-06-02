@@ -71,11 +71,6 @@ export default function StageRunControls({ stage, status, hasSummary }) {
                 : (hasSummary ? 'Перезапустить анализ' : 'Запустить анализ')}
           </button>
         )}
-        {isRunning && (
-          <span className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1 self-center">
-            Идёт фоновый анализ (Стадия 1 — до ~15 мин). Можно закрыть вкладку — результат появится сам.
-          </span>
-        )}
         {stage1Blocked && (
           <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 self-center">
             Загрузите .md-копию ТЗ для запуска

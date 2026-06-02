@@ -7,6 +7,7 @@ import { useWizardState } from '../../hooks/useWizardState';
 import { withViewTransition } from '../../utils/viewTransition';
 import { STAGE_CONFIG } from './stageConfig';
 import StageRunControls from './StageRunControls';
+import AnalysisProgressRing from '../../components/stages/AnalysisProgressRing';
 import StageDecisionTable from '../../components/stages/StageDecisionTable';
 import GateNotice from '../../components/wizard/GateNotice';
 import { STAGE_STATUS, criticalityClass } from '../../utils/labels';
@@ -119,6 +120,12 @@ export default function StagePage() {
           </div>
           <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
         </div>
+
+        {status === 'running' && tenderId && (
+          <div className="mt-4">
+            <AnalysisProgressRing tenderId={tenderId} stage={stage} />
+          </div>
+        )}
 
         {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}
       </div>

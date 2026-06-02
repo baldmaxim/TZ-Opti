@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
 import { toastError, toastSuccess } from './useToastStore';
+import { analysisStartKey } from '../components/stages/AnalysisProgressRing';
 
 // Реестр активных опросов (вне store — реактивность не нужна), ключ
 // `${tenderId}:${stage}`. Стадия 1 считается в фоне на сервере; клиент
@@ -123,6 +124,9 @@ export const useTenderStore = create((set, get) => ({
   async runStage(n) {
     const id = get().tenderId;
     if (!id) return null;
+    // Фиксируем момент старта для круговой шкалы прогресса (сервер не пишет
+    // analysis_runs для идущего прогона). Сбрасывается на каждый новый запуск.
+    try { localStorage.setItem(analysisStartKey(id, n), String(Date.now())); } catch { /* ignore */ }
     // Сервер отвечает сразу (202 {status:'running'}) или кидает 400
     // (уже идёт / стадия недоступна) — её обработает вызывающий.
     const result = await api.runStage(id, n);

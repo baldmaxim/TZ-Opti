@@ -1,16 +1,19 @@
 'use strict';
 
 // Стадия 3 — LLM-агент: ТЗ vs существенные условия компании.
-// Справочник = отрендеренные стандартные условия (с учётом параметров тендера
-// и per-tender override). Модель судит КАЖДОЕ условие против ВСЕГО ТЗ:
-//   не_отображено        → условие не упомянуто в ТЗ (безъякорный Issue)
+// ОСНОВА — условия компании (источник истины): отрендеренные стандартные условия
+// с учётом параметров тендера и per-tender override. Агент ищет в ТЗ места,
+// которые им ПРОТИВОРЕЧАТ, и выносит на рассмотрение:
 //   противоречит         → ТЗ говорит несовместимое (Issue с цитатой ТЗ)
 //   отражено_корректно   → пропускаем
-// Поэтому нужен ВЕСЬ ТЗ в одном контексте (requireSingleSegment): посегментно
-// «не отражено» посчиталось бы неверно. Контракт: (context) → Issue[]
+// Условия, которых в ТЗ нет вовсе, НЕ флагаются (отсутствие договорного условия
+// в техническом ТЗ — норма). Нужен ВЕСЬ ТЗ в одном контексте
+// (requireSingleSegment): условие сверяется против всего текста. Промт — в
+// stage3Prompts.js. Контракт: (context) → Issue[]
 
 const db = require('../../db/connection');
 const { getModel } = require('./llm/openaiClient');
+const { buildSystemPrompt, resolveVariant } = require('./stage3Prompts');
 const {
   defaultsFor,
   renderConditions,
@@ -35,12 +38,14 @@ const RESPONSE_SCHEMA = {
           },
           status: {
             type: 'string',
-            enum: ['не_отражено', 'противоречит', 'отражено_корректно'],
+            enum: ['противоречит', 'отражено_корректно'],
+            description:
+              'противоречит — ТЗ затрагивает тему условия и задаёт несовместимое со стандартом компании; отражено_корректно — тема есть и не противоречит (фильтруется). Условия, не затронутые в ТЗ, НЕ возвращай.',
           },
           fragment: {
             type: 'string',
             description:
-              'Если status=противоречит — ДОСЛОВНАЯ цитата из ТЗ, которая противоречит условию. Иначе пустая строка.',
+              'Для status=противоречит — ДОСЛОВНАЯ цитата из ТЗ, которая противоречит условию (обязательна). Для отражено_корректно — пустая строка.',
           },
           section_path: {
             type: 'string',
@@ -63,37 +68,6 @@ const RESPONSE_SCHEMA = {
   },
   required: ['findings'],
 };
-
-const SYSTEM_PROMPT = [
-  'Ты — Руководитель строительства / договорной специалист Генподрядчика (ГП).',
-  'Заказчик прислал ТЗ на СОГЛАСОВАНИЕ. Тебе дан СПИСОК существенных условий',
-  'компании (стандартные договорные позиции ГП: гарантия, аванс, эскалация,',
-  'сроки, порядок приёмки и т.п.). Задача: для КАЖДОГО условия определить, как',
-  'оно отражено в присланном ТЗ.',
-  '',
-  'ДЛЯ КАЖДОГО УСЛОВИЯ выставь status:',
-  '• не_отражено — в ТЗ нет ничего по теме условия (его нужно внести в КП/',
-  '  договор или вынести в допущения). fragment оставь пустым.',
-  '• противоречит — ТЗ затрагивает эту тему, но условие в ТЗ НЕСОВМЕСТИМО со',
-  '  стандартом компании (например иной гарантийный срок, иной аванс, иной',
-  '  порядок). fragment — ДОСЛОВНАЯ цитата из ТЗ с противоречием.',
-  '• отражено_корректно — тема есть в ТЗ и не противоречит стандарту компании.',
-  '  Такие в ответ можно не включать (или включить со статусом отражено_корректно).',
-  '',
-  'ПРАВИЛА:',
-  '• Анализируй условие против ВСЕГО приведённого текста ТЗ (он дан целиком).',
-  '• condition_name — дословно из справочника.',
-  '• fragment для противоречия — дословная цитата из ТЗ, иначе привязка не',
-  '  сработает.',
-  '• suggested_redaction — обычно стандартный текст условия (можно адаптировать).',
-  '• Не выдумывай условия вне справочника.',
-  '',
-  'НЕ дублируй другие стадии: объём/ВОР → Стадия 1; Q&A → Стадия 2; типовые',
-  'риски → Стадия 4; самоанализ формулировок → Стадия 5. Здесь — только сверка',
-  'ТЗ с существенными условиями компании.',
-  '',
-  'Рассуждай про себя — верни только итоговый JSON (поле findings).',
-].join('\n');
 
 const CHAR_BUDGET = Number(process.env.STAGE_LLM_CHAR_BUDGET) || 400000;
 const SCAFFOLD_OVERHEAD = 600;
@@ -158,51 +132,37 @@ function buildUserMessage({ tzText, condsText }) {
     condsText,
     '',
     '---',
-    'Для каждого условия определи status (не_отражено / противоречит /',
-    'отражено_корректно) против всего текста ТЗ. Верни в JSON по схеме (поле findings).',
+    'Пройди условия и найди в тексте ТЗ места, ПРОТИВОРЕЧАЩИЕ условиям компании',
+    '(status=противоречит, с дословной цитатой ТЗ). Условия, не затронутые в ТЗ,',
+    'не возвращай. Верни в JSON по схеме (поле findings).',
   ].join('\n');
 }
 
-// Нормализатор находки Стадии 3 → стандартная находка для buildIssue.
-// Возвращает null для отражено_корректно (фильтруется раннером).
+// Нормализатор находки Стадии 3 → стандартная находка для buildIssue. Выход —
+// только противоречия (status=противоречит с дословной цитатой ТЗ). Всё прочее
+// (отражено_корректно, пустая цитата) отбрасывается: без цитаты это не
+// «упоминание в ТЗ», а отсутствие темы — не находка Стадии 3.
 function makeMapFinding(byName) {
   return function mapFinding(f) {
-    const status = f.status;
-    if (status === 'отражено_корректно' || !status) return null;
+    if (f.status !== 'противоречит') return null;
+    const fragment = (f.fragment || '').trim();
+    if (!fragment) return null;
     const name = (f.condition_name || '').trim();
     const cond = byName.get(name) || null;
 
-    if (status === 'противоречит') {
-      return {
-        fragment: f.fragment || name,
-        section_path: f.section_path || '',
-        problem_type: 'условие_противоречит',
-        risk_category: 'существенные_условия',
-        criticality: (cond && cond.criticality) || f.criticality || 'high',
-        suggested_action: 'replace',
-        suggested_redaction: f.suggested_redaction || (cond && cond.text) || null,
-        review_comment:
-          f.review_comment || `ТЗ противоречит существенному условию компании «${name}». Привести в соответствие.`,
-        basis: f.basis || `ТЗ противоречит стандартному условию компании «${name}».`,
-        confidence: typeof f.confidence === 'number' ? f.confidence : 0.7,
-      };
-    }
-
-    // не_отражено — безъякорный Issue (fragment=имя условия, в ТЗ обычно не
-    // находится → keepUnlocated сохраняет находку).
     return {
-      fragment: name,
+      fragment,
       section_path: f.section_path || '',
-      problem_type: 'условие_не_отражено',
+      problem_type: 'условие_противоречит',
       risk_category: 'существенные_условия',
-      criticality: (cond && cond.criticality) || f.criticality || 'medium',
-      suggested_action: 'clarify',
+      criticality: (cond && cond.criticality) || f.criticality || 'high',
+      suggested_action: 'replace',
       suggested_redaction: f.suggested_redaction || (cond && cond.text) || null,
       review_comment:
         f.review_comment ||
-        'Существенное условие компании не отражено в ТЗ. Добавить в КП/договор или вынести в допущения.',
-      basis: f.basis || `Существенное условие компании «${name}» не упоминается в ТЗ.`,
-      confidence: typeof f.confidence === 'number' ? f.confidence : 0.55,
+        `ТЗ противоречит существенному условию компании «${name}». Вынести на рассмотрение / привести в соответствие.`,
+      basis: f.basis || `ТЗ противоречит стандартному условию компании «${name}».`,
+      confidence: typeof f.confidence === 'number' ? f.confidence : 0.7,
     };
   };
 }
@@ -216,8 +176,12 @@ async function runStage3Llm(context) {
   }
 
   const conds = await loadConditions(tenderId);
+  const promptVariant = resolveVariant();
+  const systemMsg = buildSystemPrompt(promptVariant);
   // eslint-disable-next-line no-console
-  console.log(`[stage3_llm] model=${getModel()} blocks=${blocks.length} условий: ${conds.length}`);
+  console.log(
+    `[stage3_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} условий: ${conds.length}`,
+  );
   if (!conds.length) {
     const issues = [];
     issues.analysisNote = 'Нет существенных условий для этого тендера — Стадия 3 пропущена.';
@@ -226,7 +190,7 @@ async function runStage3Llm(context) {
 
   const condsText = formatConditions(conds);
   const byName = new Map(conds.map((c) => [c.name, c]));
-  const tzBudget = CHAR_BUDGET - condsText.length - SCAFFOLD_OVERHEAD - SYSTEM_PROMPT.length;
+  const tzBudget = CHAR_BUDGET - condsText.length - SCAFFOLD_OVERHEAD - systemMsg.length;
   if (tzBudget <= 0) {
     const err = new Error('Справочник условий превышает бюджет контекста.');
     err.status = 400;
@@ -235,15 +199,15 @@ async function runStage3Llm(context) {
 
   return runLlmStage(context, {
     sourceDocumentId: context.sourceDocumentId,
-    systemMsg: SYSTEM_PROMPT,
+    systemMsg,
     schema: RESPONSE_SCHEMA,
     schemaName: 'stage3_findings',
     tzBudget,
     concurrency: 1,
     riskCategory: 'существенные_условия',
-    issueDefaults: { suggestedAction: 'clarify', confidence: 0.55 },
+    issueDefaults: { suggestedAction: 'replace', confidence: 0.7 },
     logTag: 'stage3_llm',
-    keepUnlocated: true,
+    keepUnlocated: false,
     requireSingleSegment: true,
     mapFinding: makeMapFinding(byName),
     buildUserMessage: (segBlocks) =>

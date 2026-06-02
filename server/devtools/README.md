@@ -57,6 +57,18 @@ Code НЕ держит параллель — конкурентные вызо�
 thinking — быстрее, но включать только после A/B-сравнения качества с
 эталоном, иначе возможна потеря качества).
 
+Режим промта остальных стадий (значения те же: `structural` дефолт | `strict`
+| `full`): `STAGE2_PROMPT_VARIANT` (Стадия 2 — Q&A + характеристики; см.
+server/services/stageAnalysis/stage2Prompts.js) и `STAGE3_PROMPT_VARIANT`
+(Стадия 3 — существенные условия компании, режим «только противоречия»: агент
+выносит лишь места ТЗ, противоречащие условиям компании; см.
+server/services/stageAnalysis/stage3Prompts.js) и `STAGE4_PROMPT_VARIANT`
+(Стадия 4 — типовые риски: прямые/косвенные упоминания рисков, влекущих доп.
+неоплачиваемые работы / финансовые потери ГП; см.
+server/services/stageAnalysis/stage4Prompts.js) и `STAGE5_PROMPT_VARIANT`
+(Стадия 5 — самоанализ ТЗ: скрытые работы, двусмысленные формулировки, влияние
+на срок; см. server/services/stageAnalysis/stage5Prompts.js).
+
 `OPENAI_MODEL` НЕ задавать — бридж игнорирует поле `model` из запроса и всегда
 использует `BRIDGE_MODEL`.
 

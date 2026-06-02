@@ -2,11 +2,14 @@
 
 // Стадия 4 — LLM-агент: ТЗ vs библиотека типовых рисков.
 // Справочник = эффективные риски тендера (стандартные + кастомные, с учётом
-// overlay Да/Нет/auto) из risksService. Модель сканирует ТЗ по сегментам и
-// привязывает фрагменты к рискам из справочника. Generic-каркас — в
-// shared/llmStage.js. Контракт: (context) → Issue[]
+// overlay Да/Нет/auto) из risksService. Модель сканирует ТЗ по сегментам и ищет
+// ПРЯМЫЕ или КОСВЕННЫЕ упоминания рисков, влекущие доп. неоплачиваемые работы /
+// финансовые потери ГП, привязывая фрагменты к рискам из справочника.
+// Generic-каркас — в shared/llmStage.js. Промт — в stage4Prompts.js.
+// Контракт: (context) → Issue[]
 
 const { getModel } = require('./llm/openaiClient');
+const { buildSystemPrompt, resolveVariant } = require('./stage4Prompts');
 const { listForTender } = require('../risksService');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
 
@@ -73,34 +76,6 @@ const RESPONSE_SCHEMA = {
   required: ['findings'],
 };
 
-const SYSTEM_PROMPT = [
-  'Ты — Руководитель строительства Генподрядчика (ГП). Заказчик прислал текст',
-  'ТЗ на СОГЛАСОВАНИЕ. Тебе дана БИБЛИОТЕКА типовых рисков ТЗ на СМР (позиция',
-  'компании). Задача: пройти ТЗ и найти фрагменты, которые срабатывают на эти',
-  'риски — то есть содержат опасную для ГП формулировку из библиотеки.',
-  '',
-  'КАК РАБОТАТЬ:',
-  '• Для каждого риска из справочника пойми его суть (risk_text) и триггеры',
-  '  (примеры фраз). Найди в ТЗ фрагменты, которые реально подпадают под риск',
-  '  — по смыслу, а не только по точному совпадению слов.',
-  '• matched_risk_key — key риска из справочника; risk_category — его category',
-  '  (скопируй дословно). criticality бери у риска, если фрагмент явно',
-  '  опасен; снижай, если совпадение слабое.',
-  '• suggested_redaction — рекомендация компании по этому риску (recommendation',
-  '  из справочника), адаптированная к фрагменту.',
-  '• fragment — ДОСЛОВНАЯ цитата из приведённого ТЗ, иначе находка',
-  '  отбрасывается. problem_type всегда "типовой_риск".',
-  '',
-  'ЧЕГО НЕ ДЕЛАТЬ:',
-  '• Не выдумывай риски вне справочника. Нет совпадения — не флагай.',
-  '• Один фрагмент — один (наиболее подходящий) риск, без дублей.',
-  '• Не повторяй другие стадии: покрытие расчёта (ВОР/чек-лист) → Стадия 1;',
-  '  Q&A → Стадия 2; договорные условия компании → Стадия 3; чистый самоанализ',
-  '  формулировок → Стадия 5. Здесь — только совпадения с библиотекой рисков.',
-  '',
-  'Рассуждай про себя — верни только итоговый JSON (поле findings).',
-].join('\n');
-
 const CHAR_BUDGET = Number(process.env.STAGE_LLM_CHAR_BUDGET) || 400000;
 const CONCURRENCY = Math.max(1, Number(process.env.STAGE_LLM_CONCURRENCY) || 1);
 const SCAFFOLD_OVERHEAD = 600;
@@ -149,9 +124,11 @@ async function runStage4Llm(context) {
 
   const allRisks = await listForTender(tenderId);
   const risks = allRisks.filter((r) => r.effective);
+  const promptVariant = resolveVariant();
+  const systemMsg = buildSystemPrompt(promptVariant);
   // eslint-disable-next-line no-console
   console.log(
-    `[stage4_llm] model=${getModel()} blocks=${blocks.length} рисков: ${allRisks.length} → эффективных ${risks.length}`,
+    `[stage4_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} рисков: ${allRisks.length} → эффективных ${risks.length}`,
   );
   if (!risks.length) {
     const issues = [];
@@ -161,7 +138,7 @@ async function runStage4Llm(context) {
   }
 
   const risksText = formatRisks(risks);
-  const tzBudget = CHAR_BUDGET - risksText.length - SCAFFOLD_OVERHEAD - SYSTEM_PROMPT.length;
+  const tzBudget = CHAR_BUDGET - risksText.length - SCAFFOLD_OVERHEAD - systemMsg.length;
   if (tzBudget <= 0) {
     const err = new Error(
       'Библиотека рисков сама по себе превышает бюджет контекста. Сократите перечень активных рисков.',
@@ -172,7 +149,7 @@ async function runStage4Llm(context) {
 
   return runLlmStage(context, {
     sourceDocumentId: context.sourceDocumentId,
-    systemMsg: SYSTEM_PROMPT,
+    systemMsg,
     schema: RESPONSE_SCHEMA,
     schemaName: 'stage4_findings',
     tzBudget,

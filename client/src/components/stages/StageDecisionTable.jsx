@@ -11,8 +11,10 @@ import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 
 // 4 UI-кнопки → существующие БД-decisions.
-// reject / delete сохраняются сразу. edit переключает в режим ввода нового текста.
-// accept («Примечание») — режим ввода комментария.
+// reject сохраняется сразу. delete сохраняется сразу, но подхватывает примечание
+// из раскрытой строки (Удалить + примечание). edit переключает в режим ввода
+// нового текста + необязательного примечания (Изменить + примечание).
+// accept («Примечание») — режим ввода комментария без правки текста.
 const BUTTONS = [
   {
     kind: 'reject', label: 'Отклонить', mode: null,
@@ -113,8 +115,15 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
   const noteRef = useRef(null);
 
   // При сворачивании сбрасываем режим (lock-флаги остаются — текст не теряется).
+  // При раскрытии — префилл черновиков. ВАЖНО: примечание (draftCom) подставляем
+  // только из уже сохранённого решения инженера (decision_comment), но НЕ из
+  // комментария анализатора (review_comment). Иначе авто-подставленный текст
+  // молча сохранился бы как final_comment и уехал в Word. Комментарий агента
+  // показываем отдельной подсказкой с кнопкой «Вставить» (см. ниже).
   useEffect(() => {
-    if (!expanded) setMode(null);
+    if (!expanded) { setMode(null); return; }
+    setDraftRed(issue.decision_redaction || issue.edited_redaction || issue.suggested_redaction || '');
+    setDraftCom(issue.decision_comment || '');
   }, [expanded]);
 
   // Фокус на нужный textarea при входе в режим или при разблокировке.
@@ -132,12 +141,19 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
 
   const click = (btn) => {
     if (readOnly) return;
-    // Кнопки без режима (Отклонить / Удалить) — сохраняем сразу и скрываем
-    // любое поле ввода: при этих решениях текст/примечание не нужны.
-    if (!btn.mode) {
-      setPendingDecision(btn.kind);
-      onDecide(issue, btn.kind, { redaction: '', comment: '' });
+    if (btn.kind === 'reject') {
+      // Отклонить — сохраняем сразу, поля ввода не нужны (в экспорт не идёт).
+      setPendingDecision('reject');
+      onDecide(issue, 'reject', { redaction: '', comment: '' });
       setMode(null);
+      return;
+    }
+    if (btn.kind === 'delete') {
+      // Удалить — сохраняем сразу, но подхватываем примечание из раскрытой строки
+      // (если инженер его ввёл). Свёрнутый быстрый сценарий «просто удалить»
+      // работает как раньше: draftCom пуст → комментарий не добавится.
+      setPendingDecision('delete');
+      onDecide(issue, 'delete', { redaction: '', comment: draftCom });
       return;
     }
     // Кнопки с режимом (Изменить / Примечание): раскрываем строку, разблокируем поле.
@@ -152,8 +168,9 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
       toastError('Введите новый текст и нажмите Enter');
       return;
     }
+    // Изменить + примечание: новый текст обязателен, примечание — необязательно.
     setPendingDecision('edit');
-    onDecide(issue, 'edit', { redaction: draftRed, comment: '' });
+    onDecide(issue, 'edit', { redaction: draftRed, comment: draftCom });
     setEditLocked(true);
   };
 
@@ -273,6 +290,28 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
               )}
             </div>
             <div>
+              {/* Комментарий анализатора (LLM-агента) — подсказка, НЕ примечание.
+                  В Word сам по себе не попадает; инженер может вставить его в поле
+                  примечания кнопкой «Вставить», если согласен с формулировкой. */}
+              {issue.review_comment && (
+                <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-amber-800">Комментарий анализатора</span>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary text-xs"
+                        onClick={() => setDraftCom((c) => (c.trim() ? `${c}\n${issue.review_comment}` : issue.review_comment))}
+                      >
+                        Вставить в примечание
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-700 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">
+                    {issue.review_comment}
+                  </p>
+                </div>
+              )}
               {mode === 'edit' && (
                 <>
                   <div className="label flex items-center justify-between gap-2">
@@ -304,6 +343,18 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                       ? 'Сохранено. Нажмите «Редактировать», чтобы изменить.'
                       : 'Enter — сохранить · Shift+Enter — перенос строки · Esc — отменить'}
                   </p>
+                  {/* Изменить + примечание: необязательный комментарий рядом с правкой.
+                      Сохраняется тем же Enter, что и новый текст (submitEdit). */}
+                  <div className="label mt-3">Примечание (необязательно)</div>
+                  <textarea
+                    className={`input min-h-[70px] ${editLocked ? 'bg-gray-100 cursor-default' : ''}`}
+                    placeholder="Пояснение к правке для рецензента…"
+                    value={draftCom}
+                    onChange={(e) => setDraftCom(e.target.value)}
+                    onKeyDown={onKeyEnter(submitEdit, editLocked)}
+                    disabled={readOnly}
+                    readOnly={editLocked}
+                  />
                 </>
               )}
               {mode === 'note' && (
@@ -340,9 +391,22 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                 </>
               )}
               {!mode && (
-                <p className="text-xs text-gray-500 italic">
-                  Нажмите «Изменить» или «Примечание», чтобы внести правку.
-                </p>
+                <>
+                  {/* Удалить + примечание: можно ввести комментарий, затем нажать
+                      «Удалить» — он подхватится (см. click → kind==='delete'). */}
+                  <div className="label">Примечание (необязательно)</div>
+                  <textarea
+                    className="input min-h-[70px]"
+                    placeholder="Комментарий к удалению — затем нажмите «Удалить»…"
+                    value={draftCom}
+                    onChange={(e) => setDraftCom(e.target.value)}
+                    disabled={readOnly}
+                  />
+                  <p className="text-xs text-gray-500 mt-1 italic">
+                    «Удалить» сохранит фрагмент к удалению вместе с примечанием.
+                    Для замены текста нажмите «Изменить», для комментария без удаления — «Примечание».
+                  </p>
+                </>
               )}
             </div>
           </div>

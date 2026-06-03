@@ -5,6 +5,7 @@ import { toastError } from '../../store/useToastStore';
 import { STAGE_CONFIG } from '../stages/stageConfig';
 import StageRunControls from '../stages/StageRunControls';
 import StageDecisionTable from '../../components/stages/StageDecisionTable';
+import AnalysisProgressRing from '../../components/stages/AnalysisProgressRing';
 import { STAGE_STATUS, criticalityClass } from '../../utils/labels';
 
 /**
@@ -107,6 +108,10 @@ export default function StagePanel({ stage }) {
           )}
         </div>
       </div>
+
+      {status === 'running' && tenderId && (
+        <AnalysisProgressRing tenderId={tenderId} stage={stage} />
+      )}
 
       {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}
 

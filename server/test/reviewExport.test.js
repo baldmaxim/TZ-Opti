@@ -184,6 +184,39 @@ test('accept с текстом → Word-комментарий, без track cha
   assert.equal(delTexts(buffer).length, 0);
 });
 
+test('edit + примечание → w:del + w:ins И Word-комментарий на том же фрагменте', () => {
+  const fp = tmpDocx([para('Гарантийный срок составляет 12 месяцев с даты подписания.')]);
+  const frag = '12 месяцев';
+  const idx = indexOfFragment(fp, frag);
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: idx }), 'edit', {
+      edited_redaction: '60 месяцев',
+      final_comment: 'Привести к СНиП: гарантия не менее 5 лет.',
+    }),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.equal(report.items[0].visual, 'del+ins');
+  assert.ok(delTexts(buffer).some((t) => t.includes('12 месяцев')));
+  assert.ok(insTexts(buffer).some((t) => t.includes('60 месяцев')));
+  assert.ok(commentTexts(buffer).some((c) => c.includes('гарантия не менее 5 лет')));
+});
+
+test('delete + примечание → w:del И Word-комментарий с примечанием', () => {
+  const fp = tmpDocx([para('Подрядчик обеспечивает временное электроснабжение площадки.')]);
+  const frag = 'временное электроснабжение площадки';
+  const idx = indexOfFragment(fp, frag);
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: idx }), 'delete', {
+      final_comment: 'Эта обязанность — на заказчике по договору.',
+    }),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.equal(delTexts(buffer).length, 1);
+  assert.ok(commentTexts(buffer).some((c) => c.includes('на заказчике по договору')));
+});
+
 test('фрагмент не найден → status=failed с причиной', () => {
   const fp = tmpDocx([para('Обычный текст без нужной фразы.')]);
   const { buffer, report } = runExport(fp, [

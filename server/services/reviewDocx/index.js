@@ -151,14 +151,17 @@ function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
       });
     }
 
-    // remove_from_scope — добавляем комментарий-метку «Вынесено из объёма»,
-    // чтобы отличать его от простого удаления (тег необязателен — не валит экспорт).
-    if (visual.tag) {
+    // Сопутствующий Word-комментарий к track-change. Объединяем:
+    //   visual.tag      — метка «Вынесено из объёма» (для remove_from_scope);
+    //   finalComment    — примечание инженера (edit/delete + примечание).
+    // Комментарий необязателен — его сбой не валит уже применённую правку.
+    const noteParts = [visual.tag, finalComment].filter(Boolean);
+    if (noteParts.length) {
       try {
         const cid = nextCommentId(commentsDoc);
-        addCommentForRange(commentsDoc, target, splitResult.firstRun, splitResult.lastRun, { id: cid, author, date, text: visual.tag });
+        addCommentForRange(commentsDoc, target, splitResult.firstRun, splitResult.lastRun, { id: cid, author, date, text: noteParts.join(' — ') });
       } catch (_e) {
-        // метку не удалось добавить — само удаление уже применено, это не критично.
+        // комментарий не лёг — сама правка (w:del/w:ins) уже применена, это не критично.
       }
     }
 

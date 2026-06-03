@@ -38,7 +38,9 @@ async function loadDecisions(tenderId, stageFilter = null) {
   return rows.map((r) => ({
     issue: r,
     decision_kind: r.decision_kind || (r.review_status === 'edited' ? 'edit' : 'accept'),
-    final_comment: r.final_comment || r.review_comment,
+    // В Word попадает только примечание, явно сохранённое инженером (final_comment).
+    // Комментарий анализатора (review_comment) — подсказка в UI, в документ не уходит.
+    final_comment: r.final_comment,
     edited_redaction: r.edited_decision_redaction || r.edited_redaction,
   }));
 }

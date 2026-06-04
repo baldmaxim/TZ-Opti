@@ -12,6 +12,7 @@ const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage4Prompts');
 const { listForTender } = require('../risksService');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
+const { scoreStage4Finding } = require('./stage4Scoring');
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -62,11 +63,13 @@ const RESPONSE_SCHEMA = {
           },
           review_comment: {
             type: 'string',
-            description: 'Краткий комментарий инженеру (на русском). Может быть пустым.',
+            description:
+              'Практический совет инженеру (на русском): что проверить/как закрыть риск. Для high/critical — обязательно непустой, конкретный.',
           },
           basis: {
             type: 'string',
-            description: 'Чем фрагмент ТЗ совпал с риском (кратко).',
+            description:
+              'Обоснование: чем фрагмент совпал с риском И какое КОНКРЕТНОЕ денежное/объёмное/срочное последствие для ГП оно влечёт. Без эконом-последствия находку не давать.',
           },
           confidence: { type: 'number', minimum: 0, maximum: 1 },
         },
@@ -84,9 +87,11 @@ function formatRisks(risks) {
   const lines = [];
   risks.forEach((r, i) => {
     const triggers = (r.triggers || []).filter(Boolean).join('; ');
+    const negatives = (r.negative_triggers || []).filter(Boolean).join('; ');
     lines.push(`### ${i + 1}. [${r.key}] (${r.category || '—'}, criticality=${r.criticality || 'medium'})`);
     lines.push(`Риск: ${r.risk_text || '—'}`);
     if (triggers) lines.push(`Триггеры-примеры: ${triggers}`);
+    if (negatives) lines.push(`Анти-триггеры (НЕ риск, если по смыслу про это — не флагай): ${negatives}`);
     if (r.recommendation) lines.push(`Рекомендация компании: ${r.recommendation}`);
     lines.push('');
   });
@@ -147,7 +152,25 @@ async function runStage4Llm(context) {
     throw err;
   }
 
-  return runLlmStage(context, {
+  // Quality scoring + negative patterns: отсекаем галлюцинации ключей, срабатывания
+  // анти-триггеров и слабые/необоснованные находки до дедупа и локализации.
+  const riskByKey = new Map(risks.map((r) => [r.key, r]));
+  let droppedScore = 0;
+  const mapFinding = (f) => {
+    const risk = riskByKey.get(f.matched_risk_key) || null;
+    const { score, drop, reason } = scoreStage4Finding({ finding: f, risk });
+    if (drop) {
+      droppedScore += 1;
+      // eslint-disable-next-line no-console
+      console.log(`[stage4_llm] отсеяно scoring: ${reason} — ${JSON.stringify((f.fragment || '').slice(0, 80))}`);
+      return null;
+    }
+    // Бейдж % не должен завышать слабые совпадения.
+    f.confidence = Math.min(typeof f.confidence === 'number' ? f.confidence : score, score);
+    return f;
+  };
+
+  const issues = await runLlmStage(context, {
     sourceDocumentId: context.sourceDocumentId,
     systemMsg,
     schema: RESPONSE_SCHEMA,
@@ -157,9 +180,13 @@ async function runStage4Llm(context) {
     riskCategory: 'общие_риски',
     issueDefaults: { suggestedAction: 'comment', confidence: 0.7 },
     logTag: 'stage4_llm',
+    mapFinding,
     buildUserMessage: (segBlocks, partIdx, partTotal) =>
       buildSegmentUserMessage({ tzText: renderSegment(segBlocks), risksText, partIdx, partTotal }),
   });
+  // eslint-disable-next-line no-console
+  console.log(`[stage4_llm] scoring: отсеяно ${droppedScore}, осталось issues=${issues.length}`);
+  return issues;
 }
 
 module.exports = { runStage4Llm, buildIssue, locateInBlocks };

@@ -1,7 +1,8 @@
 'use strict';
 
 const { DocxPackage } = require('./docxPackage');
-const { extractParagraphs, findFragmentInParagraph, normalize } = require('./quoteLocator');
+const { extractParagraphs, findFragmentInParagraph, findFragmentTolerant, normalize } = require('./quoteLocator');
+const { jaccardOverlap } = require('../stageAnalysis/shared/fragmentMatcher');
 const { splitParagraphRuns } = require('./runSplitter');
 const { addCommentForRange, addCommentForNodes, nextCommentId } = require('./commentWriter');
 const { applyDeletion, applyInsertion, nextTrackChangeId } = require('./trackChangesWriter');
@@ -78,20 +79,115 @@ function fallbackText(kind, issue, decision) {
   return parts.join(' ');
 }
 
-function locateTarget(issue, paragraphs) {
-  const fragment = (issue.source_fragment || '').trim();
-  if (!fragment) return { fragment, target: null, range: null };
-  // Сначала пытаемся попасть в paragraph_index, если он валиден.
+const FUZZY_THRESHOLD = 0.6;
+
+// Абзацы-кандидаты: сперва указанный paragraph_index, затем все (порядок = приоритет).
+function candidateParagraphs(issue, paragraphs) {
   const candidates = [];
   if (issue.paragraph_index != null && paragraphs[issue.paragraph_index]) {
     candidates.push(paragraphs[issue.paragraph_index]);
   }
   for (const p of paragraphs) candidates.push(p);
+  return candidates;
+}
+
+// Одна игла по списку абзацев: сперва строго (exact) везде, потом терпимо к пробелам.
+function matchNeedle(candidates, needle) {
+  if (!needle) return null;
   for (const p of candidates) {
-    const r = findFragmentInParagraph(p, fragment);
-    if (r) return { fragment, target: p, range: r };
+    const r = findFragmentInParagraph(p, needle);
+    if (r) return { target: p, range: r };
   }
-  return { fragment, target: null, range: null };
+  for (const p of candidates) {
+    const r = findFragmentTolerant(p, needle);
+    if (r) return { target: p, range: r };
+  }
+  return null;
+}
+
+/**
+ * Каскад локализации фрагмента в .docx с понижением точности:
+ *   exact → tolerant (терпимо к пробелам) → cell (ячейки таблицы) → fuzzy (jaccard) → none.
+ * `.md` (источник source_fragment) и `.docx` (цель экспорта) — разные файлы, побайтно не
+ * совпадают (таблицы склеены ' | ', другие пробелы), поэтому строгого indexOf мало.
+ * Возвращает { fragment, target, range, quality[, jaccard] }. `range` — РЕАЛЬНЫЕ смещения
+ * в target.text. При quality 'none' target = первый непустой абзац (якорь для комментария).
+ */
+function locateTarget(issue, decision, paragraphs) {
+  const fragment = (issue.source_fragment || '').trim();
+  if (!fragment) return { fragment, target: null, range: null, quality: 'empty' };
+
+  const candidates = candidateParagraphs(issue, paragraphs);
+
+  // 1-2. Целый фрагмент: exact, затем tolerant.
+  const whole = matchNeedle(candidates, fragment);
+  if (whole) {
+    const exact = findFragmentInParagraph(whole.target, fragment);
+    return { fragment, target: whole.target, range: whole.range, quality: exact ? 'exact' : 'tolerant' };
+  }
+
+  // 3. Таблица по ячейкам / подчасть инженера: разбиваем строку таблицы на ячейки.
+  const part = (resolveActionTarget(issue, decision) || '').trim();
+  if (fragment.includes(' | ') || (part && part !== fragment)) {
+    const needles = [];
+    if (part && part !== fragment) needles.push(part); // выбранная инженером ячейка — приоритет
+    if (fragment.includes(' | ')) {
+      const cells = fragment.split(' | ').map((c) => c.trim()).filter(Boolean);
+      cells.sort((a, b) => b.length - a.length); // самая содержательная ячейка — первой
+      needles.push(...cells);
+    }
+    for (const ndl of needles) {
+      const hit = matchNeedle(candidates, ndl);
+      if (hit) return { fragment, target: hit.target, range: hit.range, quality: 'cell' };
+    }
+  }
+
+  // 4. Нечёткий фолбэк: абзац с максимальным token-overlap (jaccard) выше порога.
+  let best = null;
+  let bestScore = 0;
+  for (const p of candidates) {
+    if (!p.text || !p.text.trim()) continue;
+    const score = jaccardOverlap(fragment, p.text);
+    if (score > bestScore) { bestScore = score; best = p; }
+  }
+  if (best && bestScore >= FUZZY_THRESHOLD) {
+    return { fragment, target: best, range: { start: 0, end: best.text.length }, quality: 'fuzzy', jaccard: bestScore };
+  }
+
+  // 5. Ничего: якорь для комментария — первый непустой абзац.
+  const anchor = paragraphs.find((p) => p.text && p.text.trim()) || null;
+  return {
+    fragment,
+    target: anchor,
+    range: anchor ? { start: 0, end: anchor.text.length } : null,
+    quality: 'none',
+  };
+}
+
+// Сужение диапазона до выбранной инженером ПОДЧАСТИ внутри найденного фрагмента.
+// Поиск терпимый (как и локализация); вернёт null, если подчасть не нашлась.
+function narrowToPart(target, range, part) {
+  const subText = target.text.slice(range.start, range.end);
+  const sub = findFragmentTolerant({ text: subText }, part);
+  if (!sub) return null;
+  return { start: range.start + sub.start, end: range.start + sub.end };
+}
+
+// Word-комментарий на весь абзац-якорь (фолбэк, когда правка не может лечь как track-change).
+function writeComment(base, target, commentsDoc, meta, text, reason, status = 'fallback') {
+  const splitResult = splitParagraphRuns(target, 0, target.text.length);
+  if (!splitResult) {
+    return { ...base, status: 'failed', visual: 'none', fallbackUsed: false, reason: `${reason}; не удалось расщепить абзац-якорь` };
+  }
+  try {
+    const cid = nextCommentId(commentsDoc);
+    addCommentForRange(commentsDoc, target, splitResult.firstRun, splitResult.lastRun, {
+      id: cid, author: meta.author, date: meta.date, text,
+    });
+    return { ...base, status, visual: 'comment', fallbackUsed: status === 'fallback', commentId: cid, reason };
+  } catch (err) {
+    return { ...base, status: 'failed', visual: 'none', fallbackUsed: false, reason: `${reason}; комментарий не лёг: ${err.message || err}` };
+  }
 }
 
 function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
@@ -99,27 +195,52 @@ function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
   const kind = (decision.decision_kind || '').toString();
   const base = { issueId: issue.id, stage: issue.analysis_stage ?? null, decisionKind: kind };
 
-  const { fragment, target, range } = locateTarget(issue, paragraphs);
+  const loc = locateTarget(issue, decision, paragraphs);
+  const { fragment, target, range, quality } = loc;
   if (!fragment) {
     return { ...base, status: 'skipped', visual: 'none', fallbackUsed: false, reason: 'Пустой source_fragment' };
   }
-  if (!target) {
-    return { ...base, status: 'failed', visual: 'none', fallbackUsed: false, reason: 'Фрагмент не найден в .docx' };
+
+  const visual = decisionVisual(kind);
+  const finalComment = (decision.final_comment || '').trim();
+
+  // reject / прочее без визуала — не экспортируется (независимо от локализации).
+  if (visual.docx === 'none') {
+    return { ...base, status: 'skipped', visual: 'none', fallbackUsed: false, reason: 'Решение не экспортируется' };
   }
 
-  // Сужение до выбранной инженером ПОДЧАСТИ фрагмента (delete/edit на части).
-  // resolveActionTarget вернёт весь фрагмент, если подчасть не задана → range без изменений.
-  // normalize length-preserving → индексы валидны в реальном тексте абзаца (runSplitter).
+  // Место не найдено вовсе → комментарий к якорю, чтобы решение не потерялось молча.
+  if (quality === 'none') {
+    if (!target) {
+      return { ...base, status: 'failed', visual: 'none', fallbackUsed: false, reason: 'Фрагмент не найден в .docx' };
+    }
+    if (visual.docx === 'comment') {
+      if (!finalComment) {
+        return { ...base, status: 'skipped', visual: 'comment', fallbackUsed: false, reason: 'Примечание без текста' };
+      }
+      return writeComment(base, target, commentsDoc, { author, date }, finalComment, 'Место не найдено — примечание оставлено комментарием');
+    }
+    return writeComment(base, target, commentsDoc, { author, date }, fallbackText(kind, issue, decision), 'Место не найдено — оставлено комментарием');
+  }
+
+  // Нечёткое совпадение для edit → не подменяем абзац целиком (риск), оставляем комментарий.
+  if (quality === 'fuzzy' && visual.docx === 'del+ins') {
+    return writeComment(
+      base, target, commentsDoc, { author, date }, fallbackText(kind, issue, decision),
+      `Найдено нечётко (jaccard=${(loc.jaccard || 0).toFixed(2)}) — правка оставлена комментарием`,
+    );
+  }
+
+  // Сужение до выбранной инженером ПОДЧАСТИ фрагмента (delete/edit на части) —
+  // только для точных/ячеечных совпадений (у fuzzy range = весь абзац).
   let effRange = range;
   let partNotFound = false;
-  const part = (resolveActionTarget(issue, decision) || '').trim();
-  if (part && normalize(part) !== normalize(fragment)) {
-    const fragNorm = normalize(target.text).slice(range.start, range.end);
-    const subIdx = fragNorm.indexOf(normalize(part));
-    if (subIdx !== -1) {
-      effRange = { start: range.start + subIdx, end: range.start + subIdx + part.length };
-    } else {
-      partNotFound = true; // подчасть не нашлась — безопасный фолбэк на весь фрагмент
+  if (quality === 'exact' || quality === 'tolerant' || quality === 'cell') {
+    const part = (resolveActionTarget(issue, decision) || '').trim();
+    if (part && normalize(part) !== normalize(fragment)) {
+      const narrowed = narrowToPart(target, range, part);
+      if (narrowed) effRange = narrowed;
+      else partNotFound = true; // подчасть не нашлась — безопасный фолбэк на весь фрагмент
     }
   }
 
@@ -127,9 +248,6 @@ function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
   if (!splitResult) {
     return { ...base, status: 'failed', visual: 'none', fallbackUsed: false, reason: 'Не удалось расщепить runs' };
   }
-
-  const visual = decisionVisual(kind);
-  const finalComment = (decision.final_comment || '').trim();
 
   // accept (Примечание) — только Word-комментарий, если есть текст.
   if (visual.docx === 'comment') {
@@ -146,9 +264,6 @@ function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
   }
 
   // delete / remove_from_scope / edit — настоящий Track Changes.
-  if (visual.docx === 'none') {
-    return { ...base, status: 'skipped', visual: 'none', fallbackUsed: false, reason: 'Решение не экспортируется' };
-  }
   try {
     // delEl/lastNode — элементы track-change; на них (СНАРУЖИ) анкерим комментарий,
     // чтобы commentReference не оказался внутри <w:del> (иначе Word скрыл бы примечание).
@@ -190,9 +305,14 @@ function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
       }
     }
 
+    const appliedReason = partNotFound
+      ? 'Выбранная подчасть не найдена — применено ко всему фрагменту'
+      : (quality === 'fuzzy'
+        ? `Найдено нечётко (jaccard=${(loc.jaccard || 0).toFixed(2)}) — помечен весь абзац`
+        : null);
     return {
       ...base, status: 'applied', visual: visual.docx, fallbackUsed: false,
-      ...(partNotFound ? { reason: 'Выбранная подчасть не найдена — применено ко всему фрагменту' } : {}),
+      ...(appliedReason ? { reason: appliedReason } : {}),
     };
   } catch (err) {
     // Track-change не лёг → fallback на Word-комментарий, чтобы правка не пропала молча.

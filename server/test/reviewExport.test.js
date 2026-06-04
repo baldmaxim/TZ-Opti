@@ -269,16 +269,83 @@ test('target_text не найден в фрагменте → фолбэк на 
   assert.match(report.items[0].reason || '', /подчасть не найдена/i);
 });
 
-test('фрагмент не найден → status=failed с причиной', () => {
+test('фрагмент не найден, есть абзац-якорь → fallback-комментарий (решение не теряется)', () => {
   const fp = tmpDocx([para('Обычный текст без нужной фразы.')]);
   const { buffer, report } = runExport(fp, [
-    decision(issue({ source_fragment: 'этой фразы тут точно нет', paragraph_index: null }), 'delete'),
+    decision(issue({ source_fragment: 'совсем посторонняя непересекающаяся строка', paragraph_index: null }), 'delete'),
   ]);
 
-  assert.equal(report.summary.failed, 1);
-  assert.equal(report.items[0].status, 'failed');
-  assert.match(report.items[0].reason, /не найден/i);
+  assert.equal(report.summary.fallback, 1);
+  assert.equal(report.items[0].status, 'fallback');
+  assert.match(report.items[0].reason || '', /не найдено|комментарием/i);
+  assert.equal(delTexts(buffer).length, 0);     // чужой текст не зачёркнут
+  assert.ok(commentTexts(buffer).length >= 1);  // но решение видно комментарием
+});
+
+// ── Устойчивое сопоставление .md↔.docx (A/B/C/D) ─────────────────────────────
+
+test('A: терпимость к пробелам — фрагмент с одинарными пробелами ложится в абзац с двойными', () => {
+  const fp = tmpDocx([para('Текст  с   двойными    пробелами внутри.')]);
+  const frag = 'Текст с двойными пробелами';
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: 0 }), 'delete'),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  const dels = delTexts(buffer);
+  assert.equal(dels.length, 1);
+  assert.ok(dels[0].toLowerCase().includes('двойными'));
+});
+
+test('A: терпимость к неразрывным пробелам — nbsp в .docx ↔ обычный пробел во фрагменте', () => {
+  const fp = tmpDocx([para('Цена договора твёрдая.')]);
+  const frag = 'Цена договора твёрдая';
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: 0 }), 'delete'),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.ok(delTexts(buffer)[0].toLowerCase().includes('договора'));
+});
+
+test('B: таблица по ячейкам — source_fragment строки (cells join " | ") метит ячейку-абзац', () => {
+  const fp = tmpDocx([table([['Рампы', 'выполнить с антискользящим покрытием']])]);
+  const frag = 'Рампы | выполнить с антискользящим покрытием';
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: null }), 'edit', { edited_redaction: 'по проекту' }),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.equal(report.items[0].visual, 'del+ins');
+  assert.ok(delTexts(buffer).some((t) => t.includes('антискользящим')));
+  assert.ok(insTexts(buffer).some((t) => t.includes('по проекту')));
+});
+
+test('C: нечёткий фолбэк (jaccard) — мелкие отличия → весь абзац в w:del, applied с jaccard', () => {
+  const fp = tmpDocx([para('Подрядчик обеспечивает вывоз строительного мусора с площадки ежедневно.')]);
+  // во фрагменте нет точного вхождения (лишние слова, пропущено «с»), но token-overlap высокий
+  const frag = 'Подрядчик обеспечивает вывоз строительного мусора площадки ежедневно за свой счёт';
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: 0 }), 'delete'),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.match(report.items[0].reason || '', /jaccard/i);
+  assert.ok(delTexts(buffer)[0].includes('строительного мусора'));
+});
+
+test('D: edit без места в .docx → fallback-комментарий, w:ins пуст (чужой текст не тронут)', () => {
+  const fp = tmpDocx([para('Совершенно другой текст про сроки и оплату.')]);
+  const frag = 'Заземление металлоконструкций по контуру здания';
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: null }), 'edit', { edited_redaction: 'по проекту КМ' }),
+  ]);
+
+  assert.equal(report.summary.fallback, 1);
+  assert.equal(report.items[0].status, 'fallback');
+  assert.equal(insTexts(buffer).length, 0);     // правка не подменила чужой текст
   assert.equal(delTexts(buffer).length, 0);
+  assert.ok(commentTexts(buffer).length >= 1);
 });
 
 test('пустой source_fragment → status=skipped', () => {

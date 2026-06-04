@@ -5,10 +5,13 @@ build/
 .env.local
 *.log
 server/uploads/
-server/db/tender.db
-server/db/tender.db-journal
-server/db/*.db-shm
-server/db/*.db-wal
+
+# SQLite-артефакты (legacy локальное хранилище; проект на Postgres) — не коммитить
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
 .vite/
 .DS_Store
 .idea/

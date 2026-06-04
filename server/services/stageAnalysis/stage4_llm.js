@@ -12,7 +12,9 @@ const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage4Prompts');
 const { listForTender } = require('../risksService');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
+const { jaccardOverlap } = require('./shared/fragmentMatcher');
 const { scoreStage4Finding } = require('./stage4Scoring');
+const { actionForRisk } = require('./stage4RuleSignals');
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -87,7 +89,7 @@ function formatRisks(risks) {
   const lines = [];
   risks.forEach((r, i) => {
     const triggers = (r.triggers || []).filter(Boolean).join('; ');
-    const negatives = (r.negative_triggers || []).filter(Boolean).join('; ');
+    const negatives = (r.negative_patterns || r.negative_triggers || []).filter(Boolean).join('; ');
     lines.push(`### ${i + 1}. [${r.key}] (${r.category || '—'}, criticality=${r.criticality || 'medium'})`);
     lines.push(`Риск: ${r.risk_text || '—'}`);
     if (triggers) lines.push(`Триггеры-примеры: ${triggers}`);
@@ -152,25 +154,43 @@ async function runStage4Llm(context) {
     throw err;
   }
 
-  // Quality scoring + negative patterns: отсекаем галлюцинации ключей, срабатывания
-  // анти-триггеров и слабые/необоснованные находки до дедупа и локализации.
+  // Детерминированный слой сигналов + quality scoring: отсекаем галлюцинации
+  // ключей, подавляем анти-паттерны, корректируем confidence по силе совпадения,
+  // обогащаем basis/review_comment/suggested_action. Финальное решение — за LLM,
+  // rule-слой лишь подаёт сигналы и ограничивает ложные срабатывания.
   const riskByKey = new Map(risks.map((r) => [r.key, r]));
-  let droppedScore = 0;
+  let droppedLowScore = 0;
+  let suppressedNegative = 0;
   const mapFinding = (f) => {
     const risk = riskByKey.get(f.matched_risk_key) || null;
-    const { score, drop, reason } = scoreStage4Finding({ finding: f, risk });
+    const { score, drop, reason, suppressedByNegative, signals } = scoreStage4Finding({ finding: f, risk });
     if (drop) {
-      droppedScore += 1;
+      if (suppressedByNegative) suppressedNegative += 1;
+      else droppedLowScore += 1;
       // eslint-disable-next-line no-console
-      console.log(`[stage4_llm] отсеяно scoring: ${reason} — ${JSON.stringify((f.fragment || '').slice(0, 80))}`);
+      console.log(`[stage4_llm] отсеяно: ${reason} — ${JSON.stringify((f.fragment || '').slice(0, 80))}`);
       return null;
     }
-    // Бейдж % не должен завышать слабые совпадения.
-    f.confidence = Math.min(typeof f.confidence === 'number' ? f.confidence : score, score);
+    // Гибкий confidence: score уже учёл бусты (точное/несколько совпадений) и
+    // штрафы (слабое/без триггера, бедный basis, вес риска).
+    f.confidence = score;
+    // Explainability: явно укажем, какая формулировка сработала.
+    if (signals && signals.positives.length) {
+      const trg = signals.positives.map((t) => `«${t}»`).join(', ');
+      if (!/сработал триггер/i.test(f.basis || '')) {
+        f.basis = `${(f.basis || '').trim()}${f.basis ? ' ' : ''}(сработал триггер: ${trg})`.trim();
+      }
+    }
+    // Fallback'и из справочника риска (не перетираем то, что дал LLM).
+    if (risk) {
+      if (!String(f.suggested_redaction || '').trim() && risk.recommendation) f.suggested_redaction = risk.recommendation;
+      if (!String(f.review_comment || '').trim()) f.review_comment = risk.review_comment_template || risk.recommendation || '';
+      if (!String(f.suggested_action || '').trim()) f.suggested_action = actionForRisk(risk);
+    }
     return f;
   };
 
-  const issues = await runLlmStage(context, {
+  const raw = await runLlmStage(context, {
     sourceDocumentId: context.sourceDocumentId,
     systemMsg,
     schema: RESPONSE_SCHEMA,
@@ -184,9 +204,65 @@ async function runStage4Llm(context) {
     buildUserMessage: (segBlocks, partIdx, partTotal) =>
       buildSegmentUserMessage({ tzText: renderSegment(segBlocks), risksText, partIdx, partTotal }),
   });
+
+  // Дедуп близких совпадений в одном абзаце: один и тот же риск (risk_category) на
+  // тот же абзац с высоким текстовым перекрытием → оставляем самую уверенную находку.
+  const { issues, removed } = dedupeStage4Issues(raw);
+
+  // Summary-метрики Стадии 4 (мерджатся движком в summary прогона).
+  issues.summaryExtra = {
+    suppressed_negative: suppressedNegative,
+    dropped_low_score: droppedLowScore,
+    deduped: removed,
+    top_categories: topCategories(issues),
+  };
+  issues.analysisNote =
+    `Подавлено анти-паттернами: ${suppressedNegative}; отсеяно по score: ${droppedLowScore}; ` +
+    `объединено дублей: ${removed}.`;
+
   // eslint-disable-next-line no-console
-  console.log(`[stage4_llm] scoring: отсеяно ${droppedScore}, осталось issues=${issues.length}`);
+  console.log(
+    `[stage4_llm] итог: issues=${issues.length}, suppressed_negative=${suppressedNegative}, ` +
+      `dropped_low_score=${droppedLowScore}, deduped=${removed}`,
+  );
   return issues;
+}
+
+// Дедуп: близкие находки одного риска в одном абзаце. Оставляем самую уверенную.
+function dedupeStage4Issues(allIssues) {
+  const kept = [];
+  let removed = 0;
+  const sorted = [...allIssues].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+  for (const it of sorted) {
+    const dup = kept.find(
+      (k) =>
+        k.paragraph_index != null &&
+        k.paragraph_index === it.paragraph_index &&
+        (k.risk_category || '') === (it.risk_category || '') &&
+        jaccardOverlap(k.source_fragment || '', it.source_fragment || '') >= 0.7,
+    );
+    if (dup) { removed += 1; continue; }
+    kept.push(it);
+  }
+  kept.sort(
+    (a, b) =>
+      (a.paragraph_index ?? 1e9) - (b.paragraph_index ?? 1e9) ||
+      (a.char_start ?? 0) - (b.char_start ?? 0),
+  );
+  return { issues: kept, removed };
+}
+
+// Топ-5 категорий риска среди итоговых находок.
+function topCategories(issues) {
+  const by = {};
+  for (const it of issues) {
+    const c = it.risk_category || '—';
+    by[c] = (by[c] || 0) + 1;
+  }
+  return Object.entries(by)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([category, count]) => ({ category, count }));
 }
 
 module.exports = { runStage4Llm, buildIssue, locateInBlocks };

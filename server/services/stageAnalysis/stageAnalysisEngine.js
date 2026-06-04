@@ -271,6 +271,8 @@ async function runStageInner(tenderId, stage) {
     by_criticality: countBy(issues, 'criticality'),
     by_problem_type: countBy(issues, 'problem_type'),
     notes: issues.analysisNote || null,
+    // Доп. метрики стадии (напр. Стадия 4: suppressed_negative, top_categories).
+    ...(issues.summaryExtra && typeof issues.summaryExtra === 'object' ? issues.summaryExtra : {}),
   };
 
   await db.transaction(async (tx) => {

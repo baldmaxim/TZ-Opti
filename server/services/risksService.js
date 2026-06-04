@@ -56,13 +56,26 @@ async function loadCustomRisks(tenderId) {
       category: r.category || 'Прочее',
       risk_text: r.risk_text,
       triggers,
-      negative_triggers: [],
+      negative_patterns: [],
       recommendation: '',
+      review_comment_template: '',
+      confidence_weight: 1.0,
       criticality: r.criticality || 'medium',
       applies_when: null,
       is_custom: true,
     };
   });
+}
+
+// Опциональные поля риска с дефолтами (обратная совместимость).
+// negative_patterns читаем и из legacy-имени negative_triggers.
+function optionalRiskFields(r) {
+  return {
+    negative_patterns: r.negative_patterns || r.negative_triggers || [],
+    review_comment_template: r.review_comment_template || '',
+    confidence_weight:
+      typeof r.confidence_weight === 'number' ? r.confidence_weight : 1.0,
+  };
 }
 
 async function listForTender(tenderId) {
@@ -74,11 +87,11 @@ async function listForTender(tenderId) {
     category: r.category,
     risk_text: r.risk_text,
     triggers: r.triggers || [],
-    negative_triggers: r.negative_triggers || [],
     recommendation: r.recommendation,
     criticality: r.criticality,
     applies_when: r.applies_when || null,
     is_custom: false,
+    ...optionalRiskFields(r),
   }));
   const custom = await loadCustomRisks(tenderId);
   return [...std, ...custom].map((r) => {
@@ -91,7 +104,6 @@ async function listForTender(tenderId) {
       category: r.category,
       risk_text: r.risk_text,
       triggers: r.triggers || [],
-      negative_triggers: r.negative_triggers || [],
       recommendation: r.recommendation,
       criticality: r.criticality,
       applies_when: r.applies_when || null,
@@ -101,6 +113,7 @@ async function listForTender(tenderId) {
       applies,
       effective,
       comment: s ? s.comment || '' : '',
+      ...optionalRiskFields(r),
     };
   });
 }

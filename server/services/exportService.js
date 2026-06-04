@@ -84,7 +84,7 @@ async function exportSummaryMd(tenderId) {
   lines.push(`- Высокая/критическая критичность: **${critIssues.length}**`);
   lines.push('');
   lines.push('## По стадиям');
-  for (let s = 1; s <= 4; s++) {
+  for (let s = 1; s <= 5; s++) {
     lines.push(`- Стадия ${s}: ${byStage(s).length} замечаний`);
   }
   lines.push('');

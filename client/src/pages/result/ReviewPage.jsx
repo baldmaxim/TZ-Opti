@@ -23,7 +23,7 @@ export default function ReviewPage() {
     if (!tenderId) return;
     try {
       const all = [];
-      for (let s = 1; s <= 4; s++) {
+      for (let s = 1; s <= 5; s++) {
         try {
           const data = await api.listStageIssues(tenderId, s, { review_status: 'pending' });
           for (const it of data.items || []) all.push(it);
@@ -95,7 +95,7 @@ export default function ReviewPage() {
           <span className={`tag ${criticalityClass(cur.criticality)}`}>{CRITICALITY[cur.criticality]}</span>
           <span className="tag bg-blue-100 text-blue-800">{ACTIONS[cur.suggested_action] || cur.suggested_action}</span>
           <span className="tag bg-gray-100 text-gray-700 text-xs">
-            {cur.analysis_stage === 1 ? 'GPT-4' : 'эвристика'}, {(cur.confidence * 100).toFixed(0)}%
+            LLM-агент, {(cur.confidence * 100).toFixed(0)}%
           </span>
         </div>
 

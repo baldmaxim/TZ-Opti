@@ -75,6 +75,7 @@ npm run dev
 - `DATABASE_URL` — Postgres/Supabase (рекомендуется pooler `*.pooler.supabase.com:6543`). **Без него сервер не стартует.**
 - LLM: либо реальный OpenAI (`OPENAI_API_KEY`, `OPENAI_MODEL`), либо локальный bridge — `OPENAI_BASE_URL=http://127.0.0.1:4010/v1`, `OPENAI_API_KEY=local-bridge` (любая непустая строка), `BRIDGE_MODEL=claude-sonnet-4-6`.
 - Режим промта по стадиям: `STAGE{1..5}_PROMPT_VARIANT` = `structural` (дефолт) | `strict` | `full`.
+- Стадия 4 (риски): `STAGE4_MIN_SCORE` — порог отсева слабых находок quality scoring (дефолт `0.45`).
 - Тюнинг и подробности bridge — `server/devtools/README.md`.
 
 Команды:
@@ -118,6 +119,7 @@ TZ-Opti/
     │   │   ├── stageAnalysisEngine.js                 — оркестратор 5 стадий (фоновый прогон + статусы)
     │   │   ├── stage1_llm.js … stage5_llm.js          — LLM-агенты стадий (логика + схема находки)
     │   │   ├── stage1Prompts.js … stage5Prompts.js    — системные промты (SHARED + 3 режима)
+    │   │   ├── stage4Scoring.js                       — quality scoring + анти-триггеры Стадии 4
     │   │   ├── llm/openaiClient.js                    — OpenAI-совместимый клиент (chatJson)
     │   │   ├── shared/llmStage.js                     — общий каркас (сегментация/локализация/дедуп/раннер)
     │   │   ├── shared/fragmentMatcher.js
@@ -207,8 +209,10 @@ TZ-Opti/
 | Каскадный сброс стадий, исключение фрагментов из активного текста | ✅ Реализовано |
 | Экспорт `.docx` с **настоящими Track Changes** (`w:ins`/`w:del`) + Word-комментарии | ✅ Реализовано |
 | Единый «вид решения» в preview / таблице / docx (delete vs «вынести из объёма» различаются) | ✅ Реализовано |
-| Пер-issue отчёт экспорта (что легло / через комментарий / не легло) + fallback на комментарий | ✅ Реализовано |
-| Регресс-набор экспорта (абзац / список / таблица / мультиформат / повтор) — `npm test` | ✅ Реализовано |
+| Пер-issue отчёт экспорта (`applied`/`fallback`/`failed`/`skipped`) + fallback на комментарий | ✅ Реализовано |
+| Устойчивое сопоставление `.md↔.docx` при экспорте (терпимо к пробелам → таблицы по ячейкам → нечёткий → комментарий-фолбэк) | ✅ Реализовано |
+| Стадия 4: анти-триггеры рисков + quality scoring (порог `STAGE4_MIN_SCORE`) — меньше ложных совпадений | ✅ Реализовано |
+| Регресс-набор: экспорт (абзац / список / таблица / мультиформат / повтор) + scoring Стадии 4 — `npm test` | ✅ Реализовано |
 | HTML-preview рецензии | ✅ Реализовано |
 | CSV / JSON / Markdown summary экспорты | ✅ Реализовано |
 | Q&A форма прямо в портале (вместо xlsx-загрузки) | ⚙️ Контракт `qaImportService` совместим. Следующая задача — UI-страница ввода. |
@@ -220,6 +224,8 @@ TZ-Opti/
 `stageN_llm.js` (логика стадии + JSON-схема находки) и `stageNPrompts.js` (системный промт: общий блок `SHARED` + блок режима `structural`/`strict`/`full`, переключатель `STAGE{N}_PROMPT_VARIANT`, дефолт `structural`). Общий каркас (фильтр boilerplate → сегментация ТЗ под бюджет контекста → вызов LLM по сегментам → дедуп → локализация фрагмента в `.docx`-абзацах) — в `shared/llmStage.js`. LLM-вызов идёт через `llm/openaiClient.js` (OpenAI-совместимый, structured output по JSON Schema); в dev — через локальный Claude-bridge.
 
 Каждое замечание дословно цитирует фрагмент ТЗ (`source_fragment`) и несёт `basis` (почему это проблема), `criticality`, `suggested_action` и `suggested_redaction` — инженер видит обоснование и может выбрать своё решение.
+
+**Стадия 4 (типовые риски)** дополнительно фильтрует шум: у рисков есть `negative_triggers` (анти-триггеры — контексты, где упоминание не является риском), а каждая находка проходит quality scoring (`stage4Scoring.js`) — галлюцинированные ключи рисков, срабатывания анти-триггеров и слабые/необоснованные совпадения отсекаются ниже порога `STAGE4_MIN_SCORE`; `basis` обязан называть конкретное денежное/объёмное/срочное последствие для ГП.
 
 > Прежний rule-based слой (файлы `stage*_*.js` без суффикса `_llm`, `shared/phrases.js`) оставлен в репозитории как superseded-история и движком не вызывается.
 
@@ -281,11 +287,14 @@ GET    /api/tenders/:id/stages/:n/issues             ?criticality=&review_status
 PATCH  /api/issues/:id                               review_status, edited_redaction, selected_for_export
 POST   /api/issues/:id/decision                      {decision, edited_redaction, final_comment}
 
-GET    /api/tenders/:id/review/preview               HTML
-GET    /api/tenders/:id/export/docx
+GET    /api/tenders/:id/review/preview               HTML-preview рецензии
+GET    /api/tenders/:id/review/consolidated          экран «Итог» (группы по месту ТЗ)
+GET    /api/tenders/:id/export/docx                  ТЗ.docx с Track Changes
+GET    /api/tenders/:id/export/docx/report           пер-issue отчёт экспорта (applied/fallback/failed/skipped)
 GET    /api/tenders/:id/export/issues.csv
 GET    /api/tenders/:id/export/issues.json
 GET    /api/tenders/:id/export/summary.md
+GET    /api/tenders/:id/export/review.md             review.md со всеми правками
 ```
 
 > `:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`: `open`/`running`/`reviewing`/`finished`).

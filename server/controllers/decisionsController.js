@@ -41,10 +41,12 @@ exports.patchIssue = async (req, res) => {
 exports.makeDecision = async (req, res) => {
   const issue = await getIssue(req.params.id);
   if (!issue) throw notFound('Issue не найден');
-  const { decision, edited_redaction, final_comment } = req.body || {};
+  const { decision, edited_redaction, final_comment, target_text } = req.body || {};
   if (!ALLOWED_DECISIONS.includes(decision)) {
     throw badRequest('Допустимые решения: ' + ALLOWED_DECISIONS.join(', '));
   }
+  // Подчасть фрагмента (delete/edit на выделенную часть). Пустую строку → null.
+  const targetText = (target_text || '').trim() || null;
 
   const reviewStatus = (() => {
     if (decision === 'reject') return 'rejected';
@@ -56,14 +58,15 @@ exports.makeDecision = async (req, res) => {
     await tx.queryRun('DELETE FROM review_decisions WHERE issue_id = ?', issue.id);
     await tx.queryRun(
       `
-      INSERT INTO review_decisions (id, issue_id, decision, edited_redaction, final_comment, decided_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO review_decisions (id, issue_id, decision, edited_redaction, final_comment, target_text, decided_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `,
       newId(),
       issue.id,
       decision,
       edited_redaction || null,
       final_comment || null,
+      targetText,
       nowIso(),
     );
     const updates = ['review_status = ?'];

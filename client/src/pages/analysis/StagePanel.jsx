@@ -110,7 +110,7 @@ export default function StagePanel({ stage }) {
       </div>
 
       {status === 'running' && tenderId && (
-        <AnalysisProgressRing tenderId={tenderId} stage={stage} />
+        <AnalysisProgressRing tenderId={tenderId} stage={stage} progress={stageInfo?.progress} />
       )}
 
       {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}

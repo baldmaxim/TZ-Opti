@@ -3,6 +3,7 @@
 const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
 const engine = require('../services/stageAnalysis/stageAnalysisEngine');
+const progressRegistry = require('../services/stageAnalysis/progressRegistry');
 
 exports.getState = async (req, res) => {
   const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', req.params.id);
@@ -14,6 +15,8 @@ exports.getState = async (req, res) => {
       label: engine.STAGE_LABELS[n],
       status: state[`stage${n}_status`],
       summary: await engine.getStageRunSummary(req.params.id, n),
+      // Прогресс по сегментам для круговой шкалы (только пока стадия считается).
+      progress: progressRegistry.get(req.params.id, n),
     })),
   );
   res.json({ state, stages });

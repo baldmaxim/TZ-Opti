@@ -224,6 +224,9 @@ async function runLlmStage(ctx, cfg) {
     throw err;
   }
 
+  // Прогресс по сегментам для круговой шкалы (in-memory реестр, см. progressRegistry).
+  ctx.progress?.setTotal(segments.length);
+
   const startedAt = Date.now();
   const results = new Array(segments.length);
   for (let start = 0; start < segments.length; start += concurrency) {
@@ -240,6 +243,7 @@ async function runLlmStage(ctx, cfg) {
               `[${logTag}] часть ${idx + 1}/${segments.length}: findings=${segFindings.length}`,
             );
             results[idx] = segFindings;
+            ctx.progress?.tick(); // +1 сегмент готов → круговая шкала
           })
           .catch((e) => {
             const err = new Error(

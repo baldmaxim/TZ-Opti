@@ -12,6 +12,7 @@ const { runStage5Llm } = require('./stage5_llm');
 const { importQaXlsx } = require('../qaImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 const { isOwnedBy, stageResultType } = require('../review/stageDomains');
+const progressRegistry = require('./progressRegistry');
 
 // Единый серверный источник названий стадий (идёт в summary.label).
 // Тексты должны совпадать с STAGE_META на клиенте (client/src/utils/labels.js).
@@ -177,6 +178,7 @@ async function startStageBackground(tenderId, stage) {
   const prevStatus = state[`stage${stage}_status`];
   RUNNING_STAGES.add(key);
   await setStageStatus(tenderId, stage, 'running');
+  progressRegistry.init(tenderId, stage); // прогресс по сегментам для круговой шкалы
   // Не ждём: ответ уходит сразу, анализ идёт в фоне.
   (async () => {
     try {
@@ -185,6 +187,7 @@ async function startStageBackground(tenderId, stage) {
       await recordFailedRun(tenderId, stage, prevStatus, e);
     } finally {
       RUNNING_STAGES.delete(key);
+      progressRegistry.clear(tenderId, stage);
     }
   })();
   return { status: 'running' };
@@ -232,6 +235,11 @@ async function runStageInner(tenderId, stage) {
   }
 
   const ctx = await buildContextForStage(tenderId, stage);
+  // Репортер прогресса по сегментам — runLlmStage зовёт setTotal/tick (см. llmStage).
+  ctx.progress = {
+    setTotal: (n) => progressRegistry.setTotal(tenderId, stage, n),
+    tick: () => progressRegistry.tick(tenderId, stage),
+  };
   const issues = await runStageOrchestrator(stage, ctx);
 
   // Гард зоны ответственности: стадия должна писать только в свой домен
@@ -330,7 +338,7 @@ async function finishStage(tenderId, stage) {
   // Применяем tz_excluded_ranges для решений delete / remove_from_scope
   const closeIssues = await db.queryAll(
     `
-      SELECT i.*, d.decision FROM issues i
+      SELECT i.*, d.decision, d.target_text FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.analysis_stage = ?
     `,
@@ -343,6 +351,15 @@ async function finishStage(tenderId, stage) {
       const isDelete = issue.review_status === 'accepted'
         && (issue.decision === 'delete' || issue.decision === 'remove_from_scope');
       if (isDelete && issue.paragraph_index != null && issue.char_start != null && issue.char_end != null) {
+        // Если инженер удалил только ПОДЧАСТЬ фрагмента — исключаем из активного
+        // текста (для следующих стадий) ровно её, а не весь пункт.
+        let cStart = issue.char_start;
+        let cEnd = issue.char_end;
+        const part = (issue.target_text || '').trim();
+        if (part && issue.source_fragment) {
+          const i = issue.source_fragment.indexOf(part);
+          if (i !== -1) { cStart = issue.char_start + i; cEnd = cStart + part.length; }
+        }
         await tx.queryRun(
           `
           INSERT INTO tz_excluded_ranges (id, tender_id, source_document_id, paragraph_index, char_start, char_end, after_stage, source_issue_id, created_at)
@@ -352,8 +369,8 @@ async function finishStage(tenderId, stage) {
           tenderId,
           issue.source_document_id || null,
           issue.paragraph_index,
-          issue.char_start,
-          issue.char_end,
+          cStart,
+          cEnd,
           stage,
           issue.id,
           nowIso(),
@@ -396,7 +413,7 @@ async function resetStage(tenderId, stage) {
 
 async function listStageIssues(tenderId, stage, filters = {}) {
   let sql = `
-    SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction
+    SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction, d.target_text as decision_target_text
     FROM issues i
     LEFT JOIN review_decisions d ON d.issue_id = i.id
     WHERE i.tender_id = ? AND i.analysis_stage = ?
@@ -430,6 +447,28 @@ function countBy(arr, key) {
   return out;
 }
 
+// Авто-починка «зомби»-статусов на старте сервера. Фоновый прогон живёт в памяти
+// процесса (RUNNING_STAGES + progressRegistry); при рестарте/падении сервера он
+// гибнет, но в БД stageN_status мог остаться 'running' — тогда клиент бесконечно
+// крутит кольцо прогресса. На старте живых прогонов ещё нет, поэтому любой
+// 'running' — осиротевший: сбрасываем в 'open' (предыдущая стадия была завершена,
+// иначе запуск был бы невозможен). Issue не трогаем: успешный прогон пишет их
+// только в финальной транзакции, а следующий запуск всё равно чистит pending.
+async function recoverOrphanedRunningStages() {
+  let recovered = 0;
+  for (let s = 1; s <= 5; s += 1) {
+    const res = await db.queryRun(
+      `UPDATE tender_stage_state SET stage${s}_status = 'open' WHERE stage${s}_status = 'running'`,
+    );
+    recovered += (res && (res.changes ?? res.rowCount)) || 0;
+  }
+  if (recovered) {
+    // eslint-disable-next-line no-console
+    console.log(`[stageEngine] восстановлено осиротевших 'running'-стадий: ${recovered} → 'open'`);
+  }
+  return recovered;
+}
+
 module.exports = {
   STAGE_LABELS,
   getStageState,
@@ -439,4 +478,5 @@ module.exports = {
   resetStage,
   listStageIssues,
   getStageRunSummary,
+  recoverOrphanedRunningStages,
 };

@@ -39,4 +39,13 @@ function resolveRedaction(issue = {}, decision = {}) {
   );
 }
 
-module.exports = { DECISION_KINDS, decisionVisual, resolveRedaction };
+// На какую ИМЕННО подстроку фрагмента действует решение (delete/edit).
+// Инженер мог выделить часть пункта (target_text); если нет — действие на весь
+// source_fragment, как раньше. Единый источник для docx / md / preview / исключения.
+// Возвращает строку из текста фрагмента (без trim, чтобы точно совпасть при поиске).
+function resolveActionTarget(issue = {}, decision = {}) {
+  const t = decision.target_text || issue.decision_target_text || '';
+  return t || (issue.source_fragment || '');
+}
+
+module.exports = { DECISION_KINDS, decisionVisual, resolveRedaction, resolveActionTarget };

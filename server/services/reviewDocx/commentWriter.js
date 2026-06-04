@@ -6,24 +6,29 @@ const { W_NS } = require('./docxPackage');
 const select = xpath.useNamespaces({ w: W_NS });
 
 /**
- * Добавляет комментарий, охватывающий run-диапазон [firstRun..lastRun] в paragraph.
+ * Добавляет комментарий, охватывающий узлы [firstNode..lastNode] (на уровне абзаца).
+ * Маркеры (commentRangeStart/End и run с commentReference) ставятся как СОСЕДИ
+ * этих узлов — НЕ внутри них. Это важно для track-change: если анкерить на runs,
+ * которые applyDeletion уже перенёс внутрь <w:del>, то commentReference окажется
+ * внутри удаления, и Word посчитает сам комментарий удалённым (не покажет его).
+ * Поэтому для del/ins анкеримся на элементы <w:del>/<w:ins>, а не на их runs.
  * Возвращает использованный commentId.
  */
-function addCommentForRange(commentsDoc, paragraph, firstRun, lastRun, { id, author, date, text }) {
-  const doc = paragraph.pNode.ownerDocument;
+function addCommentForNodes(commentsDoc, firstNode, lastNode, { id, author, date, text }) {
+  const doc = firstNode.ownerDocument;
 
-  // commentRangeStart перед firstRun
+  // commentRangeStart перед firstNode
   const startEl = doc.createElementNS(W_NS, 'w:commentRangeStart');
   startEl.setAttribute('w:id', String(id));
-  firstRun.rNode.parentNode.insertBefore(startEl, firstRun.rNode);
+  firstNode.parentNode.insertBefore(startEl, firstNode);
 
-  // commentRangeEnd после lastRun
+  // commentRangeEnd после lastNode
   const endEl = doc.createElementNS(W_NS, 'w:commentRangeEnd');
   endEl.setAttribute('w:id', String(id));
-  if (lastRun.rNode.nextSibling) {
-    lastRun.rNode.parentNode.insertBefore(endEl, lastRun.rNode.nextSibling);
+  if (lastNode.nextSibling) {
+    lastNode.parentNode.insertBefore(endEl, lastNode.nextSibling);
   } else {
-    lastRun.rNode.parentNode.appendChild(endEl);
+    lastNode.parentNode.appendChild(endEl);
   }
 
   // run с reference сразу после commentRangeEnd
@@ -67,6 +72,14 @@ function addCommentForRange(commentsDoc, paragraph, firstRun, lastRun, { id, aut
   return id;
 }
 
+/**
+ * Комментарий на run-диапазон [firstRun..lastRun] (для решений БЕЗ track-change:
+ * accept-«Примечание» и fallback). Делегирует в addCommentForNodes по rNode.
+ */
+function addCommentForRange(commentsDoc, paragraph, firstRun, lastRun, opts) {
+  return addCommentForNodes(commentsDoc, firstRun.rNode, lastRun.rNode, opts);
+}
+
 function nextCommentId(commentsDoc) {
   const list = select('//w:comment', commentsDoc);
   let max = -1;
@@ -83,4 +96,4 @@ function initialsFor(author) {
   return parts.map((p) => p[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'TZ';
 }
 
-module.exports = { addCommentForRange, nextCommentId };
+module.exports = { addCommentForRange, addCommentForNodes, nextCommentId };

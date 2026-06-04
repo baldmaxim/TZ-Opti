@@ -51,6 +51,7 @@ function decision(issueObj, kind, extra = {}) {
     decision_kind: kind,
     final_comment: extra.final_comment || null,
     edited_redaction: extra.edited_redaction || null,
+    target_text: extra.target_text || null,
   };
 }
 function runExport(fp, decisions) {
@@ -68,6 +69,11 @@ function insTexts(buffer) {
 function commentTexts(buffer) {
   const cdoc = new DocxPackage(buffer).getCommentsXml();
   return select('//w:comment', cdoc).map((c) => c.textContent);
+}
+// commentReference внутри <w:del> ⇒ Word считает примечание удалённым и не показывает.
+function commentRefInsideDel(buffer) {
+  const xml = new DocxPackage(buffer).getDocumentXml().toString();
+  return (xml.match(/<w:del[\s\S]*?<\/w:del>/g) || []).some((d) => d.includes('commentReference'));
 }
 function delsInParagraph(buffer, pIdx) {
   const doc = new DocxPackage(buffer).getDocumentXml();
@@ -200,6 +206,7 @@ test('edit + примечание → w:del + w:ins И Word-комментари
   assert.ok(delTexts(buffer).some((t) => t.includes('12 месяцев')));
   assert.ok(insTexts(buffer).some((t) => t.includes('60 месяцев')));
   assert.ok(commentTexts(buffer).some((c) => c.includes('гарантия не менее 5 лет')));
+  assert.equal(commentRefInsideDel(buffer), false); // примечание видно в Word (не внутри w:del)
 });
 
 test('delete + примечание → w:del И Word-комментарий с примечанием', () => {
@@ -215,6 +222,51 @@ test('delete + примечание → w:del И Word-комментарий с 
   assert.equal(report.items[0].status, 'applied');
   assert.equal(delTexts(buffer).length, 1);
   assert.ok(commentTexts(buffer).some((c) => c.includes('на заказчике по договору')));
+  assert.equal(commentRefInsideDel(buffer), false); // примечание видно в Word (не внутри w:del)
+});
+
+test('delete части фрагмента (target_text) → w:del только по выбранному слову', () => {
+  const fp = tmpDocx([para('Подрядчик выполняет все необходимые работы по объекту.')]);
+  const frag = 'все необходимые работы';
+  const idx = indexOfFragment(fp, frag);
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: idx }), 'delete', { target_text: 'необходимые' }),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  const dels = delTexts(buffer);
+  assert.equal(dels.length, 1);
+  assert.equal(dels[0], 'необходимые'); // удалено ровно слово, не весь фрагмент
+});
+
+test('edit части фрагмента (target_text) → w:del слова + w:ins нового, остальное цело', () => {
+  const fp = tmpDocx([para('Гарантийный срок составляет 12 месяцев с даты.')]);
+  const frag = 'составляет 12 месяцев';
+  const idx = indexOfFragment(fp, frag);
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: idx }), 'edit', {
+      target_text: '12 месяцев', edited_redaction: '60 месяцев',
+    }),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.equal(report.items[0].visual, 'del+ins');
+  assert.deepEqual(delTexts(buffer), ['12 месяцев']);   // зачёркнуто только слово
+  assert.ok(insTexts(buffer).some((t) => t.includes('60 месяцев')));
+});
+
+test('target_text не найден в фрагменте → фолбэк на весь фрагмент', () => {
+  const fp = tmpDocx([para('Обычный текст пункта здесь.')]);
+  const frag = 'текст пункта';
+  const idx = indexOfFragment(fp, frag);
+  const { buffer, report } = runExport(fp, [
+    decision(issue({ source_fragment: frag, paragraph_index: idx }), 'delete', { target_text: 'отсутствует-такого-нет' }),
+  ]);
+
+  assert.equal(report.items[0].status, 'applied');
+  assert.equal(delTexts(buffer).length, 1);
+  assert.ok(delTexts(buffer)[0].includes('текст пункта')); // удалён весь фрагмент
+  assert.match(report.items[0].reason || '', /подчасть не найдена/i);
 });
 
 test('фрагмент не найден → status=failed с причиной', () => {

@@ -11,6 +11,7 @@ const morgan = require('morgan');
 const { runMigration } = require('./db/migrate');
 const { runSeedIfEmpty } = require('./db/seed');
 const errorHandler = require('./middleware/errorHandler');
+const stageEngine = require('./services/stageAnalysis/stageAnalysisEngine');
 
 const tendersRouter = require('./routes/tenders');
 const documentsRouter = require('./routes/documents');
@@ -64,6 +65,9 @@ app.use(errorHandler);
   try {
     await runMigration();
     await runSeedIfEmpty();
+    // Сброс «зомби»-статусов 'running' от прогонов, погибших при прошлом
+    // рестарте/падении сервера (иначе клиент вечно крутит кольцо прогресса).
+    await stageEngine.recoverOrphanedRunningStages();
     const server = app.listen(PORT, () => {
       console.log(`[tz-opti-server] listening on http://localhost:${PORT}`);
     });

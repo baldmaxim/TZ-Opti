@@ -22,7 +22,7 @@ async function getTzOriginal(tenderId) {
 
 async function loadDecisions(tenderId, stageFilter = null) {
   let sql = `
-      SELECT i.*, d.decision as decision_kind, d.final_comment as final_comment, d.edited_redaction as edited_decision_redaction
+      SELECT i.*, d.decision as decision_kind, d.final_comment as final_comment, d.edited_redaction as edited_decision_redaction, d.target_text as target_text
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.selected_for_export = 1
@@ -42,6 +42,8 @@ async function loadDecisions(tenderId, stageFilter = null) {
     // Комментарий анализатора (review_comment) — подсказка в UI, в документ не уходит.
     final_comment: r.final_comment,
     edited_redaction: r.edited_decision_redaction || r.edited_redaction,
+    // Подчасть фрагмента (delete/edit на выделенную часть); null = весь фрагмент.
+    target_text: r.target_text || null,
   }));
 }
 

@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS review_decisions (
   decision            TEXT NOT NULL,   -- 'accept' | 'reject' | 'edit' | 'delete' | 'remove_from_scope'
   edited_redaction    TEXT,
   final_comment       TEXT,
+  target_text         TEXT,            -- выбранная инженером ПОДЧАСТЬ фрагмента (NULL = весь фрагмент)
   decided_at          TEXT NOT NULL,
   FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE
 );

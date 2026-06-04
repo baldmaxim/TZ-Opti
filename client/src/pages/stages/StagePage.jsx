@@ -123,7 +123,7 @@ export default function StagePage() {
 
         {status === 'running' && tenderId && (
           <div className="mt-4">
-            <AnalysisProgressRing tenderId={tenderId} stage={stage} />
+            <AnalysisProgressRing tenderId={tenderId} stage={stage} progress={stageInfo?.progress} />
           </div>
         )}
 

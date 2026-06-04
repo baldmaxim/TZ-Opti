@@ -1,7 +1,16 @@
 'use strict';
 
 const db = require('../../db/connection');
-const { decisionVisual, resolveRedaction } = require('../review/decisionModel');
+const { decisionVisual, resolveRedaction, resolveActionTarget } = require('../review/decisionModel');
+
+// Помечает только выбранную подчасть внутри фрагмента (delete/edit на части):
+// возвращает текст фрагмента, где `part` обёрнут wrapFn, остальное не тронуто.
+// null — если подчасти нет в фрагменте (фолбэк на весь фрагмент у вызывающего).
+function markPartInFragment(fragment, part, wrapFn) {
+  const i = fragment.indexOf(part);
+  if (i === -1) return null;
+  return fragment.slice(0, i) + wrapFn(part) + fragment.slice(i + part.length);
+}
 
 /**
  * Рендер review.md — берёт оригинальный текст ТЗ (предпочтительно загруженную
@@ -41,7 +50,7 @@ async function loadDecisions(tenderId, stageFilter = null) {
     return db.queryAll(
       `
       SELECT i.id AS issue_id, i.source_fragment, i.source_clause, i.analysis_stage,
-             d.decision, d.edited_redaction, d.final_comment
+             d.decision, d.edited_redaction, d.final_comment, d.target_text
       FROM issues i
       INNER JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.analysis_stage = ?
@@ -54,7 +63,7 @@ async function loadDecisions(tenderId, stageFilter = null) {
   return db.queryAll(
     `
     SELECT i.id AS issue_id, i.source_fragment, i.source_clause, i.analysis_stage,
-           d.decision, d.edited_redaction, d.final_comment
+           d.decision, d.edited_redaction, d.final_comment, d.target_text
     FROM issues i
     INNER JOIN review_decisions d ON d.issue_id = i.id
     WHERE i.tender_id = ?
@@ -113,15 +122,20 @@ async function renderReviewMd(tenderId, { stage = null } = {}) {
     }
 
     const v = decisionVisual(d.decision);
+    // Подчасть фрагмента (delete/edit на выделенную часть). hasPart → метим только её.
+    const part = (resolveActionTarget({ source_fragment: fragment }, d) || '').trim();
+    const hasPart = part && part !== fragment.trim() && fragment.includes(part);
     let replacement;
     if (v.mark === 'strike') {
       // delete / remove_from_scope — зачёркивание; вынос помечаем тегом.
-      replacement = v.tag ? `~~${fragment}~~ _(${v.tag.toLowerCase()})_` : `~~${fragment}~~`;
+      const suffix = v.tag ? ` _(${v.tag.toLowerCase()})_` : '';
+      const marked = hasPart ? markPartInFragment(fragment, part, (p) => `~~${p}~~`) : null;
+      replacement = (marked || `~~${fragment}~~`) + suffix;
     } else if (v.mark === 'replace') {
       const newText = resolveRedaction({}, d);
-      replacement = newText
-        ? `~~${fragment}~~ **{${newText}}**`
-        : `~~${fragment}~~`;
+      const wrap = (p) => (newText ? `~~${p}~~ **{${newText}}**` : `~~${p}~~`);
+      const marked = hasPart ? markPartInFragment(fragment, part, wrap) : null;
+      replacement = marked || wrap(fragment);
     } else if (v.mark === 'note') {
       const note = (d.final_comment || '').trim();
       if (!note) {

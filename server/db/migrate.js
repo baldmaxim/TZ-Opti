@@ -47,6 +47,10 @@ async function runMigration() {
   // Сохраняется как «1. Введение › 1.2 Объём работ», NULL для старых rule-based записей.
   await ensureColumn('issues', 'section_path', 'TEXT');
 
+  // target_text — выбранная инженером подчасть фрагмента для delete/edit
+  // (NULL = действие на весь фрагмент, как раньше).
+  await ensureColumn('review_decisions', 'target_text', 'TEXT');
+
   // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
   // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,
   // 3 = locked (новая пустая стадия).

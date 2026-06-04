@@ -69,7 +69,9 @@ export const useTenderStore = create((set, get) => ({
     activePolls.add(key);
     try {
       for (;;) {
-        await sleep(7000);
+        // 3с (а не 7с): чтобы кольцо прогресса быстро обновлялось и сразу исчезало
+        // по завершении стадии (раньше при 7с бар «залипал» на устаревшем значении).
+        await sleep(3000);
         if (get().tenderId !== id) return; // ушли на другой тендер
         let data;
         try {

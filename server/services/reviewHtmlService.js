@@ -28,7 +28,7 @@ async function renderReviewHtml(tenderId) {
   const paragraphs = tz.blocks;
   const issues = await db.queryAll(
     `
-      SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction
+      SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction, d.target_text as decision_target_text
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.review_status IN ('accepted', 'edited', 'pending')
@@ -63,8 +63,15 @@ function renderParagraph(p, paraIssues) {
   let cursor = 0;
   const text = p.text;
   for (const issue of paraIssues) {
-    const start = Math.max(0, Math.min(text.length, issue.char_start ?? 0));
-    const end = Math.max(start, Math.min(text.length, issue.char_end ?? start));
+    let start = Math.max(0, Math.min(text.length, issue.char_start ?? 0));
+    let end = Math.max(start, Math.min(text.length, issue.char_end ?? start));
+    // Подчасть фрагмента (delete/edit на выделенную часть) — подсвечиваем только её,
+    // как в docx/md. target_text есть только у таких решений.
+    const part = (issue.decision_target_text || '').trim();
+    if (part) {
+      const i = text.slice(start, end).indexOf(part);
+      if (i !== -1) { start += i; end = start + part.length; }
+    }
     if (start > cursor) html += escapeHtml(text.slice(cursor, start));
     const fragment = text.slice(start, end);
     const cls = issueCss(issue);

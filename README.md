@@ -1,56 +1,66 @@
 # TZ-Opti
 
-MVP-портал для инженера тендерного отдела строительной компании. Анализ ТЗ на СМР по 5-стадийному последовательному пайплайну на LLM-агентах с экспортом исходного `.docx` с настоящими правками (Word Track Changes) и комментариями в логике Word Review.
+MVP-портал для инженера тендерного отдела строительной компании. Анализирует техническое
+задание (ТЗ) на строительно-монтажные работы (СМР) через последовательный пайплайн из **5 стадий**
+на LLM-агентах и экспортирует исходный `.docx` с настоящими правками Word (Track Changes) и
+комментариями в логике Word Review.
 
 ---
 
 ## Что это и для кого
 
-Инженер тендерного отдела участвует в тендерах на ЖК в Москве (генподряд + коробка). Каждый тендер требует:
-- сверки ТЗ с чек-листом работ и ВОР (что входит в объём генподрядчика),
-- сверки ТЗ с принятыми бизнес-решениями (Q&A форма) и таблицей характеристик,
-- сверки ТЗ с существенными договорными условиями компании,
-- проверки ТЗ против типовых рисков (прямые и косвенные упоминания),
-- самоанализа ТЗ (скрытые работы, двусмыслия, влияние на срок),
-- формирования итогового файла с замечаниями.
+Инженер тендерного отдела участвует в тендерах на жилые комплексы (генподряд / «коробка»). По
+каждому тендеру нужно сверить ТЗ с собственными данными компании и подготовить итоговый файл с
+замечаниями. Портал собирает все материалы в одной карточке тендера и проводит инженера через
+5 стадий анализа. Результат — исходный ТЗ.docx, в который встроены правки Word и комментарии по
+принятым инженером решениям.
 
-Портал собирает все материалы в одной карточке тендера и проводит инженера через 5 стадий анализа LLM-агентом. Результат — исходный ТЗ.docx, в который встроены настоящие правки Word (Track Changes) и комментарии по принятым решениям.
+---
+
+## Стек
+
+- **Frontend** (`client/`): Vite, React 18, JavaScript (без TypeScript), React Router, Tailwind CSS,
+  Zustand.
+- **Backend** (`server/`): Node.js, Express, **PostgreSQL через `pg`** (подключение по `DATABASE_URL`,
+  совместимо с Supabase), Multer (загрузка файлов).
+- **LLM**: OpenAI-совместимый клиент (`server/services/stageAnalysis/llm/openaiClient.js`),
+  structured output по JSON Schema. В dev — локальный Claude-bridge
+  (`server/devtools/claudeBridge.js`), в проде — любой OpenAI-совместимый эндпоинт через
+  `OPENAI_BASE_URL`.
+- **Извлечение текста**: mammoth (`.docx`), pdf-parse (`.pdf`), xlsx (`.xlsx`), нативный fs
+  (`.txt` / `.md` / `.csv`).
+- **Экспорт `.docx`**: pizzip + @xmldom/xmldom + xpath — модификация исходного `.docx` с настоящими
+  Word Track Changes (`w:ins` / `w:del`) и Word-комментариями.
+
+Хранилище — только **PostgreSQL**. Единая обёртка `server/db/connection.js` даёт асинхронный API
+(`queryOne` / `queryAll` / `queryRun` / `exec` / `transaction`) с `?`-плейсхолдерами, которые
+конвертер автоматически превращает в `$1, $2, …`.
 
 ---
 
 ## Архитектура
 
 ```
-┌─────────────────┐         REST JSON         ┌──────────────────────┐
-│  client (Vite)  │ ◀────────────────────────▶│  server (Express)    │
-│  :5173          │                            │  :4000               │
-│  React + JS     │                            │  pg (Postgres)       │
-│  Tailwind +     │                            │  Multer • Mammoth    │
-│  Zustand        │                            │  XLSX • pdf-parse    │
-│  React Router   │                            │  pizzip + xmldom     │
-└─────────────────┘                            └─────┬───────────┬────┘
-                                                     │           │
-                              OpenAI-совместимый ▼   │           ▼
-                          ┌──────────────────────────┐   ┌──────────────────────┐
-                          │ LLM bridge (dev) :4010   │   │ Postgres / Supabase  │
-                          │ claudeBridge.js → Claude │   │ (DATABASE_URL)       │
-                          │ Agent SDK (sonnet-4-6)   │   │ uploads/ (Multer)    │
-                          └──────────────────────────┘   └──────────────────────┘
+┌─────────────────┐         REST JSON          ┌──────────────────────┐
+│  client (Vite)  │ ◀─────────────────────────▶│  server (Express)    │
+│  :5173          │                             │  :4000               │
+│  React + JS     │                             │  pg → PostgreSQL     │
+│  Tailwind +     │                             │  Multer • mammoth    │
+│  Zustand        │                             │  xlsx • pdf-parse    │
+│  React Router   │                             │  pizzip + xmldom     │
+└─────────────────┘                             └─────┬───────────┬────┘
+                                                      │           │
+                              OpenAI-совместимый ▼    │           ▼
+                          ┌──────────────────────────┐    ┌──────────────────────┐
+                          │ LLM bridge (dev) :4010   │    │ PostgreSQL / Supabase│
+                          │ claudeBridge.js → Claude │    │ (DATABASE_URL)       │
+                          │ Agent SDK                │    │ server/uploads/      │
+                          └──────────────────────────┘    └──────────────────────┘
 ```
 
-В dev LLM-вызовы идут в локальный `claudeBridge.js` (OpenAI-совместимый прокси к Claude через Agent SDK). В проде `OPENAI_BASE_URL` можно направить на любой OpenAI-совместимый эндпоинт.
-
----
-
-## Стек
-
-- **Frontend**: Vite, React 18, JS (без TypeScript), React Router, Tailwind CSS, Zustand
-- **Backend**: Node.js, Express, **pg (PostgreSQL / Supabase)**, Multer
-- **LLM**: OpenAI-совместимый клиент (`server/services/stageAnalysis/llm/openaiClient.js`), structured output по JSON Schema; в dev — локальный Claude-bridge (`server/devtools/claudeBridge.js`)
-- **Извлечение текста**: mammoth (.docx), pdf-parse (.pdf), xlsx (.xlsx), нативный fs (.txt/.md/.csv)
-- **Экспорт .docx**: pizzip + @xmldom/xmldom + xpath — модификация исходного `.docx` с настоящими Word Track Changes (`w:ins` / `w:del`) и комментариями Word
-
-Никакого TypeScript на клиенте, Redux, MUI/AntD. UI на русском, код на английском.
+Клиент общается с сервером по REST JSON (Vite-прокси `/api` → `:4000`). Сервер хранит всё в
+PostgreSQL и вызывает LLM через OpenAI-совместимый клиент. В dev LLM-вызовы идут в локальный
+`claudeBridge.js`; в проде `OPENAI_BASE_URL` направляется на нужный эндпоинт.
 
 ---
 
@@ -59,37 +69,73 @@ MVP-портал для инженера тендерного отдела ст�
 Требуется Node.js ≥ 18.
 
 ```bash
-# 1. Установить зависимости root + client + server
+# 1. Установить зависимости root + server + client
 npm run install:all
 
-# 2. Создать .env в корне (шаблон — .env.example)
-#    Обязательно: DATABASE_URL (Postgres/Supabase) и доступ к LLM.
+# 2. Создать .env в корне репозитория (шаблон — .env.example).
+#    Обязательно: DATABASE_URL (PostgreSQL/Supabase) и доступ к LLM.
 
-# 3. Запустить dev (server :4000, client :5173, bridge :4010)
+# 3. Запустить dev: server :4000, client :5173, LLM-bridge :4010
 npm run dev
 ```
 
-Откроется `http://localhost:5173`. На старте сервер применяет миграцию (`schema.sql`) и при пустой БД подгружает демо-данные (2 тендера).
+Откроется `http://localhost:5173`. **На старте сервер сам применяет миграцию и при пустой БД
+подгружает демо-данные** (см. ниже «Миграции и seed»).
 
-**Конфигурация (`.env` в корне, см. `.env.example`):**
-- `DATABASE_URL` — Postgres/Supabase (рекомендуется pooler `*.pooler.supabase.com:6543`). **Без него сервер не стартует.**
-- LLM: либо реальный OpenAI (`OPENAI_API_KEY`, `OPENAI_MODEL`), либо локальный bridge — `OPENAI_BASE_URL=http://127.0.0.1:4010/v1`, `OPENAI_API_KEY=local-bridge` (любая непустая строка), `BRIDGE_MODEL=claude-sonnet-4-6`.
-- Режим промта по стадиям: `STAGE{1..5}_PROMPT_VARIANT` = `structural` (дефолт) | `strict` | `full`.
-- Стадия 4 (риски): `STAGE4_MIN_SCORE` — порог отсева слабых находок quality scoring (дефолт `0.45`).
-- Тюнинг и подробности bridge — `server/devtools/README.md`.
-
-Команды:
+### Скрипты
 
 | Скрипт | Действие |
 |--------|----------|
-| `npm run install:all` | npm install в root, server, client |
+| `npm run install:all` | `npm install` в root, server и client |
 | `npm run dev` | concurrently: server + client + bridge (3 процесса) |
-| `npm run dev:server` | только сервер |
-| `npm run dev:client` | только клиент |
+| `npm run dev:server` | только сервер (`:4000`) |
+| `npm run dev:client` | только клиент (`:5173`) |
 | `npm run bridge` | только LLM-bridge (`node server/devtools/claudeBridge.js`) |
-| `npm run seed` | принудительный сброс и пересоздание demo-данных (`node server/db/seed.js -f`) |
+| `npm run seed` | принудительный пересев демо-данных (`server/db/seed.js -f`) |
 | `npm run build` | production-сборка клиента |
-| `npm test` | регресс-тесты экспорта в Word (`node --test`, без БД и LLM) |
+| `npm test` | регресс-тесты сервера (`node --test`, без БД и LLM) |
+
+---
+
+## Конфигурация (`.env`)
+
+Один `.env` в корне репозитория (шаблон — `.env.example`). Сервер грузит его из корня через
+`dotenv` (относительно `server/app.js`).
+
+| Переменная | Назначение |
+|------------|------------|
+| `DATABASE_URL` | Строка подключения PostgreSQL. **Без неё сервер не стартует.** Для Supabase рекомендуется pooler `*.pooler.supabase.com:6543` (прямой `db.<ref>.supabase.co` работает только по IPv6). |
+| `PORT` | Порт сервера (дефолт `4000`). |
+| `UPLOAD_DIR`, `MAX_UPLOAD_MB` | Каталог и лимит загрузок Multer. |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | Доступ к LLM (реальный OpenAI). |
+| `OPENAI_BASE_URL` | Опционально: OpenAI-совместимый эндпоинт. Для dev-bridge — `http://127.0.0.1:4010/v1`. |
+| `STAGE{1..5}_PROMPT_VARIANT` | Режим системного промта стадии: `structural` (дефолт) \| `strict` \| `full`. |
+| `STAGE4_MIN_SCORE` | Порог отсева слабых находок quality-scoring в Стадии 4 (дефолт `0.45`). |
+| `STAGE_LLM_*`, `BRIDGE_*` | Тюнинг сегментации/таймаутов и bridge — подробности в `server/devtools/README.md`. |
+
+Для локального dev без реального OpenAI: оставить `OPENAI_BASE_URL` на bridge (`:4010`),
+`OPENAI_API_KEY` — любая непустая строка.
+
+---
+
+## Миграции и seed
+
+Миграция и сид выполняются **автоматически при старте сервера** (`server/app.js`):
+
+1. `runMigration()` — приводит схему БД к актуальной (`server/db/migrate.js`, базовая
+   `server/db/schema.sql`; идемпотентно — досоздаёт недостающие таблицы/колонки).
+2. `runSeedIfEmpty()` — на пустой БД заливает демо-данные (`server/db/seed.js`).
+3. `recoverOrphanedRunningStages()` — сбрасывает «зомби»-статусы `running` от прогонов, погибших
+   при прошлом рестарте сервера.
+
+Принудительный пересев (сброс и повторная заливка демо-данных):
+
+```bash
+npm run seed   # → node server/db/seed.js -f
+```
+
+Демо: 2 тендера с загруженными ТЗ.docx / ВОР / чек-листом / условиями / записями Q&A — анализ
+можно запускать сразу.
 
 ---
 
@@ -97,153 +143,137 @@ npm run dev
 
 ```
 TZ-Opti/
-├── client/    Vite + React + Tailwind + Zustand
+├── client/                         Vite + React + Tailwind + Zustand
 │   └── src/
-│       ├── pages/         DashboardPage, TenderOverview + setup/, stages/, analysis/, result/
-│       ├── components/    ui, layout, stages, tables, tender, conditions, documents, issues, review, wizard
-│       ├── store/         Zustand (tenders, активный тендер, тосты)
-│       ├── services/api.js
-│       └── utils/         labels, format
-└── server/    Express + pg (Postgres) + Multer
-    ├── app.js                                        — миграция + авто-сид на старте
-    ├── routes/            tenders, documents, checklist, conditions, risks, qa,
-    │                      stages, decisions, review, export, setupLocks, setupParams
-    ├── controllers/       тонкие контроллеры под каждый route
+│       ├── App.jsx                 роутер
+│       ├── pages/                  DashboardPage, TenderOverview, setup/, stages/, analysis/, result/
+│       ├── components/             ui, layout, stages, tables, tender, conditions, documents, issues, review, wizard
+│       ├── hooks/                  wizard-состояние и пр.
+│       ├── store/                  Zustand (тендеры, активный тендер, тосты)
+│       ├── services/api.js         REST-клиент
+│       └── utils/                  labels (единые названия стадий), format
+└── server/                         Express + pg (PostgreSQL) + Multer
+    ├── app.js                      миграция + авто-сид + recover на старте, монтаж роутов
+    ├── routes/                     tenders, documents, checklist, conditions, risks, qa, stages,
+    │                               decisions, review, export, setupLocks, setupParams
+    ├── controllers/                тонкие контроллеры под каждый route
+    ├── middleware/                 errorHandler, async-errors
     ├── devtools/
-    │   ├── claudeBridge.js                           — локальный OpenAI-совместимый прокси к Claude (dev)
-    │   └── README.md                                 — настройка bridge и тюнинг стадий
+    │   ├── claudeBridge.js         локальный OpenAI-совместимый прокси к Claude (dev)
+    │   └── README.md               настройка bridge и тюнинг стадий
     ├── services/
-    │   ├── textExtractionService.js
-    │   ├── tzActiveTextService.js                     — ТЗ за вычетом исключённых фрагментов (.md)
+    │   ├── textExtractionService.js   извлечение текста (.docx/.pdf/.xlsx/.txt/.md)
+    │   ├── tzActiveTextService.js     активный текст ТЗ (.md) за вычетом исключённых фрагментов
+    │   ├── mdParser.js                markdown → блоки (заголовки/абзацы/списки/таблицы)
     │   ├── stageAnalysis/
-    │   │   ├── stageAnalysisEngine.js                 — оркестратор 5 стадий (фоновый прогон + статусы)
-    │   │   ├── stage1_llm.js … stage5_llm.js          — LLM-агенты стадий (логика + схема находки)
-    │   │   ├── stage1Prompts.js … stage5Prompts.js    — системные промты (SHARED + 3 режима)
-    │   │   ├── stage4Scoring.js                       — quality scoring + анти-триггеры Стадии 4
-    │   │   ├── llm/openaiClient.js                    — OpenAI-совместимый клиент (chatJson)
-    │   │   ├── shared/llmStage.js                     — общий каркас (сегментация/локализация/дедуп/раннер)
-    │   │   ├── shared/fragmentMatcher.js
-    │   │   └── (stage*_*.js без _llm — legacy rule-based, superseded, не импортируются)
-    │   ├── qaImportService.js                         — парсер Q&A xlsx
-    │   ├── risksService.js                            — библиотека типовых рисков (стандартные + кастомные)
-    │   ├── conditionsRenderer.js                      — рендер существенных условий компании
-    │   ├── characteristicsTemplate.js                — стандартный шаблон характеристик
-    │   ├── reviewDocx/                                — главный артефакт
-    │   │   ├── index.js
-    │   │   ├── docxPackage.js
-    │   │   ├── quoteLocator.js
-    │   │   ├── runSplitter.js
-    │   │   ├── commentWriter.js                       — Word-комментарии (решение «Примечание»)
-    │   │   ├── trackChangesWriter.js                  — настоящий Track Changes (w:ins / w:del)
-    │   │   ├── strikeWriter.js                        — legacy fallback (не вызывается)
-    │   │   └── manifestUpdater.js
-    │   ├── reviewHtmlService.js                       — HTML-preview
-    │   ├── exportService.js                           — CSV / JSON / summary.md
+    │   │   ├── stageAnalysisEngine.js   оркестратор 5 стадий (фоновый прогон + статусы + STAGE_LABELS)
+    │   │   ├── stage1_llm.js … stage5_llm.js     LLM-агенты стадий (логика + JSON-схема находки)
+    │   │   ├── stage1Prompts.js … stage5Prompts.js  системные промты (SHARED + 3 режима)
+    │   │   ├── stage4Scoring.js         quality scoring + анти-триггеры Стадии 4
+    │   │   ├── llm/openaiClient.js      OpenAI-совместимый клиент (chatJson)
+    │   │   └── shared/                  llmStage.js (общий каркас), fragmentMatcher.js
+    │   ├── qaImportService.js          парсер Q&A xlsx
+    │   ├── qaTzLinkService.js          привязка Q&A к местам ТЗ
+    │   ├── risksService.js             библиотека типовых рисков (стандартные + кастомные, overlay)
+    │   ├── conditionsRenderer.js       рендер существенных условий компании
+    │   ├── characteristicsTemplate.js  стандартный шаблон характеристик
+    │   ├── reviewDocx/                 экспорт в .docx (главный артефакт)
+    │   │   ├── index.js                оркестратор: решения → правки в .docx + отчёт
+    │   │   ├── docxPackage.js          распаковка/сборка .docx (pizzip + xmldom)
+    │   │   ├── quoteLocator.js         поиск фрагмента в абзацах (строгий + терпимый матчинг)
+    │   │   ├── runSplitter.js          расщепление w:r по границам диапазона
+    │   │   ├── trackChangesWriter.js   настоящий Track Changes (w:ins / w:del)
+    │   │   ├── commentWriter.js        Word-комментарии (решение «Примечание»)
+    │   │   └── manifestUpdater.js      регистрация comments-части в пакете
+    │   ├── reviewHtmlService.js        HTML-preview рецензии
+    │   ├── exportService.js            CSV / JSON / summary.md
+    │   ├── mdReview/renderer.js        review.md со всеми правками
     │   └── review/
-    │       ├── decisionModel.js                       — единый «вид решения» (docx/preview/md)
-    │       ├── stageDomains.js                        — реестр зон ответственности (стадия → свои типы)
-    │       └── consolidation.js                       — слой сборки итога (группы / primary / конфликты)
+    │       ├── decisionModel.js        единый «вид решения» (docx / preview / md)
+    │       ├── stageDomains.js         реестр зон ответственности (стадия → свои problem_type)
+    │       └── consolidation.js        сборка итога (группы по месту ТЗ / primary / конфликты)
+    ├── test/                        node:test — регресс экспорта + scoring Стадии 4
     └── db/
-        ├── connection.js                             — pg-обёртка (async queryOne/queryAll/queryRun/exec/transaction)
-        ├── schema.sql
-        ├── migrate.js
-        ├── seed.js
-        ├── standardRisks.js                          — 15 типовых рисков
-        └── fixtures/                                 — ТЗ.docx, ВОР.xlsx генерируются программно
+        ├── connection.js           pg-обёртка (async queryOne/queryAll/queryRun/exec/transaction)
+        ├── schema.sql              базовая схема
+        ├── migrate.js              идемпотентная миграция (старт сервера)
+        ├── seed.js                 демо-данные (авто-сид при пустой БД)
+        ├── standardRisks.js        15 стандартных типовых рисков (+ анти-триггеры)
+        ├── standardChecklist.js    стандартный чек-лист
+        ├── conditionsTemplate.js   шаблон существенных условий
+        └── fixtures/               ТЗ.docx / ВОР.xlsx генерируются программно
 ```
 
 ---
 
-## Полный путь инженера
+## 5 стадий анализа
 
-1. **Создать тендер** на дашборде («+ Создать тендер»).
-2. **Документы**: загрузить ТЗ (`.docx`/`.pdf`), ВОР.xlsx, ПД/РД и сопутствующие материалы. Текст извлекается автоматически. Для анализа нужна **`.md`-копия ТЗ** в слот «ТЗ → Markdown» — стадии анализируют именно её.
-3. **Состав работ**, **Условия компании**, **База основных рисков**, **Таблица характеристик** — заполнить (или отредактировать готовое из seed).
-4. **Стадии анализа** (LLM-агент, прогон фоновый — портал опрашивает статус и сам показывает результат):
-   - **Стадия 1** (ТЗ + Чек-лист + ВОР): запустить → пройти таблицу решений (принять / редактировать / отклонить / удалить из ТЗ) → завершить стадию.
-   - **Стадия 2** (Q&A + Характеристики): загрузить `.xlsx` Q&A формы → запустить анализ (сверка ТЗ с решениями Q&A и таблицей характеристик) → пройти таблицу → завершить.
-   - **Стадия 3** (существенные условия компании): запустить → пройти таблицу (агент выносит места ТЗ, противоречащие условиям компании) → завершить.
-   - **Стадия 4** (типовые риски): запустить → пройти таблицу (прямые/косвенные упоминания рисков с экономическими последствиями для ГП) → завершить.
-   - **Стадия 5** (самоанализ ТЗ: скрытые работы, двусмыслия, влияние на срок): запустить → пройти таблицу → завершить.
-5. **Итог**: единый сводный результат — находки всех стадий, сведённые по одному месту ТЗ в группы (главное решение по критичности + конфликты). Один результат вместо пяти разрозненных голосов.
-6. **Рецензия** (опционально): сквозной режим прохода всех `pending`-замечаний по всем стадиям.
-7. **Экспорт**: скачать ТЗ.docx с правками (Track Changes) и комментариями. На одно место ТЗ — одно решение (primary). Дополнительно: HTML-preview, CSV/JSON/Markdown.
+Последовательный пайплайн; названия — единый источник `STAGE_LABELS` в `stageAnalysisEngine.js`
+(и `STAGE_META` на клиенте, `client/src/utils/labels.js`):
 
-Каждое решение «удалить из ТЗ» / «вынести из объёма» **исключает фрагмент из активного текста** для следующих стадий. Возврат к предыдущей стадии **каскадно сбрасывает** все стадии после неё (с подтверждением).
-
----
-
-## Q&A форма (Стадия 2): xlsx-формат
-
-Один лист. Импортёр сам находит строку заголовков и распознаёт колонки по ключевым словам (регистр не важен, порядок свободный). Распознаются:
-
-| Логическое поле | Ключ в заголовке | Обязательность |
-|-----------------|------------------|----------------|
-| Вопрос | `вопрос` | обязательна |
-| Ответ | `ответ` | обязательна |
-| Раздел | `раздел` | опционально |
-| Принятое решение | `решен…` | опционально |
-| Дата отправки | `дата` (первая) | опционально |
-| Дата получения | `получен` / `дата` (вторая) | опционально |
-
-Каждая строка с вопросом и ответом → запись в `qa_entries`. Строки, начинающиеся с «Направлено…», трактуются как метка раунда переписки.
-
-> **Характеристики** — это отдельный стандартный шаблон таблицы (`characteristicsTemplate.js`), который инженер заполняет на вкладке «Таблица характеристик». Из Q&A xlsx они **не** импортируются.
-
-В демо-данных записи Q&A создаются напрямую сидом (готового QA.xlsx-файла нет) — Стадию 2 на демо-тендере можно запускать без загрузки xlsx.
-
----
-
-## Что работает / Что следующая задача
-
-| Возможность | Статус |
-|-------------|--------|
-| CRUD тендеров, документов, чек-листа, условий, рисков, характеристик, Q&A | ✅ Реализовано |
-| Извлечение текста (.docx / .pdf / .xlsx / .txt / .md) | ✅ Реализовано |
-| 5-стадийный LLM-пайплайн (Чек-лист+ВОР, Q&A+характеристики, Условия компании, Риски, Самоанализ) | ✅ Реализовано |
-| Фоновый прогон стадии + опрос статуса (снимает таймауты на долгих ТЗ) | ✅ Реализовано |
-| 3 режима системного промта на стадию (`structural`/`strict`/`full`) через env | ✅ Реализовано |
-| Реестр Issue + рецензия по стадиям + сквозной reviewer | ✅ Реализовано |
-| Зоны ответственности агентов (реестр `problem_type` на стадию) + гард домена | ✅ Реализовано |
-| Слой сборки итога: находки 5 стадий по одному месту ТЗ → группы (primary/конфликты) + экран «Итог» | ✅ Реализовано |
-| Каскадный сброс стадий, исключение фрагментов из активного текста | ✅ Реализовано |
-| Экспорт `.docx` с **настоящими Track Changes** (`w:ins`/`w:del`) + Word-комментарии | ✅ Реализовано |
-| Единый «вид решения» в preview / таблице / docx (delete vs «вынести из объёма» различаются) | ✅ Реализовано |
-| Пер-issue отчёт экспорта (`applied`/`fallback`/`failed`/`skipped`) + fallback на комментарий | ✅ Реализовано |
-| Устойчивое сопоставление `.md↔.docx` при экспорте (терпимо к пробелам → таблицы по ячейкам → нечёткий → комментарий-фолбэк) | ✅ Реализовано |
-| Стадия 4: анти-триггеры рисков + quality scoring (порог `STAGE4_MIN_SCORE`) — меньше ложных совпадений | ✅ Реализовано |
-| Регресс-набор: экспорт (абзац / список / таблица / мультиформат / повтор) + scoring Стадии 4 — `npm test` | ✅ Реализовано |
-| HTML-preview рецензии | ✅ Реализовано |
-| CSV / JSON / Markdown summary экспорты | ✅ Реализовано |
-| Q&A форма прямо в портале (вместо xlsx-загрузки) | ⚙️ Контракт `qaImportService` совместим. Следующая задача — UI-страница ввода. |
-| A/B-тюнинг промтов стадий и калибровка режимов на реальных ТЗ | ⚙️ Инфраструктура (3 режима + env) готова; нужен прогон на корпусе ТЗ. |
+1. **ТЗ + Чек-лист + ВОР** — покрытие расчёта: что из ТЗ не отражено в чек-листе работ и ВОР
+   (входит ли работа в объём генподрядчика).
+2. **Q&A** — сверка ТЗ с принятыми бизнес-решениями из Q&A-формы и таблицей характеристик.
+3. **Существенные условия** — места ТЗ, противоречащие существенным договорным условиям компании.
+4. **Типовые риски** — прямые и косвенные упоминания типовых рисков ТЗ с экономическими
+   последствиями для генподрядчика (сверка с библиотекой рисков).
+5. **Самоанализ ТЗ** — скрытые работы, двусмысленные формулировки, влияние на срок (по самому ТЗ).
 
 ### Как устроен анализатор
 
-Все 5 стадий — **LLM-агенты**. Каждая стадия = пара файлов в `server/services/stageAnalysis/`:
-`stageN_llm.js` (логика стадии + JSON-схема находки) и `stageNPrompts.js` (системный промт: общий блок `SHARED` + блок режима `structural`/`strict`/`full`, переключатель `STAGE{N}_PROMPT_VARIANT`, дефолт `structural`). Общий каркас (фильтр boilerplate → сегментация ТЗ под бюджет контекста → вызов LLM по сегментам → дедуп → локализация фрагмента в `.docx`-абзацах) — в `shared/llmStage.js`. LLM-вызов идёт через `llm/openaiClient.js` (OpenAI-совместимый, structured output по JSON Schema); в dev — через локальный Claude-bridge.
+Все 5 стадий — **LLM-агенты**. Каждая стадия — пара файлов в `server/services/stageAnalysis/`:
+`stageN_llm.js` (логика стадии + JSON-схема находки) и `stageNPrompts.js` (системный промт: общий
+блок `SHARED` + один из 3 режимов `structural` / `strict` / `full`, выбор через
+`STAGE{N}_PROMPT_VARIANT`, дефолт `structural`). Общий каркас — `shared/llmStage.js`: фильтр
+boilerplate-разделов → сегментация ТЗ под бюджет контекста → вызов LLM по сегментам → дедуп →
+локализация цитаты в блоках ТЗ. LLM-вызов идёт через `llm/openaiClient.js` (structured output по
+JSON Schema); в dev — через локальный Claude-bridge.
 
-Каждое замечание дословно цитирует фрагмент ТЗ (`source_fragment`) и несёт `basis` (почему это проблема), `criticality`, `suggested_action` и `suggested_redaction` — инженер видит обоснование и может выбрать своё решение.
+Анализ ведётся по **`.md`-копии ТЗ** (слот «ТЗ → Markdown»): markdown даёт стабильные
+заголовки/абзацы/таблицы для сегментации и точной локализации цитат. Каждое замечание дословно
+цитирует фрагмент ТЗ (`source_fragment`) и несёт `basis` (почему это проблема), `criticality`,
+`suggested_action` и `suggested_redaction` — инженер видит обоснование и выбирает своё решение.
 
-**Стадия 4 (типовые риски)** дополнительно фильтрует шум: у рисков есть `negative_triggers` (анти-триггеры — контексты, где упоминание не является риском), а каждая находка проходит quality scoring (`stage4Scoring.js`) — галлюцинированные ключи рисков, срабатывания анти-триггеров и слабые/необоснованные совпадения отсекаются ниже порога `STAGE4_MIN_SCORE`; `basis` обязан называть конкретное денежное/объёмное/срочное последствие для ГП.
+**Зоны ответственности.** Каждый агент пишет только в свой домен `problem_type` — реестр
+`server/services/review/stageDomains.js`. Решения `delete` / `remove_from_scope` исключают фрагмент
+из активного текста для следующих стадий. Возврат к предыдущей стадии каскадно сбрасывает все
+стадии после неё.
 
-> Прежний rule-based слой (файлы `stage*_*.js` без суффикса `_llm`, `shared/phrases.js`) оставлен в репозитории как superseded-история и движком не вызывается.
+**Стадия 4 (типовые риски)** дополнительно фильтрует шум: у рисков есть `negative_triggers`
+(анти-триггеры — контексты, где упоминание не является риском), а каждая находка проходит quality
+scoring (`stage4Scoring.js`) — галлюцинированные ключи рисков, срабатывания анти-триггеров и
+слабые/необоснованные совпадения отсекаются ниже порога `STAGE4_MIN_SCORE`.
+
+**Итог.** Слой `review/consolidation.js` сводит находки разных стадий, указывающие на одно место ТЗ,
+в группы (primary по критичности + конфликты) — один сводный результат вместо пяти разрозненных.
 
 ---
 
-## Принятые инженерные решения
+## Рецензия и экспорт
 
-1. **LLM-агенты, не rule-based**: каждая стадия — отдельный системный промт (роль ГП) + общий каркас `shared/llmStage.js`. Три режима промта (`structural`/`strict`/`full`) переключаются env без правок кода.
-2. **LLM через OpenAI-совместимый клиент**: в dev — локальный `claudeBridge.js` (Claude Agent SDK), в проде — любой OpenAI-совместимый эндпоинт через `OPENAI_BASE_URL`. Стадии не знают, кто за клиентом.
-3. **Postgres / Supabase** (`pg`), не SQLite: единая обёртка `db/connection.js` с async API (`queryOne/queryAll/queryRun/exec/transaction`) и SQLite-style плейсхолдерами (`?` → `$1`).
-4. **Анализ по `.md`-копии ТЗ**: Markdown даёт стабильные заголовки/абзацы для сегментации и точной локализации цитат; экспорт правок при этом идёт в исходный `.docx`.
-5. **Tailwind**, не CSS modules: один источник правды, минимум boilerplate.
-6. **Zustand**, не Context API/Redux: меньше шума.
-7. **pizzip + @xmldom/xmldom**, не `docx` npm: модификация исходного .docx даёт настоящий «Word Review feel» (правки и комментарии в Word, исходное форматирование сохранено). `docx` npm генерирует с нуля и не подходит для главного юзкейса.
-8. **Настоящий Track Changes**: `delete`/`remove_from_scope` → `w:del`, `edit` → `w:del`+`w:ins`, решение «Примечание» → Word-комментарий. (Раньше удаления показывались `<w:strike/>` — `strikeWriter.js` оставлен как fallback.)
-9. **«Исключение из активного текста»** = только Issue с действием `delete` / `remove_from_scope` исключает фрагмент для следующих стадий. Остальные принятые правки видимы и попадают в `.docx`.
-10. **Каскадный сброс** при возврате к предыдущей стадии: гарантирует консистентность экспорта.
-11. **Q&A через xlsx**: упрощает текущую итерацию, отдельный UI на портале — следующая задача.
+После стадий инженер проходит замечания и принимает решения; решения сохраняются и раскладываются
+по документу.
+
+**Решения** (единый «вид решения» — `review/decisionModel.js`, одинаков в docx / preview / md):
+- `accept` (Примечание) → Word-комментарий;
+- `edit` (Изменить) → `w:del` старого + `w:ins` нового;
+- `delete` (Удалить) → `w:del`;
+- `remove_from_scope` (Вынести из объёма) → `w:del` + комментарий-метка «Вынесено из объёма»;
+- `reject` (Отклонить) → не экспортируется.
+
+**Экспорт `.docx`** (`server/services/reviewDocx/`) — главный артефакт: берётся исходный ТЗ.docx, в
+него вносятся настоящие Word Track Changes и комментарии. Исходное форматирование сохраняется.
+
+**Честно о сопоставлении.** `.md` (источник цитат) и `.docx` (цель экспорта) — разные представления
+и побайтно не совпадают. Поэтому место правки ищется каскадом с понижением точности:
+точное совпадение → терпимое к пробелам/неразрывным пробелам → по ячейкам таблиц → нечёткое
+(token-overlap). Если место не нашлось или правка не может лечь как track-change, она **не теряется
+молча** — на её месте остаётся Word-комментарий с сутью правки. Это видно в пер-issue отчёте:
+`GET …/export/docx/report` со статусами `applied` / `fallback` (через комментарий) / `failed` /
+`skipped` (дубликат места — экспортируется одно решение на место).
+
+**Прочие выгрузки:** HTML-preview рецензии, `review.md` со всеми правками, CSV-реестр замечаний
+(Excel), JSON-дамп, краткая сводка `summary.md`.
 
 ---
 
@@ -262,16 +292,12 @@ GET    /api/documents/:id/download
 GET    /api/documents/:id/text
 DELETE /api/documents/:id
 
-GET    /api/tenders/:id/checklist
-POST   /api/tenders/:id/checklist
-PATCH  /api/tenders/:id/checklist/:itemId
-DELETE /api/tenders/:id/checklist/:itemId
-
+GET/POST/PATCH/DELETE /api/tenders/:id/checklist[/:itemId]
 GET/POST/PATCH/DELETE /api/tenders/:id/conditions[/:itemId]
 GET/POST/PATCH/DELETE /api/tenders/:id/risks[/:itemId]
 GET    /api/risks/global
-GET/PATCH             /api/tenders/:id/setup/params          — параметры тендера (тип договора, аванс, эскалация, сроки)
-GET/PATCH             /api/tenders/:id/setup/locks           — блокировки шагов настройки
+GET/PATCH             /api/tenders/:id/setup/params
+GET/PATCH             /api/tenders/:id/setup/locks
 
 POST   /api/tenders/:id/qa/import                    multer .xlsx
 GET    /api/tenders/:id/qa
@@ -279,7 +305,7 @@ GET    /api/tenders/:id/characteristics
 PATCH  /api/characteristics/:charId
 
 GET    /api/tenders/:id/stages
-POST   /api/tenders/:id/stages/:n/run                фоновый: сразу {status:'running'}, статус через GET /stages
+POST   /api/tenders/:id/stages/:n/run                фоновый: сразу {status:'running'}
 POST   /api/tenders/:id/stages/:n/finish
 POST   /api/tenders/:id/stages/:n/reset
 GET    /api/tenders/:id/stages/:n/issues             ?criticality=&review_status=&problem_type=
@@ -290,55 +316,37 @@ POST   /api/issues/:id/decision                      {decision, edited_redaction
 GET    /api/tenders/:id/review/preview               HTML-preview рецензии
 GET    /api/tenders/:id/review/consolidated          экран «Итог» (группы по месту ТЗ)
 GET    /api/tenders/:id/export/docx                  ТЗ.docx с Track Changes
-GET    /api/tenders/:id/export/docx/report           пер-issue отчёт экспорта (applied/fallback/failed/skipped)
+GET    /api/tenders/:id/export/docx/report           пер-issue отчёт (applied/fallback/failed/skipped)
 GET    /api/tenders/:id/export/issues.csv
 GET    /api/tenders/:id/export/issues.json
 GET    /api/tenders/:id/export/summary.md
-GET    /api/tenders/:id/export/review.md             review.md со всеми правками
+GET    /api/tenders/:id/export/review.md
 ```
 
-> `:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`: `open`/`running`/`reviewing`/`finished`).
+`:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и
+анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`:
+`open` / `running` / `reviewing` / `finished`, плюс `locked` для недоступных).
 
 ---
 
-## Демо-данные
+## Тесты
 
-`server/db/seed.js` создаёт:
-- 2 тендера: «ЖК Северный — Корпус 5 (монолит + кладка)» (тип `shell`) и «ЖК Заречный — генподряд полного цикла» (тип `general_contract`).
-- Для «Северного»: ТЗ.docx + ВОР.xlsx + ПД.txt + чек-лист (часть позиций «в объёме», часть — нет) + параметры тендера/условия + 5 записей Q&A.
-- Для «Заречного»: ТЗ.docx + незаполненный чек-лист + параметры тендера.
-
-Демо-данные подгружаются автоматически при первом запуске на пустой БД. Принудительный пересеев:
 ```bash
-npm run seed   # выполняет: node server/db/seed.js -f
+npm test     # node --test, без БД и LLM
 ```
 
----
-
-## Тест-сценарий end-to-end
-
-1. Настроить `.env` (`DATABASE_URL` + LLM), затем `npm run install:all && npm run dev` → открыть `http://localhost:5173`.
-2. Видны 2 demo-тендера → открыть «ЖК Северный».
-3. Таб **Документы**: загруженные файлы, статус «текст извлечён». Для анализа должна быть `.md`-копия ТЗ в слоте «ТЗ → Markdown».
-4. Табы **Состав работ / Условия / Риски / Таблица характеристик** — данные заполнены.
-5. Таб **Стадии**:
-   - Стадия 1 → «Запустить анализ» → дождаться (прогон фоновый) → принять/отредактировать/удалить из ТЗ → «Завершить стадию».
-   - Стадия 2: загрузить Q&A `.xlsx` (или использовать данные сида) → «Запустить анализ» → решения → «Завершить».
-   - Стадия 3 (условия компании) → запустить → решения → завершить.
-   - Стадия 4 (типовые риски) → запустить → решения → завершить.
-   - Стадия 5 (самоанализ) → запустить → решения → завершить.
-6. Проверить **каскадный сброс**: вернуться к Стадии 2 → подтвердить → стадии 3–5 очищаются.
-7. Таб **Экспорт** → «Скачать ТЗ.docx с правками» → открыть в Word: удаления/правки видны как Track Changes (область рецензирования), «Примечания» — как Word-комментарии.
-8. «Открыть HTML-preview» → корректно отрисовывается в браузере.
-9. CSV / JSON / Markdown — скачиваются, открываются.
+Покрывают: экспорт в Word на разных структурах (абзац / список / таблица / мультиформат / повтор
+текста), устойчивое сопоставление `.md↔.docx` (терпимый матчинг / таблицы по ячейкам / нечёткий /
+комментарий-фолбэк), пер-issue отчёт, и quality scoring Стадии 4 (анти-триггеры, порог отсева).
 
 ---
 
 ## Ограничения MVP
 
-- LLM-анализ требует настроенного доступа к модели (`OPENAI_*` либо локальный bridge). Без ключа/bridge стадии не запускаются (понятная 400).
-- Подписочный путь через Claude-bridge не держит параллель (троттлинг/таймауты) — стадии идут последовательно, дефолт `STAGE_LLM_CONCURRENCY=1`; крупные ТЗ обрабатываются фоново.
-- Анализ ведётся по `.md`-копии ТЗ; главный экспорт `.docx` работает, если оригинал ТЗ загружен в `.docx`. Если ТЗ только в PDF — используйте HTML-preview/CSV/JSON.
-- Q&A форма принимается только через xlsx-загрузку. UI прямо в портале — следующая задача.
+- LLM-анализ требует настроенного доступа к модели (`OPENAI_*` либо локальный bridge). Без него
+  стадии не запускаются (понятная ошибка 400).
+- Анализ ведётся по `.md`-копии ТЗ; экспорт правок идёт в исходный `.docx`. Если оригинал ТЗ только
+  в PDF — используйте HTML-preview / CSV / JSON.
+- Q&A-форма принимается через xlsx-загрузку (UI ввода прямо в портале — следующая задача).
 - Нет аутентификации/авторизации — это локальный инструмент инженера, не SaaS.
 - Адаптивность desktop-first; на мобильных таблицы прокручиваются.

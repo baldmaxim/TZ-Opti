@@ -5,7 +5,7 @@ import { useWizardState } from '../../hooks/useWizardState';
 import { withViewTransition } from '../../utils/viewTransition';
 import StagePanel from './StagePanel';
 import ResultPanel from './ResultPanel';
-import { stageShort, stageTitle } from '../../utils/labels';
+import { stageShort, stageTitle, STAGE_NUMBERS } from '../../utils/labels';
 
 const TILES = [
   {
@@ -160,7 +160,7 @@ export default function AnalysisOverview() {
       };
       const isAvailable = (tile) => {
         if (tile.id === 'result') {
-          return [1, 2, 3, 4, 5].every((n) => stepStatus(n) === 'finished');
+          return STAGE_NUMBERS.every((n) => stepStatus(n) === 'finished');
         }
         return stepStatus(tile.stage) !== 'locked';
       };
@@ -207,7 +207,7 @@ export default function AnalysisOverview() {
   const tileStatus = (tile) => {
     if (tile.id === 'result') {
       // Результат — после завершения всех 5 реальных стадий анализа.
-      const allDone = [1, 2, 3, 4, 5].every((n) => stageFinished(n));
+      const allDone = STAGE_NUMBERS.every((n) => stageFinished(n));
       return allDone ? 'available' : 'locked';
     }
     return backendStepStatus(tile.stage);

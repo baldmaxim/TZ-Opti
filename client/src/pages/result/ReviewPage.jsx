@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import { criticalityClass, CRITICALITY, STAGE_LABELS, ACTIONS } from '../../utils/labels';
+import { criticalityClass, CRITICALITY, STAGE_LABELS, STAGE_NUMBERS, ACTIONS } from '../../utils/labels';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
@@ -23,7 +23,9 @@ export default function ReviewPage() {
     if (!tenderId) return;
     try {
       const all = [];
-      for (let s = 1; s <= 5; s++) {
+      // Обходим ВСЕ стадии (вкл. Стадию 5 «Самоанализ ТЗ») — список номеров из
+      // единого источника STAGE_NUMBERS, чтобы он не разъезжался со схемой стадий.
+      for (const s of STAGE_NUMBERS) {
         try {
           const data = await api.listStageIssues(tenderId, s, { review_status: 'pending' });
           for (const it of data.items || []) all.push(it);

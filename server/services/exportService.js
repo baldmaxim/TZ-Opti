@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../db/connection');
+const { STAGE_NUMBERS } = require('./stageAnalysis/stageAnalysisEngine');
 
 const CSV_HEADERS = [
   'id', 'analysis_stage', 'problem_type', 'risk_category', 'criticality',
@@ -84,7 +85,7 @@ async function exportSummaryMd(tenderId) {
   lines.push(`- Высокая/критическая критичность: **${critIssues.length}**`);
   lines.push('');
   lines.push('## По стадиям');
-  for (let s = 1; s <= 5; s++) {
+  for (const s of STAGE_NUMBERS) {
     lines.push(`- Стадия ${s}: ${byStage(s).length} замечаний`);
   }
   lines.push('');

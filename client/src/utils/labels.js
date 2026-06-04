@@ -68,6 +68,13 @@ export const STAGE_LABELS = Object.fromEntries(
   Object.keys(STAGE_META).map((n) => [n, STAGE_META[n].title]),
 );
 
+// ЕДИНЫЙ список номеров стадий (1..5) — производный от STAGE_META.
+// Все обходы стадий (рецензия, визард, обзор) берут его отсюда, чтобы при
+// изменении числа стадий не править захардкоженные массивы по файлам.
+export const STAGE_NUMBERS = Object.keys(STAGE_META)
+  .map(Number)
+  .sort((a, b) => a - b);
+
 export const STAGE_STATUS = {
   open: 'Готова к запуску',
   running: 'Выполняется',

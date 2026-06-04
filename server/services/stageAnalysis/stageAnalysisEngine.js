@@ -24,6 +24,13 @@ const STAGE_LABELS = {
   5: 'Самоанализ ТЗ',
 };
 
+// Единый список номеров стадий (1..5) — производный от STAGE_LABELS.
+// Обходы/валидация стадий берут его отсюда, чтобы не плодить захардкоженные
+// массивы [1,2,3,4,5] по контроллерам/сервисам.
+const STAGE_NUMBERS = Object.keys(STAGE_LABELS)
+  .map(Number)
+  .sort((a, b) => a - b);
+
 async function getStageState(tenderId) {
   let state = await db.queryOne('SELECT * FROM tender_stage_state WHERE tender_id = ?', tenderId);
   if (!state) {
@@ -471,6 +478,7 @@ async function recoverOrphanedRunningStages() {
 
 module.exports = {
   STAGE_LABELS,
+  STAGE_NUMBERS,
   getStageState,
   runStage,
   startStageBackground,

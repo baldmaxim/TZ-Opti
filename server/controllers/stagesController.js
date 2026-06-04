@@ -10,7 +10,7 @@ exports.getState = async (req, res) => {
   if (!tender) throw notFound('Тендер не найден');
   const state = await engine.getStageState(req.params.id);
   const stages = await Promise.all(
-    [1, 2, 3, 4, 5].map(async (n) => ({
+    engine.STAGE_NUMBERS.map(async (n) => ({
       stage: n,
       label: engine.STAGE_LABELS[n],
       status: state[`stage${n}_status`],
@@ -24,7 +24,7 @@ exports.getState = async (req, res) => {
 
 exports.run = async (req, res) => {
   const stage = Number(req.params.n);
-  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
+  if (!engine.STAGE_NUMBERS.includes(stage)) throw badRequest('Допустимы стадии 1..5');
   // Фоновый запуск: быстрые проверки (гард/доступность) кидают 400 сразу,
   // иначе анализ идёт в фоне, клиент опрашивает статус. Снимает таймаут/
   // «Failed to fetch» на длинной Стадии 1.
@@ -34,14 +34,14 @@ exports.run = async (req, res) => {
 
 exports.finish = async (req, res) => {
   const stage = Number(req.params.n);
-  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
+  if (!engine.STAGE_NUMBERS.includes(stage)) throw badRequest('Допустимы стадии 1..5');
   const state = await engine.finishStage(req.params.id, stage);
   res.json({ ok: true, state });
 };
 
 exports.reset = async (req, res) => {
   const stage = Number(req.params.n);
-  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
+  if (!engine.STAGE_NUMBERS.includes(stage)) throw badRequest('Допустимы стадии 1..5');
   const state = await engine.resetStage(req.params.id, stage);
   res.json({ ok: true, state });
 };

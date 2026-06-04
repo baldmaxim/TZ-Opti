@@ -1,4 +1,4 @@
-import { stageLabel, stageShort } from './labels';
+import { stageLabel, stageShort, STAGE_NUMBERS } from './labels';
 
 export const SECTIONS = [
   { id: 'setup', label: 'Подготовка', order: 1 },
@@ -119,7 +119,7 @@ export function gateForStep(step, ctx) {
     return { open: true };
   }
   if (step.section === 'result') {
-    const anyFinished = [1, 2, 3, 4, 5].some((n) => stageStatus(ctx, n) === 'finished');
+    const anyFinished = STAGE_NUMBERS.some((n) => stageStatus(ctx, n) === 'finished');
     if (!anyFinished) {
       return {
         open: false,

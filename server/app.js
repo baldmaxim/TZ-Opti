@@ -28,6 +28,7 @@ const setupParamsRouter = require('./routes/setupParams');
 const signalsRouter = require('./routes/signals');
 const unifiedRouter = require('./routes/unified');
 const criticRouter = require('./routes/critic');
+const clusteringRouter = require('./routes/clustering');
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -57,6 +58,7 @@ app.use('/api', setupParamsRouter);
 app.use('/api', signalsRouter);
 app.use('/api', unifiedRouter);
 app.use('/api', criticRouter);
+app.use('/api', clusteringRouter);
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) {

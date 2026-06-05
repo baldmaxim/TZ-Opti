@@ -112,6 +112,11 @@ export const api = {
   listIssueReviews: (tenderId, mode = 'working') =>
     request(`/tenders/${tenderId}/issue-reviews?mode=${encodeURIComponent(mode)}`),
 
+  // Clustering (debug-слой: объединение похожих замечаний по одному месту ТЗ)
+  buildClusters: (tenderId) => request(`/tenders/${tenderId}/clustering/build`, { method: 'POST' }),
+  listClusters: (tenderId, mode = 'working') =>
+    request(`/tenders/${tenderId}/issue-clusters?mode=${encodeURIComponent(mode)}`),
+
   // Решения
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
   decideIssue: (id, data) => request(`/issues/${id}/decision`, { method: 'POST', body: data }),

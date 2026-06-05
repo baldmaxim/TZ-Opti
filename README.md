@@ -231,6 +231,34 @@ TZ-Opti/
 
 ---
 
+## Параллельная архитектура анализа (экспериментальная)
+
+Поверх 5-стадийного пайплайна строится **новый параллельный конвейер** из 4 слоёв. Он **не трогает** `issues` / `review` / `export` — у каждого слоя своя таблица, свой сервис/контроллер/роут, debug-страница (по прямому URL) и офлайн-тест чистых функций без БД (как `review/consolidation.js`). Цель — собрать находки всех стадий в единый, отранжированный и сгруппированный поток замечаний для инженера.
+
+```
+   5 стадий (existing)
+        │  issueRecords
+        ▼
+1. signals ──▶ 2. draft_issues ──▶ 3. critic ──▶ 4. clustering
+ analysis_signals   draft_issues    issue_reviews   issue_clusters
+                                                    issue_cluster_items
+```
+
+| Слой | Таблица(ы) | Сервис | Что делает |
+|------|-----------|--------|------------|
+| **1. signals** | `analysis_signals` | `services/signals/signalWriter.js` | Best-effort писатель: после каждой стадии складывает её находки в единый поток сигналов (`signal_type` по стадии: 1=coverage, 2=decision, 3=condition, 4=risk). Сбой писателя не влияет на закоммиченные issues и статус стадии. |
+| **2. draft_issues** | `draft_issues` | `services/unifiedAnalysis/unifiedIssueBuilder.js` | Единый анализатор: сводит сигналы одного места ТЗ в один черновой draft_issue. |
+| **3. critic** | `issue_reviews` | `services/critic/criticService.js` | Оценивает значимость draft_issue для генподрядчика по 10 критериям, ставит `display_priority` (critical/high/medium/low) и `show_to_engineer` (мягкое скрытие low, без удаления). |
+| **4. clustering** | `issue_clusters` + `issue_cluster_items` | `services/clustering/clusteringService.js` | Сводит ПОХОЖИЕ замечания одного места ТЗ в кластер по `placeKey` (tz_clause → абзац → фрагмент) × доминирующему измерению значимости (цена/срок/договор/ответственность) × семейству действия (remove/edit/note). Разные по смыслу проблемы одного пункта (открытый объём ≠ риск оплаты) дают РАЗНЫЕ кластеры — основание каждого сохраняется. |
+
+Слои 2–4 запускаются явно (`POST …/build`) и читаются с фильтром важности (`?mode=important|working|full`). Группировка/слияние во всех слоях — чистые функции, покрытые офлайн-тестами (`npm test`).
+
+**Debug-страницы** (без пункта меню, по прямому URL): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
+
+> Статус: экспериментальный слой на ветке `sandbox/experiments`. Не подключён к основному потоку инженера (экспорт по-прежнему берёт решения из `issues`/consolidation).
+
+---
+
 ## Принятые инженерные решения
 
 1. **LLM-агенты, не rule-based**: каждая стадия — отдельный системный промт (роль ГП) + общий каркас `shared/llmStage.js`. Три режима промта (`structural`/`strict`/`full`) переключаются env без правок кода.
@@ -295,6 +323,15 @@ GET    /api/tenders/:id/export/issues.csv
 GET    /api/tenders/:id/export/issues.json
 GET    /api/tenders/:id/export/summary.md
 GET    /api/tenders/:id/export/review.md             review.md со всеми правками
+
+# Параллельная архитектура (экспериментальная, debug)
+GET    /api/tenders/:id/signals                      поток сигналов всех стадий
+POST   /api/tenders/:id/unified/build                собрать draft_issues из сигналов
+GET    /api/tenders/:id/draft-issues
+POST   /api/tenders/:id/critic/build                 оценить значимость draft_issues
+GET    /api/tenders/:id/issue-reviews                ?mode=important|working|full
+POST   /api/tenders/:id/clustering/build             сгруппировать похожие замечания
+GET    /api/tenders/:id/issue-clusters               ?mode=important|working|full
 ```
 
 > `:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`: `open`/`running`/`reviewing`/`finished`).

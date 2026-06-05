@@ -233,6 +233,43 @@ CREATE TABLE IF NOT EXISTS issue_reviews (
 
 CREATE INDEX IF NOT EXISTS idx_issue_reviews_tender ON issue_reviews(tender_id);
 
+-- Слой clustering (четвёртый шаг новой архитектуры, поверх draft_issues + issue_reviews).
+-- Сводит похожие замечания по ОДНОМУ месту ТЗ (tz_clause/фрагмент) И близкие по смыслу
+-- (доминирующее измерение значимости + пересекающееся действие) в один кластер. Разные по
+-- смыслу проблемы в одном пункте (открытый объём ≠ риск оплаты) остаются РАЗНЫМИ кластерами
+-- — у каждого кластера свои cluster_items (исходные draft_issues), смысл не теряется.
+CREATE TABLE IF NOT EXISTS issue_clusters (
+  id                     TEXT PRIMARY KEY,
+  tender_id              TEXT NOT NULL,
+  tz_clause              TEXT,               -- пункт/путь заголовков ТЗ (общий для кластера)
+  cluster_title          TEXT,              -- краткий заголовок проблемы кластера
+  merged_basis           TEXT,              -- объединённые основания разных стадий (по пунктам)
+  merged_recommendation  TEXT,              -- объединённая рекомендация/действие
+  overall_criticality    TEXT,              -- critical|high|medium|low (макс. по элементам)
+  show_to_engineer       INTEGER DEFAULT 1, -- 1=показывать (любой элемент значим), 0=скрыт
+  final_problem_type     TEXT,              -- problem_type первичного (наиболее значимого) элемента
+  -- доп. прозрачность (сверх спеки):
+  semantic_bucket        TEXT,              -- ключ смысловой группы (домен значимости + действие)
+  item_count             INTEGER,           -- число draft_issues в кластере
+  paragraph_index        INTEGER,           -- для стабильного порядка/дебага
+  created_at             TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_issue_clusters_tender ON issue_clusters(tender_id);
+
+CREATE TABLE IF NOT EXISTS issue_cluster_items (
+  id                  TEXT PRIMARY KEY,
+  cluster_id          TEXT NOT NULL,
+  draft_issue_id      TEXT NOT NULL,
+  item_role           TEXT,            -- primary|related (подпункт внутри кластера, смысл сохранён)
+  created_at          TEXT NOT NULL,
+  FOREIGN KEY (cluster_id) REFERENCES issue_clusters(id) ON DELETE CASCADE,
+  FOREIGN KEY (draft_issue_id) REFERENCES draft_issues(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_cluster_items_cluster ON issue_cluster_items(cluster_id);
+
 CREATE TABLE IF NOT EXISTS review_decisions (
   id                  TEXT PRIMARY KEY,
   issue_id            TEXT NOT NULL,

@@ -16,6 +16,7 @@ import ExportPage from './pages/result/ExportPage';
 import SignalsPage from './pages/debug/SignalsPage';
 import DraftIssuesPage from './pages/debug/DraftIssuesPage';
 import IssueReviewsPage from './pages/debug/IssueReviewsPage';
+import ClustersPage from './pages/debug/ClustersPage';
 
 export default function App() {
   return (
@@ -38,6 +39,7 @@ export default function App() {
           <Route path="debug/signals" element={<SignalsPage />} />
           <Route path="debug/draft-issues" element={<DraftIssuesPage />} />
           <Route path="debug/issue-reviews" element={<IssueReviewsPage />} />
+          <Route path="debug/clusters" element={<ClustersPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

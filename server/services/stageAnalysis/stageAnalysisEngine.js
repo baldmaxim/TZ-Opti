@@ -8,7 +8,7 @@ const { runStage1Llm } = require('./stage1_llm');
 const { runStage2Llm } = require('./stage2_llm');
 const { runStage3Llm } = require('./stage3_llm');
 const { runStage4Llm } = require('./stage4_llm');
-const { runStage5Llm } = require('./stage5_llm');
+const selfAnalysis = require('../selfAnalysis/selfAnalysisService');
 const { importQaXlsx } = require('../qaImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 const { isOwnedBy, stageResultType } = require('../review/stageDomains');
@@ -102,13 +102,27 @@ async function buildContextForStage(tenderId, stage) {
   return ctx;
 }
 
+// Стадия 5 — НОВАЯ роль: self-analysis как quality-control над ИТОГОМ
+// (кластеры новой архитектуры + исходный ТЗ), а НЕ второй поток issues по тексту.
+// Поэтому она НЕ пишет в таблицу issues — возвращает пустой issues[], а находки
+// о качестве разбора кладёт в self_analysis_results (selfAnalysisService).
+async function runStage5SelfAnalysis(ctx) {
+  const res = await selfAnalysis.buildSelfAnalysis(ctx.tenderId);
+  const issues = [];
+  issues.analysisNote =
+    `Самоанализ (QC) над итогом: ${res.summary.findings} замечаний о качестве разбора ` +
+    `по ${res.summary.clusters} кластерам — см. self_analysis_results (issues не порождаются).`;
+  issues.selfAnalysis = res.summary;
+  return issues;
+}
+
 function runStageOrchestrator(stage, ctx) {
   switch (stage) {
     case 1: return runStage1Llm(ctx);
     case 2: return runStage2Llm(ctx);
     case 3: return runStage3Llm(ctx);
     case 4: return runStage4Llm(ctx);
-    case 5: return runStage5Llm(ctx);
+    case 5: return runStage5SelfAnalysis(ctx);
     default: throw badRequest('Допустимы стадии 1..5');
   }
 }
@@ -265,6 +279,8 @@ async function runStageInner(tenderId, stage) {
     by_criticality: countBy(issues, 'criticality'),
     by_problem_type: countBy(issues, 'problem_type'),
     notes: issues.analysisNote || null,
+    // Стадия 5 (QC) issues не порождает — несёт сводку self-analysis вместо них.
+    self_analysis: issues.selfAnalysis || null,
   };
 
   // Связка issue.id ↔ находка — нужна слою signals (source_entity_id ниже).

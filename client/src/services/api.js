@@ -117,6 +117,11 @@ export const api = {
   listClusters: (tenderId, mode = 'working') =>
     request(`/tenders/${tenderId}/issue-clusters?mode=${encodeURIComponent(mode)}`),
 
+  // Self-analysis (debug-слой: QC/полнота над итогом — кластеры + ТЗ, новая роль Стадии 5)
+  buildSelfAnalysis: (tenderId) => request(`/tenders/${tenderId}/self-analysis/build`, { method: 'POST' }),
+  listSelfAnalysis: (tenderId, findingType = null) =>
+    request(`/tenders/${tenderId}/self-analysis${findingType ? `?finding_type=${encodeURIComponent(findingType)}` : ''}`),
+
   // Решения
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
   decideIssue: (id, data) => request(`/issues/${id}/decision`, { method: 'POST', body: data }),

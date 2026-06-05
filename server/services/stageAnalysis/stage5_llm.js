@@ -1,20 +1,19 @@
 'use strict';
 
-// Стадия 5 — LLM-агент: самоанализ ТЗ (скрытые работы / двусмыслия / срок).
-// Без внешнего справочника — модель читает только ТЗ. Generic-каркас
-// (сегментация/locate/дедуп/раннер) — в shared/llmStage.js. Промт — в
-// stage5Prompts.js. Здесь только Stage-5-специфика: схема находки, сборка
-// user-сообщения.
+// Стадия 5 — LLM-агент в НОВОЙ роли: self-analysis как quality-control над
+// итогом анализа. Вход — исходный ТЗ + готовые КЛАСТЕРЫ замечаний (а не «текст
+// ТЗ с нуля»). Агент отвечает на 4 вопроса о качестве сборки:
+//   missed_coverage · weak_cluster · cluster_contradiction · needs_enrichment.
 //
-// Модель работы: скан ТЗ по сегментам (как Стадия 1) — каждая находка дословно
-// цитирует фрагмент ТЗ, поэтому всегда локализуется. Контракт: (context) → Issue[]
+// Здесь только Stage-5-специфика LLM-вызова: схема ответа, сериализация входа,
+// единый вызов модели. Оркестрация (загрузка кластеров/сигналов/ТЗ, эвристики,
+// запись self_analysis_results) — в services/selfAnalysis/selfAnalysisService.js.
+// Промт (роль QC + 4 вопроса + режимы) — в stage5Prompts.js.
 
-const { getModel } = require('./llm/openaiClient');
+const { chatJson, getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage5Prompts');
-const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
 
-const RISK_CATEGORIES = ['объём_и_обязательства', 'юридические_формулировки', 'график'];
-const PROBLEM_TYPES = ['скрытые_работы', 'двусмысленная_формулировка', 'влияние_на_срок'];
+const FINDING_TYPES = ['missed_coverage', 'weak_cluster', 'cluster_contradiction', 'needs_enrichment'];
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -25,42 +24,20 @@ const RESPONSE_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: [
-          'fragment',
-          'section_path',
-          'problem_type',
-          'risk_category',
-          'criticality',
-          'suggested_action',
-          'basis',
-          'confidence',
-        ],
+        required: ['finding_type', 'cluster_id', 'comment', 'suggested_improvement', 'confidence'],
         properties: {
-          fragment: {
+          finding_type: { type: 'string', enum: FINDING_TYPES },
+          cluster_id: {
             type: 'string',
-            description: 'Дословная цитата из ТЗ (несколько слов или короткое предложение).',
+            description:
+              'Точный id кластера из переданного списка, к которому относится замечание. ' +
+              'Пустая строка для missed_coverage (замечание про весь ТЗ / пропуск).',
           },
-          section_path: {
+          comment: { type: 'string', description: 'Что именно не так с разбором (на русском).' },
+          suggested_improvement: {
             type: 'string',
-            description: 'Путь заголовков, например: "1. Введение › 1.2 Объём работ". Пустая строка, если вне заголовка.',
+            description: 'Как улучшить итог: чем дополнить кластер / что добавить в разбор.',
           },
-          problem_type: { type: 'string', enum: PROBLEM_TYPES },
-          risk_category: { type: 'string', enum: RISK_CATEGORIES },
-          criticality: { type: 'string', enum: ['high', 'medium', 'low'] },
-          suggested_action: {
-            type: 'string',
-            enum: ['comment', 'replace', 'delete', 'remove_from_scope', 'clarify', 'limit_scope', 'assumption'],
-            description: 'Рекомендация агента; инженер может выбрать своё действие в UI.',
-          },
-          suggested_redaction: {
-            type: 'string',
-            description: 'Если suggested_action=replace/limit_scope — текст замены/ограничения. Иначе пустая строка.',
-          },
-          review_comment: {
-            type: 'string',
-            description: 'Краткий комментарий инженеру (на русском). Может быть пустым.',
-          },
-          basis: { type: 'string', description: 'Краткое обоснование, почему это проблема.' },
           confidence: { type: 'number', minimum: 0, maximum: 1 },
         },
       },
@@ -69,54 +46,79 @@ const RESPONSE_SCHEMA = {
   required: ['findings'],
 };
 
-const CHAR_BUDGET = Number(process.env.STAGE_LLM_CHAR_BUDGET) || 400000;
-const CONCURRENCY = Math.max(1, Number(process.env.STAGE_LLM_CONCURRENCY) || 1);
-const SCAFFOLD_OVERHEAD = 600;
+// Бюджет на текст ТЗ в user-сообщении (QC не сегментирует ТЗ — даём целиком
+// с усечением, кластеры важнее полного текста).
+const TZ_CHAR_BUDGET = Number(process.env.STAGE5_TZ_BUDGET) || 200000;
 
-function buildSegmentUserMessage({ tzText, partIdx, partTotal }) {
-  const partNote =
-    partTotal > 1
-      ? `## ТЗ — часть ${partIdx}/${partTotal} (markdown)\n\nЭто ФРАГМЕНТ ТЗ. Анализируй только приведённый ниже текст; остальные части ТЗ обрабатываются отдельно.`
-      : '## ТЗ (markdown)';
+// Компактный дайджест кластера для модели (без шумных полей).
+function digestCluster(c) {
+  return {
+    cluster_id: c.id,
+    tz_clause: c.tz_clause || '',
+    title: c.cluster_title || '',
+    criticality: c.overall_criticality || '',
+    problem_type: c.final_problem_type || '',
+    semantic_bucket: c.semantic_bucket || '',
+    item_count: c.item_count || (Array.isArray(c.items) ? c.items.length : 0),
+    basis: c.merged_basis || '',
+    recommendation: c.merged_recommendation || '',
+  };
+}
+
+function buildSelfAnalysisUserMessage({ tzText, clusters, signalStats }) {
+  const digest = (clusters || []).map(digestCluster);
+  const tz = (tzText || '').trim();
+  const tzBlock = tz ? (tz.length > TZ_CHAR_BUDGET ? `${tz.slice(0, TZ_CHAR_BUDGET)}\n…(текст ТЗ усечён)` : tz) : '(пусто)';
   return [
-    partNote,
+    '## Кластеры замечаний (итог конвейера) — JSON',
     '',
-    tzText && tzText.trim() ? tzText : '(пусто)',
+    '```json',
+    JSON.stringify(digest, null, 2),
+    '```',
+    '',
+    '## Статистика сигналов',
+    '',
+    '```json',
+    JSON.stringify(signalStats || {}, null, 2),
+    '```',
+    '',
+    '## Исходный ТЗ (markdown)',
+    '',
+    tzBlock,
     '',
     '---',
-    'Найди в приведённом тексте ТЗ скрытые работы, двусмысленные формулировки и',
-    'условия, влияющие на срок. Верни списком в JSON по схеме (поле findings).',
+    'Проверь ПОЛНОТУ и КАЧЕСТВО разбора (не ищи замечания в тексте заново):',
+    'что могли пропустить (missed_coverage), где кластеры слабые (weak_cluster),',
+    'где противоречие между кластерами (cluster_contradiction), где усилить',
+    'basis/review_comment/suggested_redaction (needs_enrichment). cluster_id —',
+    'точный id из списка выше; для missed_coverage — пустая строка. Верни JSON',
+    'по схеме (поле findings).',
   ].join('\n');
 }
 
-async function runStage5Llm(context) {
-  const { blocks } = context;
-  if (!Array.isArray(blocks) || !blocks.length) {
-    const err = new Error('ТЗ.md пуст или не парсится. Загрузите корректный .md в слот ТЗ.');
-    err.status = 400;
-    throw err;
-  }
-
-  const promptVariant = resolveVariant();
-  const systemMsg = buildSystemPrompt(promptVariant);
-  const tzBudget = CHAR_BUDGET - SCAFFOLD_OVERHEAD - systemMsg.length;
+// Единый вызов модели. Возвращает СЫРОЙ массив находок (нормализацию/привязку к
+// cluster_id и запись делает selfAnalysisService). Best-effort: при пустом
+// списке кластеров проверять нечего — не зовём модель.
+async function runSelfAnalysisLlm({ tzText, clusters, signalStats }) {
+  if (!Array.isArray(clusters) || !clusters.length) return [];
+  const variant = resolveVariant();
+  const system = buildSystemPrompt(variant);
+  const user = buildSelfAnalysisUserMessage({ tzText, clusters, signalStats });
   // eslint-disable-next-line no-console
-  console.log(
-    `[stage5_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} tzBudget=${tzBudget}ch`,
-  );
-
-  return runLlmStage(context, {
-    sourceDocumentId: context.sourceDocumentId,
-    systemMsg,
-    schema: RESPONSE_SCHEMA,
-    schemaName: 'stage5_findings',
-    tzBudget,
-    concurrency: CONCURRENCY,
-    issueDefaults: { suggestedAction: 'clarify', confidence: 0.65 },
-    logTag: 'stage5_llm',
-    buildUserMessage: (segBlocks, partIdx, partTotal) =>
-      buildSegmentUserMessage({ tzText: renderSegment(segBlocks), partIdx, partTotal }),
+  console.log(`[stage5_self_analysis] model=${getModel()} promptVariant=${variant} clusters=${clusters.length}`);
+  const res = await chatJson({
+    system,
+    user,
+    jsonSchema: RESPONSE_SCHEMA,
+    schemaName: 'stage5_self_analysis',
   });
+  return Array.isArray(res && res.findings) ? res.findings : [];
 }
 
-module.exports = { runStage5Llm, buildIssue, locateInBlocks };
+module.exports = {
+  FINDING_TYPES,
+  RESPONSE_SCHEMA,
+  digestCluster,
+  buildSelfAnalysisUserMessage,
+  runSelfAnalysisLlm,
+};

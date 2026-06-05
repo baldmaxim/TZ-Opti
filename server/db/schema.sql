@@ -270,6 +270,33 @@ CREATE TABLE IF NOT EXISTS issue_cluster_items (
 
 CREATE INDEX IF NOT EXISTS idx_cluster_items_cluster ON issue_cluster_items(cluster_id);
 
+-- Слой self-analysis (пятый шаг новой архитектуры, поверх issue_clusters + issue_reviews + signals).
+-- НОВАЯ роль Стадии 5 «Самоанализ ТЗ»: не второй хаотичный поток issues, а слой
+-- QUALITY-CONTROL / COMPLETENESS-CHECK над уже собранным итогом. Проверяет не текст
+-- ТЗ «с нуля», а готовые кластеры + исходный ТЗ и отвечает на 4 вопроса:
+--   что могли пропустить · где кластеры слабые · где противоречие между кластерами ·
+--   где усилить basis / review_comment / suggested_redaction.
+-- НЕ дублирует Стадию 4 (та ищет типовые риски в тексте) — здесь оценка качества сборки.
+-- ПАРАЛЛЕЛЬНЫЙ слой: не пишет в issues/review/export. cluster_id каскадно удаляется
+-- при пересборке кластеров → self-analysis нужно перезапускать после clustering/build.
+CREATE TABLE IF NOT EXISTS self_analysis_results (
+  id                     TEXT PRIMARY KEY,
+  tender_id              TEXT NOT NULL,
+  cluster_id             TEXT,               -- кластер-адресат замечания (NULL = про весь ТЗ / пропуск)
+  finding_type           TEXT NOT NULL,      -- missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
+  comment                TEXT,               -- что именно не так (человекочитаемо)
+  suggested_improvement  TEXT,               -- как улучшить итог
+  confidence             REAL DEFAULT 0.6,   -- уверенность 0..1
+  -- доп. прозрачность (сверх минимума спеки):
+  source                 TEXT,               -- heuristic|llm (чем порождено замечание)
+  related_cluster_id     TEXT,               -- для cluster_contradiction — второй кластер пары
+  created_at             TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE,
+  FOREIGN KEY (cluster_id) REFERENCES issue_clusters(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_self_analysis_tender ON self_analysis_results(tender_id);
+
 CREATE TABLE IF NOT EXISTS review_decisions (
   id                  TEXT PRIMARY KEY,
   issue_id            TEXT NOT NULL,

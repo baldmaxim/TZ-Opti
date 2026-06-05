@@ -99,6 +99,14 @@ export const api = {
     return request(`/tenders/${tenderId}/stages/${n}/issues` + (q ? '?' + q : ''));
   },
 
+  // Сигналы (debug-слой новой архитектуры анализа: signals)
+  listSignals: (tenderId, signalType = null) =>
+    request(`/tenders/${tenderId}/signals${signalType ? `?signal_type=${encodeURIComponent(signalType)}` : ''}`),
+
+  // Единый анализатор ТЗ (debug-слой: draft_issues поверх signals)
+  buildDraftIssues: (tenderId) => request(`/tenders/${tenderId}/unified/build`, { method: 'POST' }),
+  listDraftIssues: (tenderId) => request(`/tenders/${tenderId}/draft-issues`),
+
   // Решения
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
   decideIssue: (id, data) => request(`/issues/${id}/decision`, { method: 'POST', body: data }),

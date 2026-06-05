@@ -25,6 +25,8 @@ const reviewRouter = require('./routes/review');
 const exportRouter = require('./routes/export');
 const setupLocksRouter = require('./routes/setupLocks');
 const setupParamsRouter = require('./routes/setupParams');
+const signalsRouter = require('./routes/signals');
+const unifiedRouter = require('./routes/unified');
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -51,6 +53,8 @@ app.use('/api', reviewRouter);
 app.use('/api', exportRouter);
 app.use('/api', setupLocksRouter);
 app.use('/api', setupParamsRouter);
+app.use('/api', signalsRouter);
+app.use('/api', unifiedRouter);
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) {

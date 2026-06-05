@@ -12,6 +12,7 @@ const { runStage5Llm } = require('./stage5_llm');
 const { importQaXlsx } = require('../qaImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 const { isOwnedBy, stageResultType } = require('../review/stageDomains');
+const { writeSignalsForStage } = require('../signals/signalWriter');
 const progressRegistry = require('./progressRegistry');
 
 // Единый серверный источник названий стадий (идёт в summary.label).
@@ -266,6 +267,9 @@ async function runStageInner(tenderId, stage) {
     notes: issues.analysisNote || null,
   };
 
+  // Связка issue.id ↔ находка — нужна слою signals (source_entity_id ниже).
+  const issueRecords = [];
+
   await db.transaction(async (tx) => {
     // Удаляем существующие незавершённые Issue этой стадии (повторный запуск)
     await tx.queryRun(
@@ -288,6 +292,7 @@ async function runStageInner(tenderId, stage) {
     );
 
     for (const issue of issues) {
+      const issueId = newId();
       await tx.queryRun(
         `
         INSERT INTO issues (
@@ -300,7 +305,7 @@ async function runStageInner(tenderId, stage) {
           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1
         )
       `,
-        newId(),
+        issueId,
         tenderId,
         runId,
         stage,
@@ -322,10 +327,16 @@ async function runStageInner(tenderId, stage) {
         issue.confidence ?? 0.6,
         issue.section_path || null,
       );
+      issueRecords.push({ issueId, issue });
     }
 
     await setStageStatus(tenderId, stage, 'reviewing', tx);
   });
+
+  // Параллельная запись слоя signals (новая архитектура анализа ТЗ).
+  // Изолирована: best-effort writer со своей транзакцией и перехватом ошибок —
+  // сбой signals НЕ влияет на уже закоммиченные issues и статус стадии.
+  await writeSignalsForStage({ tenderId, runId, stage, records: issueRecords });
 
   return { runId, summary };
 }

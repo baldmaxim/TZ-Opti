@@ -13,6 +13,8 @@ import AnalysisOverview from './pages/analysis/AnalysisOverview';
 import SummaryPage from './pages/result/SummaryPage';
 import ReviewPage from './pages/result/ReviewPage';
 import ExportPage from './pages/result/ExportPage';
+import SignalsPage from './pages/debug/SignalsPage';
+import DraftIssuesPage from './pages/debug/DraftIssuesPage';
 
 export default function App() {
   return (
@@ -32,6 +34,8 @@ export default function App() {
           <Route path="summary" element={<SummaryPage />} />
           <Route path="review" element={<ReviewPage />} />
           <Route path="export" element={<ExportPage />} />
+          <Route path="debug/signals" element={<SignalsPage />} />
+          <Route path="debug/draft-issues" element={<DraftIssuesPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

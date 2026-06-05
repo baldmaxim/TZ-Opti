@@ -160,6 +160,52 @@ CREATE TABLE IF NOT EXISTS issues (
 
 CREATE INDEX IF NOT EXISTS idx_issues_tender_stage ON issues(tender_id, analysis_stage);
 
+-- Слой сигналов (первый шаг новой архитектуры анализа:
+--   входные данные -> signals -> единый анализатор -> critic -> clustering -> ...).
+-- Параллельная запись: стадии 1..4 дополнительно эмитят сигналы рядом с issues,
+-- НЕ меняя issue/review/export пайплайн. Источник — находки стадий.
+CREATE TABLE IF NOT EXISTS analysis_signals (
+  id                   TEXT PRIMARY KEY,
+  tender_id            TEXT NOT NULL,
+  analysis_run_id      TEXT,
+  analysis_stage       INTEGER,
+  signal_type          TEXT NOT NULL,    -- 'coverage' | 'decision' | 'condition' | 'risk'
+  source_entity_type   TEXT,             -- что породило сигнал (пока 'issue')
+  source_entity_id     TEXT,             -- id порождающей сущности (id issue)
+  tz_clause            TEXT,             -- путь заголовков / пункт ТЗ
+  source_fragment      TEXT,             -- дословный фрагмент ТЗ
+  signal_payload_json  TEXT,             -- JSON с деталями находки
+  weight               REAL DEFAULT 0.6, -- значимость 0..1 (берётся из confidence)
+  created_at           TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE,
+  FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_tender_type ON analysis_signals(tender_id, signal_type);
+
+-- Единый анализатор ТЗ (второй шаг новой архитектуры, поверх слоя signals).
+-- Сводит совокупность signals одного места ТЗ в один draft_issue. Это
+-- ПАРАЛЛЕЛЬНЫЙ слой — не заменяет issues/review/export.
+CREATE TABLE IF NOT EXISTS draft_issues (
+  id                      TEXT PRIMARY KEY,
+  tender_id               TEXT NOT NULL,
+  tz_clause               TEXT,             -- пункт/путь заголовков ТЗ
+  source_fragment         TEXT,             -- дословный фрагмент ТЗ
+  problem_type            TEXT,
+  category                TEXT,             -- сводный signal_type(ы) группы
+  basis                   TEXT,             -- краткое основание
+  suggested_action        TEXT,
+  suggested_redaction     TEXT,
+  review_comment          TEXT,
+  confidence              REAL DEFAULT 0.6,
+  created_from_signal_ids TEXT,             -- JSON-массив id сигналов-источников
+  paragraph_index         INTEGER,          -- для стабильного порядка/дебага
+  created_at              TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_draft_issues_tender ON draft_issues(tender_id);
+
 CREATE TABLE IF NOT EXISTS review_decisions (
   id                  TEXT PRIMARY KEY,
   issue_id            TEXT NOT NULL,

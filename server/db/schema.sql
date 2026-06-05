@@ -206,6 +206,33 @@ CREATE TABLE IF NOT EXISTS draft_issues (
 
 CREATE INDEX IF NOT EXISTS idx_draft_issues_tender ON draft_issues(tender_id);
 
+-- Слой critic (третий шаг новой архитектуры, поверх draft_issues).
+-- Оценивает значимость каждого draft_issue ДЛЯ ГЕНПОДРЯДЧИКА и решает, показывать
+-- ли его инженеру в основном потоке. Малозначимые НЕ удаляются — только
+-- show_to_engineer=0 (скрыты по умолчанию). ПАРАЛЛЕЛЬНЫЙ слой.
+-- draft_issue_id каскадно удаляется при пересборке draft_issues → critic
+-- нужно перезапускать после unified/build.
+CREATE TABLE IF NOT EXISTS issue_reviews (
+  id                     TEXT PRIMARY KEY,
+  tender_id              TEXT NOT NULL,      -- денормализация: выборки/идемпотентность по тендеру
+  draft_issue_id         TEXT NOT NULL,
+  business_impact        TEXT,               -- общий уровень: none|low|medium|high
+  price_impact           TEXT,               -- расчёт / КП / приёмка-оплата / объём
+  schedule_impact        TEXT,               -- сроки / график
+  contract_impact        TEXT,               -- договор / существенные условия
+  responsibility_impact  TEXT,               -- обязанности / ответственность / гарантия
+  display_priority       TEXT,               -- critical|high|medium|low
+  show_to_engineer       INTEGER DEFAULT 1,  -- 1=показывать, 0=хранить, но скрывать по умолчанию
+  critic_comment         TEXT,               -- человекочитаемое объяснение вердикта
+  criteria_json          TEXT,               -- JSON сработавших критериев (прозрачность/дебаг)
+  score                  REAL,               -- числовой суммарный балл (дебаг/тай-брейк)
+  created_at             TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE,
+  FOREIGN KEY (draft_issue_id) REFERENCES draft_issues(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_issue_reviews_tender ON issue_reviews(tender_id);
+
 CREATE TABLE IF NOT EXISTS review_decisions (
   id                  TEXT PRIMARY KEY,
   issue_id            TEXT NOT NULL,

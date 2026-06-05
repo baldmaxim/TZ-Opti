@@ -107,6 +107,11 @@ export const api = {
   buildDraftIssues: (tenderId) => request(`/tenders/${tenderId}/unified/build`, { method: 'POST' }),
   listDraftIssues: (tenderId) => request(`/tenders/${tenderId}/draft-issues`),
 
+  // Critic (debug-слой: оценка значимости draft_issues для генподрядчика)
+  buildIssueReviews: (tenderId) => request(`/tenders/${tenderId}/critic/build`, { method: 'POST' }),
+  listIssueReviews: (tenderId, mode = 'working') =>
+    request(`/tenders/${tenderId}/issue-reviews?mode=${encodeURIComponent(mode)}`),
+
   // Решения
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
   decideIssue: (id, data) => request(`/issues/${id}/decision`, { method: 'POST', body: data }),

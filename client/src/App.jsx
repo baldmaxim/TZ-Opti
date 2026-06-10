@@ -10,6 +10,7 @@ import RisksPage from './pages/setup/RisksPage';
 import QaPage from './pages/setup/QaPage';
 import StagePage from './pages/stages/StagePage';
 import AnalysisOverview from './pages/analysis/AnalysisOverview';
+import AnalysisRunPage from './pages/analysis/AnalysisRunPage';
 import SummaryPage from './pages/result/SummaryPage';
 import ReviewPage from './pages/result/ReviewPage';
 import ExportPage from './pages/result/ExportPage';
@@ -28,16 +29,21 @@ export default function App() {
 
         <Route path="/tenders/:id" element={<TenderShell />}>
           <Route index element={<LegacyTenderRedirect />} />
+          {/* Основной flow: хаб входных блоков (index) → «Анализ ТЗ» (одна кнопка → замечания) → review → export */}
+          <Route path="analysis" element={<AnalysisRunPage />} />
+          <Route path="review" element={<ReviewPage />} />
+          <Route path="export" element={<ExportPage />} />
+          <Route path="qa" element={<QaPage />} />
+          {/* Подстраницы входных данных (deep-link / back-compat) */}
           <Route path="setup/documents" element={<DocumentsPage />} />
           <Route path="setup/checklist" element={<ChecklistPage />} />
           <Route path="setup/conditions" element={<ConditionsPage />} />
           <Route path="setup/risks" element={<RisksPage />} />
           <Route path="setup/qa" element={<QaPage />} />
-          <Route path="analysis" element={<AnalysisOverview />} />
-          <Route path="stage/:n" element={<StagePage />} />
           <Route path="summary" element={<SummaryPage />} />
-          <Route path="review" element={<ReviewPage />} />
-          <Route path="export" element={<ExportPage />} />
+          {/* Legacy / admin: прежний 5-стадийный хаб и пер-стадийные страницы (не в основном flow) */}
+          <Route path="legacy/stages" element={<AnalysisOverview />} />
+          <Route path="stage/:n" element={<StagePage />} />
           <Route path="debug/signals" element={<SignalsPage />} />
           <Route path="debug/draft-issues" element={<DraftIssuesPage />} />
           <Route path="debug/issue-reviews" element={<IssueReviewsPage />} />

@@ -119,14 +119,9 @@ export function gateForStep(step, ctx) {
     return { open: true };
   }
   if (step.section === 'result') {
-    const anyFinished = [1, 2, 3, 4, 5].some((n) => stageStatus(ctx, n) === 'finished');
-    if (!anyFinished) {
-      return {
-        open: false,
-        reason: 'Запустите и завершите хотя бы одну стадию анализа.',
-        cta: { label: 'Перейти к Стадии 1', stepId: 'stage1' },
-      };
-    }
+    // Новая архитектура: рецензия/экспорт работают от кластеров. Жёсткой блокировки
+    // по «завершённым стадиям» больше нет — у самих экранов есть пустые состояния,
+    // подсказывающие сначала собрать «Анализ ТЗ».
     return { open: true };
   }
   return { open: true };

@@ -4,6 +4,7 @@ const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
 const { newId } = require('../utils/ids');
 const { importQaXlsx } = require('../services/qaImportService');
+const { exportQaXlsx } = require('../services/qaExportService');
 const { autoLinkAll } = require('../services/qaTzLinkService');
 const { populateStandardCharacteristics } = require('../services/characteristicsTemplate');
 
@@ -19,6 +20,17 @@ exports.import = async (req, res) => {
 exports.listQa = async (req, res) => {
   const items = await db.queryAll('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC', req.params.id);
   res.json({ items });
+};
+
+// Выгрузка рабочей таблицы Q&A в .xlsx (тот же формат, что и импорт + поля разметки).
+exports.exportXlsx = async (req, res) => {
+  const tenderId = req.params.id;
+  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
+  if (!tender) throw notFound('Тендер не найден');
+  const buffer = await exportQaXlsx(tenderId);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="qa_${tenderId}.xlsx"`);
+  res.send(buffer);
 };
 
 exports.listCharacteristics = async (req, res) => {

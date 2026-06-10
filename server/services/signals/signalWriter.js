@@ -95,6 +95,28 @@ async function writeSignalsForStage({ tenderId, runId, stage, records }) {
   }
 }
 
+// Backfill: восстановить слой signals из уже существующих issues стадий 1–4.
+// Нужен, когда стадии прогонялись раньше (issues есть), а сигналы не записались
+// (или были очищены): новый кластерный конвейер читает только signals, и без них
+// draft_issues/clusters пустые. Берём те же поля и тот же маппинг, что и живой
+// прогон (writeSignalsForStage) — без повторного прогона LLM. Возвращает счётчики.
+async function backfillSignalsFromIssues(tenderId) {
+  const perStage = {};
+  let total = 0;
+  for (const stage of [1, 2, 3, 4]) {
+    const issues = await db.queryAll(
+      `SELECT * FROM issues WHERE tender_id = ? AND analysis_stage = ?`,
+      tenderId,
+      stage,
+    );
+    const records = issues.map((i) => ({ issueId: i.id, issue: i }));
+    const res = await writeSignalsForStage({ tenderId, runId: null, stage, records });
+    perStage[stage] = res.written || 0;
+    total += res.written || 0;
+  }
+  return { written: total, by_stage: perStage };
+}
+
 // Чтение сигналов по тендеру (+ опциональный фильтр по типу) для API/дебага.
 async function listSignals(tenderId, { signalType } = {}) {
   const params = [tenderId];
@@ -107,4 +129,4 @@ async function listSignals(tenderId, { signalType } = {}) {
   return db.queryAll(sql, ...params);
 }
 
-module.exports = { signalTypeForStage, buildSignal, writeSignalsForStage, listSignals };
+module.exports = { signalTypeForStage, buildSignal, writeSignalsForStage, backfillSignalsFromIssues, listSignals };

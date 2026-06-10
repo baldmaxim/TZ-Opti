@@ -16,7 +16,11 @@ export default function TenderShell() {
   }
 
   const path = location.pathname.replace(/\/$/, '');
-  const hideShell = path === `/tenders/${id}` || path === `/tenders/${id}/analysis`;
+  // Полноэкранные страницы со своим хедером (без mini-header): хаб тендера,
+  // страница «Анализ ТЗ» и legacy-хаб стадий.
+  const hideShell = path === `/tenders/${id}`
+    || path === `/tenders/${id}/analysis`
+    || path === `/tenders/${id}/legacy/stages`;
   if (hideShell) {
     return <Outlet />;
   }

@@ -8,6 +8,12 @@ import ChecklistPage from './setup/ChecklistPage';
 import ConditionsPage from './setup/ConditionsPage';
 import RisksPage from './setup/RisksPage';
 import CharacteristicsPage from './setup/CharacteristicsPage';
+import QaPage from './setup/QaPage';
+
+// Хаб тендера (новая архитектура): только входные блоки данных для анализа ТЗ —
+// 6 плиток. Когда загружен ТЗ, активна кнопка «Анализ ТЗ» → отдельная страница с
+// одной кнопкой «Начать анализ». Дизайн-язык сохранён: те же плитки/сетка/анимация
+// раскрытия панели/хедер; активная панель монтируется лениво.
 
 const PANELS = {
   documents: DocumentsPage,
@@ -15,16 +21,16 @@ const PANELS = {
   conditions: ConditionsPage,
   risks: RisksPage,
   characteristics: CharacteristicsPage,
+  qa: QaPage,
 };
 
 const TILES = [
   {
     id: 'documents',
     label: 'Документация',
-    to: 'setup/documents',
     accent: 'from-blue-50 to-indigo-50',
     icon: (
-      <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
+      <svg viewBox="0 0 96 96" className="w-full h-full" fill="none">
         <rect x="22" y="14" width="48" height="62" rx="4" fill="#fff" stroke="#c7d2fe" strokeWidth="1.5" />
         <rect x="28" y="22" width="22" height="3" rx="1.5" fill="#6366f1" />
         <rect x="28" y="30" width="36" height="2" rx="1" fill="#c7d2fe" />
@@ -44,10 +50,9 @@ const TILES = [
   {
     id: 'checklist',
     label: 'Состав работ',
-    to: 'setup/checklist',
     accent: 'from-emerald-50 to-teal-50',
     icon: (
-      <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
+      <svg viewBox="0 0 96 96" className="w-full h-full" fill="none">
         <rect x="16" y="14" width="64" height="68" rx="4" fill="#ecfdf5" stroke="#6ee7b7" strokeWidth="1.5" />
         <rect x="22" y="22" width="52" height="6" rx="1.5" fill="#a7f3d0" opacity="0.6" />
         <circle cx="26" cy="36" r="2.5" fill="#10b981" />
@@ -66,10 +71,9 @@ const TILES = [
   {
     id: 'conditions',
     label: 'Условия компании',
-    to: 'setup/conditions',
     accent: 'from-violet-50 to-purple-50',
     icon: (
-      <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
+      <svg viewBox="0 0 96 96" className="w-full h-full" fill="none">
         <rect x="20" y="14" width="56" height="64" rx="4" fill="#faf5ff" stroke="#c4b5fd" strokeWidth="1.5" />
         <rect x="28" y="24" width="32" height="3" rx="1.5" fill="#a78bfa" />
         <rect x="28" y="34" width="40" height="2" rx="1" fill="#ddd6fe" />
@@ -83,11 +87,10 @@ const TILES = [
   },
   {
     id: 'risks',
-    label: 'База основных рисков',
-    to: 'setup/risks',
+    label: 'База рисков',
     accent: 'from-amber-50 to-orange-50',
     icon: (
-      <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
+      <svg viewBox="0 0 96 96" className="w-full h-full" fill="none">
         <path d="M48 14 L74 24 V48 C74 64 62 76 48 82 C34 76 22 64 22 48 V24 Z" fill="#fffbeb" stroke="#fcd34d" strokeWidth="1.5" />
         <path d="M48 32 V52" stroke="#f59e0b" strokeWidth="3.5" strokeLinecap="round" />
         <circle cx="48" cy="62" r="2.5" fill="#f59e0b" />
@@ -97,11 +100,10 @@ const TILES = [
   },
   {
     id: 'characteristics',
-    label: 'Таблица характеристик',
-    to: 'setup/characteristics',
+    label: 'Характеристики объекта',
     accent: 'from-rose-50 to-pink-50',
     icon: (
-      <svg viewBox="0 0 96 96" className="w-20 h-20" fill="none">
+      <svg viewBox="0 0 96 96" className="w-full h-full" fill="none">
         <rect x="16" y="18" width="64" height="60" rx="4" fill="#fff1f2" stroke="#fda4af" strokeWidth="1.5" />
         <rect x="16" y="18" width="64" height="12" rx="4" fill="#fda4af" opacity="0.45" />
         <line x1="42" y1="18" x2="42" y2="78" stroke="#fda4af" strokeWidth="1" />
@@ -124,13 +126,31 @@ const TILES = [
       </svg>
     ),
   },
+  {
+    id: 'qa',
+    label: 'Форма вопрос-ответ',
+    accent: 'from-cyan-50 to-sky-50',
+    icon: (
+      <svg viewBox="0 0 96 96" className="w-full h-full" fill="none">
+        <path d="M20 26 C20 22 23 19 27 19 H59 C63 19 66 22 66 26 V44 C66 48 63 51 59 51 H38 L28 60 V51 H27 C23 51 20 48 20 44 Z" fill="#ecfeff" stroke="#67e8f9" strokeWidth="1.5" />
+        <path d="M37 30 C37 27 39 25 42 25 C45 25 47 27 47 30 C47 32 45 33 43 35 C42 36 42 37 42 39" stroke="#0891b2" strokeWidth="2" strokeLinecap="round" fill="none" />
+        <circle cx="42" cy="44" r="1.5" fill="#0891b2" />
+        <rect x="50" y="56" width="30" height="22" rx="3" fill="#cffafe" stroke="#67e8f9" strokeWidth="1.5" />
+        <line x1="50" y1="63" x2="80" y2="63" stroke="#67e8f9" strokeWidth="1" />
+        <line x1="60" y1="56" x2="60" y2="78" stroke="#67e8f9" strokeWidth="1" />
+        <line x1="70" y1="56" x2="70" y2="78" stroke="#67e8f9" strokeWidth="1" />
+      </svg>
+    ),
+  },
 ];
 
 export default function TenderOverview() {
   const tender = useTenderStore((s) => s.tender);
+  const hasTz = useTenderStore((s) => s.hasTz);
   const { tenderId } = useWizardState();
   const navigate = useNavigate();
   const [activeTile, setActiveTile] = useState(null);
+  const [opened, setOpened] = useState(() => new Set()); // лениво монтируем только открытые панели
   const [origins, setOrigins] = useState({}); // id -> "Xpx Ypx"
   const tileRefs = useRef({});
   const panelsWrapperRef = useRef(null);
@@ -150,8 +170,7 @@ export default function TenderOverview() {
       const now = Date.now();
       if (now - lastWheelAtRef.current < 90) return;
       const dir = delta > 0 ? 1 : -1;
-      // акселерация: чем сильнее прокрут — тем больше шаг.
-      // 100px ~= 1 плитка, 300px ~= 3 плитки, и т.д.
+      // акселерация: чем сильнее прокрут — тем больше шаг (100px ~= 1 плитка).
       const jumps = Math.max(1, Math.min(TILES.length, Math.round(Math.abs(delta) / 100)));
       const cur = activeTileRef.current;
       const curIdx = cur ? TILES.findIndex((t) => t.id === cur) : -1;
@@ -176,6 +195,7 @@ export default function TenderOverview() {
         const y = t.top + t.height / 2 - w.top;
         setOrigins((prev) => ({ ...prev, [nextId]: `${x}px ${y}px` }));
       }
+      setOpened((prev) => (prev.has(nextId) ? prev : new Set(prev).add(nextId)));
       setActiveTile(nextId);
     };
     node.addEventListener('wheel', onWheel, { passive: false });
@@ -189,7 +209,10 @@ export default function TenderOverview() {
   const accepted = Math.max(0, total - pending);
 
   const goBack = () => withViewTransition('back', () => navigate('/'));
-  const goAnalysis = () => withViewTransition('forward', () => navigate(`/tenders/${tenderId}/analysis`));
+  const goAnalysis = () => {
+    if (!hasTz) return;
+    withViewTransition('forward', () => navigate(`/tenders/${tenderId}/analysis`));
+  };
 
   const computeOrigin = (id) => {
     const tileEl = tileRefs.current[id];
@@ -203,6 +226,7 @@ export default function TenderOverview() {
   };
 
   const activateTile = (id) => {
+    if (id) setOpened((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
     setActiveTile((cur) => {
       if (cur === id) return cur;
       const next = {};
@@ -247,15 +271,15 @@ export default function TenderOverview() {
         <button
           type="button"
           onClick={goAnalysis}
-          className="inline-flex items-center gap-3 px-7 py-4 rounded-lg text-base font-medium bg-gray-600 text-white hover:bg-gray-500 transition"
+          disabled={!hasTz}
+          title={hasTz ? 'Перейти к анализу ТЗ' : 'Сначала загрузите ТЗ в разделе «Документация»'}
+          className={`inline-flex items-center gap-3 px-7 py-4 rounded-lg text-base font-medium transition ${
+            hasTz
+              ? 'bg-brand-600 text-white hover:bg-brand-700'
+              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+          }`}
         >
           Анализ ТЗ
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="9" cy="8" r="3" />
-            <path d="M3 21v-1a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v1" />
-            <circle cx="17" cy="6" r="1.5" fill="currentColor" stroke="none" />
-            <circle cx="20.5" cy="3.5" r="0.9" fill="currentColor" stroke="none" />
-          </svg>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
           </svg>
@@ -264,7 +288,7 @@ export default function TenderOverview() {
 
       <div
         ref={tilesGridRef}
-        className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4"
+        className="grid grid-cols-3 sm:grid-cols-3 lg:grid-cols-6 gap-3"
       >
         {TILES.map((t) => {
           const isActive = activeTile === t.id;
@@ -275,22 +299,22 @@ export default function TenderOverview() {
               type="button"
               onClick={() => toggleTile(t.id)}
               aria-expanded={isActive}
-              className={`group bg-white border rounded-xl p-5 flex flex-col items-center text-center transition ${
+              className={`group bg-white border rounded-xl p-3 flex flex-col items-center text-center transition ${
                 isActive
                   ? 'border-gray-900 ring-2 ring-gray-900 ring-offset-2'
                   : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
               }`}
             >
-              <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-3 transition-transform duration-300 ease-out ${
+              <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-2 transition-transform duration-300 ease-out ${
                 isActive ? 'scale-[1.04]' : 'group-hover:scale-[1.02]'
               }`}>
-                <span className={`inline-block transition-transform duration-300 ease-out ${
-                  isActive ? 'scale-[1.35]' : 'group-hover:scale-[1.05]'
+                <span className={`inline-block w-12 h-12 transition-transform duration-300 ease-out ${
+                  isActive ? 'scale-[1.3]' : 'group-hover:scale-[1.05]'
                 }`}>
                   {t.icon}
                 </span>
               </div>
-              <div className="text-[15px] font-medium text-gray-800 leading-snug">{t.label}</div>
+              <div className="text-xs font-medium text-gray-800 leading-snug">{t.label}</div>
             </button>
           );
         })}
@@ -312,7 +336,7 @@ export default function TenderOverview() {
                   className="tile-card bg-white border border-gray-200 rounded-lg p-6"
                   style={{ transformOrigin: origins[t.id] || 'center top' }}
                 >
-                  <Panel />
+                  {opened.has(t.id) ? <Panel /> : null}
                 </div>
               </div>
             </div>

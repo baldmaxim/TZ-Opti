@@ -135,10 +135,24 @@ export default function QaPage() {
   return (
     <div className="space-y-4">
       <div className="card p-4">
-        <h3 className="font-semibold text-sm">Загрузка Q&A формы (.xlsx)</h3>
-        <p className="text-xs text-gray-600 mt-1">
-          Поддерживается формат «Форма ВОПРОС-ОТВЕТ»: «№ / Дата / Дата получения ответа / Раздел / Вопрос / Ответ / Принятые решения». Шапка распознаётся автоматически. Каждая загрузка <strong>полностью заменяет</strong> ранее загруженные строки (но <strong>сохраняет</strong> привязку к ТЗ и контуры по совпадающему вопросу — пока не реализовано).
-        </p>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <h3 className="font-semibold text-sm">Форма «Вопрос-ответ» (.xlsx)</h3>
+            <p className="text-xs text-gray-600 mt-1">
+              Импорт формата «Форма ВОПРОС-ОТВЕТ»: «№ / Дата / Дата получения ответа / Раздел / Вопрос / Ответ / Принятые решения». Шапка распознаётся автоматически. Каждая загрузка <strong>полностью заменяет</strong> ранее загруженные строки. Экспорт выгружает текущую таблицу (с разметкой анализа) обратно в .xlsx.
+            </p>
+          </div>
+          {qaEntries.length > 0 && (
+            <a
+              href={api.qaExportUrl(tenderId)}
+              className="btn btn-secondary text-sm whitespace-nowrap"
+              download
+              title="Скачать текущую таблицу Q&A в .xlsx"
+            >
+              ⤓ Экспорт в Excel
+            </a>
+          )}
+        </div>
         <div className="mt-3 flex items-center gap-3 flex-wrap">
           <input
             ref={fileRef}

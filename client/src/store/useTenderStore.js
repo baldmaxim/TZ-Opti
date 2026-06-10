@@ -18,6 +18,10 @@ export const useTenderStore = create((set, get) => ({
   documents: [],
   hasTz: false,
   hasQa: false,
+  // Оркестрация единого «Анализа ТЗ» (новая архитектура): под капотом прогоняет
+  // добытчики стадий 1–4 и пересобирает конвейер до кластеров, но наружу — один блок.
+  analysisRunning: false,
+  analysisStep: null,
 
   async setTender(id) {
     if (get().tenderId === id) return;
@@ -143,6 +147,62 @@ export const useTenderStore = create((set, get) => ({
     const result = await api.finishStage(id, n);
     await Promise.all([get().refreshStages(), get().refreshTender()]);
     return result;
+  },
+
+  // Ждёт завершения фонового прогона стадии n (status !== 'running'). Возвращает
+  // последний снимок /stages. Используется оркестратором runAnalysis.
+  async _waitStage(n) {
+    const id = get().tenderId;
+    if (!id) return null;
+    for (;;) {
+      await sleep(3000);
+      if (get().tenderId !== id) return null;
+      let data;
+      try { data = await api.getStages(id); } catch { continue; }
+      set({ stages: data.stages, stageState: data.state });
+      if (data.state?.[`stage${n}_status`] !== 'running') return data;
+    }
+  },
+
+  // Единый «Анализ ТЗ»: последовательно прогоняет добытчиков стадий 1–4 (сервер
+  // оставлен как есть — гейт «следующая после finish»), затем пересобирает конвейер
+  // signals → draft_issues → critic → clustering (опц. self-analysis). Best-effort:
+  // если шаг недоступен/падает — собираем кластеры из того, что уже есть.
+  async runAnalysis({ withSelfAnalysis = false } = {}) {
+    const id = get().tenderId;
+    if (!id) return null;
+    set({ analysisRunning: true, analysisStep: 'Подготовка…' });
+    try {
+      await get().refreshStages();
+      for (let n = 1; n <= 4; n += 1) {
+        const statusOf = () => get().stageState?.[`stage${n}_status`];
+        if (statusOf() === 'finished') continue;
+        set({ analysisStep: `Добыча замечаний: шаг ${n} из 4` });
+        if (statusOf() !== 'running') {
+          try {
+            try { localStorage.setItem(analysisStartKey(id, n), String(Date.now())); } catch { /* ignore */ }
+            await api.runStage(id, n);
+          } catch (err) {
+            // Гейт «стадия недоступна» / уже идёт — прекращаем добычу, идём к сборке.
+            toastError(`Шаг ${n}: ${err.message}`);
+            break;
+          }
+        }
+        await get()._waitStage(n);
+        try { await api.finishStage(id, n); } catch { /* best-effort */ }
+        await get().refreshStages();
+      }
+      set({ analysisStep: 'Сборка кластеров…' });
+      await api.runPipeline(id, { withSelfAnalysis });
+      await Promise.all([get().refreshStages(), get().refreshTender()]);
+      toastSuccess('Анализ ТЗ собран');
+      return { ok: true };
+    } catch (err) {
+      toastError(err.message);
+      return { ok: false, error: err.message };
+    } finally {
+      set({ analysisRunning: false, analysisStep: null });
+    }
   },
 
   async resetStage(n) {

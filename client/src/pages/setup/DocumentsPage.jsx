@@ -18,15 +18,6 @@ const SLOTS = [
     ],
   },
   {
-    type: 'pd_rd',
-    label: 'ПД / РД',
-    hint: 'Проектная и рабочая документация',
-    accept: '.pdf,.docx,.doc,.zip,.dwg',
-    badge: 'ПД',
-    color: 'green',
-    multiple: true,
-  },
-  {
     type: 'vor',
     label: 'ВОР',
     hint: 'Ведомость объёмов работ',
@@ -35,16 +26,9 @@ const SLOTS = [
     color: 'purple',
     multiple: false,
   },
-  {
-    type: 'qa',
-    label: 'Q&A форма',
-    hint: 'Форма «Вопрос–Ответ» в .xlsx',
-    accept: '.xlsx,.xls',
-    badge: 'Q&A',
-    color: 'amber',
-    multiple: false,
-  },
 ];
+// Примечание: слоты ПД/РД и Q&A намеренно убраны из «Документации». ПД/РД не
+// участвует в анализе ТЗ; форма «Вопрос-ответ» вынесена в отдельный основной раздел.
 
 const COLOR_CLASSES = {
   blue: { bg: 'bg-blue-50', border: 'border-blue-200', badge: 'bg-blue-600 text-white' },
@@ -143,13 +127,12 @@ export default function DocumentsPage() {
       <div>
         <h2 className="text-lg font-semibold">Документы тендера</h2>
         <p className="text-sm text-gray-600 mt-0.5">
-          ТЗ — отдельные подслоты для Word/PDF и Markdown-копии (для AI).
-          ВОР — один файл (повторная загрузка заменяет предыдущий).
-          В разделе ПД/РД можно держать несколько файлов одновременно.
+          Входные документы для анализа ТЗ. ТЗ — отдельные подслоты для Word/PDF и
+          Markdown-копии (для AI). ВОР — один файл (повторная загрузка заменяет предыдущий).
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {SLOTS.map((slot) => (
           <SlotCard
             key={slot.type}

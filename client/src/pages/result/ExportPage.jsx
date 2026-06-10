@@ -86,7 +86,7 @@ export default function ExportPage() {
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-600">
-        Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Доступен после первой завершённой стадии, но качество результата выше после прохождения всех 5 стадий.
+        Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Доступен после сборки анализа ТЗ; качество результата выше, когда принята рецензия по кластерам.
       </p>
       {items.map((it) => (
         <div key={it.title} className={`card p-4 flex items-center justify-between gap-3 ${it.primary ? 'border-brand-300 bg-brand-50/40' : ''}`}>

@@ -81,6 +81,7 @@ export const api = {
     return request(`/tenders/${tenderId}/qa/import`, { method: 'POST', body: fd, isForm: true });
   },
   listQa: (tenderId) => request(`/tenders/${tenderId}/qa`),
+  qaExportUrl: (tenderId) => `${BASE}/tenders/${tenderId}/qa/export`,
   patchQaEntry: (tenderId, entryId, data) => request(`/tenders/${tenderId}/qa/${entryId}`, { method: 'PATCH', body: data }),
   autoLinkQa: (tenderId, opts = {}) => request(`/tenders/${tenderId}/qa/auto-link`, { method: 'POST', body: opts }),
   listCharacteristics: (tenderId) => request(`/tenders/${tenderId}/characteristics`),
@@ -146,7 +147,8 @@ export const api = {
 
   // Превью + экспорт
   reviewPreviewUrl: (tenderId) => `${BASE}/tenders/${tenderId}/review/preview`,
-  // Слой сборки: единый итог (группы находок + конфликты + вердикты).
+  // Legacy-fallback: сводный вид по issues (группы находок + конфликты + вердикты).
+  // Основной итог экрана «Итог» идёт от кластеров (listReviewClusters); это — back-compat.
   getConsolidated: (tenderId) => request(`/tenders/${tenderId}/review/consolidated`),
   exportDocxUrl: (tenderId, stage = null) =>
     `${BASE}/tenders/${tenderId}/export/docx${stage ? `?stage=${stage}` : ''}`,

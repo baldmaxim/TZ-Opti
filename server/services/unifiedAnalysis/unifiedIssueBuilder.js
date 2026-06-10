@@ -15,6 +15,7 @@
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { getActiveTzText } = require('../tzActiveTextService');
+const { backfillSignalsFromIssues } = require('../signals/signalWriter');
 
 const CRIT_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 function critRank(s) { return CRIT_RANK[s && s.criticality] || 0; }
@@ -168,9 +169,22 @@ async function loadSignals(tenderId) {
   return rows.map(flattenSignal);
 }
 
+// Самовосстановление слоя signals: если сигналов нет, но issues стадий 1–4 есть
+// (тендер прогнан раньше — сигналы не записались/очищены), достраиваем сигналы из
+// issues. Иначе draft_issues/clusters были бы пустыми при полном issue-анализе.
+async function ensureSignals(tenderId) {
+  const row = await db.queryOne(
+    `SELECT COUNT(*) AS c FROM analysis_signals WHERE tender_id = ?`,
+    tenderId,
+  );
+  if (Number(row && row.c) > 0) return;
+  await backfillSignalsFromIssues(tenderId);
+}
+
 // Главная функция: собрать draft_issues по тендеру и сохранить (idempotent —
 // перезапись прежнего набора для этого тендера).
 async function buildDraftIssues(tenderId) {
+  await ensureSignals(tenderId);
   const flat = await loadSignals(tenderId);
 
   // Исходный текст ТЗ — для резолва фрагмента по абзацу, когда сигнал безъякорный.

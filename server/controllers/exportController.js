@@ -21,6 +21,9 @@ async function getTzOriginal(tenderId) {
   );
 }
 
+// Legacy-fallback loader: решения по issues (review_decisions.issue_id). Используется
+// только когда кластерных решений нет или запрошен ?source=issues / фильтр стадии.
+// Основной путь docx-экспорта — clusterReview.loadClusterDecisions (cluster_id).
 async function loadDecisions(tenderId, stageFilter = null) {
   let sql = `
       SELECT i.*, d.decision as decision_kind, d.final_comment as final_comment, d.edited_redaction as edited_decision_redaction, d.target_text as target_text

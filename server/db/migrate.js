@@ -23,6 +23,25 @@ async function ensureColumn(table, column, type) {
   return true;
 }
 
+async function ensureIndex(name, table, columns) {
+  await db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table}(${columns});`);
+}
+
+// Идемпотентно снимает NOT NULL со столбца (если он сейчас NOT NULL).
+async function dropNotNull(table, column) {
+  const r = await db.queryOne(
+    `SELECT is_nullable
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = ? AND column_name = ?`,
+    table,
+    column,
+  );
+  if (!r || r.is_nullable === 'YES') return false;
+  await db.exec(`ALTER TABLE ${table} ALTER COLUMN ${column} DROP NOT NULL;`);
+  console.log(`[migrate] ${table}.${column} NOT NULL dropped`);
+  return true;
+}
+
 async function runMigration() {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
@@ -50,6 +69,15 @@ async function runMigration() {
   // target_text — выбранная инженером подчасть фрагмента для delete/edit
   // (NULL = действие на весь фрагмент, как раньше).
   await ensureColumn('review_decisions', 'target_text', 'TEXT');
+
+  // Этап 6: review/export переходят на issue_clusters как основной результат.
+  //   review_decisions.cluster_id — новый primary-адресат решения (issue_id → legacy).
+  //   issue_clusters.cluster_key  — стабильная сигнатура группы (основа детерминированного id).
+  await ensureColumn('review_decisions', 'cluster_id', 'TEXT');
+  await ensureColumn('issue_clusters', 'cluster_key', 'TEXT');
+  await ensureIndex('idx_decisions_cluster', 'review_decisions', 'cluster_id');
+  // issue_id больше не обязателен (решение может быть привязано к cluster_id).
+  await dropNotNull('review_decisions', 'issue_id');
 
   // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
   // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,

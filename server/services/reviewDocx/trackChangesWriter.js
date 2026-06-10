@@ -8,7 +8,7 @@ const select = xpath.useNamespaces({ w: W_NS });
 /**
  * Настоящий Word Track Changes (`w:ins` / `w:del`).
  *
- * Контракт совместим с strikeWriter / commentWriter — встраивается в pipeline
+ * Контракт совместим с commentWriter — встраивается в pipeline
  * `index.js → applyOne()` без изменения структуры.
  */
 

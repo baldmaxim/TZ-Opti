@@ -250,6 +250,7 @@ CREATE TABLE IF NOT EXISTS issue_clusters (
   final_problem_type     TEXT,              -- problem_type первичного (наиболее значимого) элемента
   -- доп. прозрачность (сверх спеки):
   semantic_bucket        TEXT,              -- ключ смысловой группы (домен значимости + действие)
+  cluster_key            TEXT,              -- стабильная сигнатура (placeKey::semanticBucket) — основа детерминированного id
   item_count             INTEGER,           -- число draft_issues в кластере
   paragraph_index        INTEGER,           -- для стабильного порядка/дебага
   created_at             TEXT NOT NULL,
@@ -297,9 +298,15 @@ CREATE TABLE IF NOT EXISTS self_analysis_results (
 
 CREATE INDEX IF NOT EXISTS idx_self_analysis_tender ON self_analysis_results(tender_id);
 
+-- Решение инженера по находке. Этап 6: основным адресатом стало issue_clusters
+-- (cluster_id), issue_id оставлен как legacy/back-compat и больше НЕ NOT NULL.
+-- ОДНО из (issue_id, cluster_id) заполнено. cluster_id — БЕЗ FK-constraint:
+-- кластеры пересобираются (DELETE+INSERT), а решения должны переживать пересборку;
+-- их id детерминирован (clusteringService.clusterId), поэтому ссылка стабильна.
 CREATE TABLE IF NOT EXISTS review_decisions (
   id                  TEXT PRIMARY KEY,
-  issue_id            TEXT NOT NULL,
+  issue_id            TEXT,            -- legacy: находка стадии (nullable с этапа 6)
+  cluster_id          TEXT,            -- new primary: issue_clusters.id (стабильный, без FK)
   decision            TEXT NOT NULL,   -- 'accept' | 'reject' | 'edit' | 'delete' | 'remove_from_scope'
   edited_redaction    TEXT,
   final_comment       TEXT,
@@ -309,6 +316,8 @@ CREATE TABLE IF NOT EXISTS review_decisions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_decisions_issue ON review_decisions(issue_id);
+-- idx_decisions_cluster создаётся в migrate.js (ensureIndex) ПОСЛЕ ensureColumn(cluster_id),
+-- т.к. на существующих БД CREATE TABLE IF NOT EXISTS не добавляет новый столбец.
 
 CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
   id                   TEXT PRIMARY KEY,

@@ -117,13 +117,18 @@ TZ-Opti/
     │   ├── tzActiveTextService.js                     — ТЗ за вычетом исключённых фрагментов (.md)
     │   ├── stageAnalysis/
     │   │   ├── stageAnalysisEngine.js                 — оркестратор 5 стадий (фоновый прогон + статусы)
-    │   │   ├── stage1_llm.js … stage5_llm.js          — LLM-агенты стадий (логика + схема находки)
+    │   │   ├── stage1_llm.js … stage4_llm.js          — LLM-агенты стадий 1–4 (логика + схема находки)
+    │   │   ├── stage5_llm.js                          — Стадия 5 как QC-агент над итогом (см. selfAnalysis/)
     │   │   ├── stage1Prompts.js … stage5Prompts.js    — системные промты (SHARED + 3 режима)
     │   │   ├── stage4Scoring.js                       — quality scoring + анти-триггеры Стадии 4
     │   │   ├── llm/openaiClient.js                    — OpenAI-совместимый клиент (chatJson)
     │   │   ├── shared/llmStage.js                     — общий каркас (сегментация/локализация/дедуп/раннер)
-    │   │   ├── shared/fragmentMatcher.js
-    │   │   └── (stage*_*.js без _llm — legacy rule-based, superseded, не импортируются)
+    │   │   └── shared/fragmentMatcher.js
+    │   ├── signals/signalWriter.js                    — слой 1: находки стадий → единый поток сигналов
+    │   ├── unifiedAnalysis/unifiedIssueBuilder.js     — слой 2: сигналы одного места ТЗ → draft_issue
+    │   ├── critic/criticService.js                    — слой 3: значимость draft_issue для ГП (priority)
+    │   ├── clustering/clusteringService.js            — слой 4: похожие замечания одного места → кластер
+    │   ├── selfAnalysis/selfAnalysisService.js        — слой 5: QC/полнота над кластерами (self_analysis)
     │   ├── qaImportService.js                         — парсер Q&A xlsx
     │   ├── risksService.js                            — библиотека типовых рисков (стандартные + кастомные)
     │   ├── conditionsRenderer.js                      — рендер существенных условий компании
@@ -135,7 +140,6 @@ TZ-Opti/
     │   │   ├── runSplitter.js
     │   │   ├── commentWriter.js                       — Word-комментарии (решение «Примечание»)
     │   │   ├── trackChangesWriter.js                  — настоящий Track Changes (w:ins / w:del)
-    │   │   ├── strikeWriter.js                        — legacy fallback (не вызывается)
     │   │   └── manifestUpdater.js
     │   ├── reviewHtmlService.js                       — HTML-preview
     │   ├── exportService.js                           — CSV / JSON / summary.md
@@ -200,7 +204,8 @@ TZ-Opti/
 |-------------|--------|
 | CRUD тендеров, документов, чек-листа, условий, рисков, характеристик, Q&A | ✅ Реализовано |
 | Извлечение текста (.docx / .pdf / .xlsx / .txt / .md) | ✅ Реализовано |
-| 5-стадийный LLM-пайплайн (Чек-лист+ВОР, Q&A+характеристики, Условия компании, Риски, Самоанализ) | ✅ Реализовано |
+| Стадии 1–4 — LLM-агенты по тексту ТЗ (Чек-лист+ВОР, Q&A+характеристики, Условия компании, Риски) | ✅ Реализовано |
+| Конвейер анализа: signals → draft_issues → critic → clustering → self-analysis (Стадия 5 = QC над итогом, issues не порождает) | ✅ Реализовано |
 | Фоновый прогон стадии + опрос статуса (снимает таймауты на долгих ТЗ) | ✅ Реализовано |
 | 3 режима системного промта на стадию (`structural`/`strict`/`full`) через env | ✅ Реализовано |
 | Реестр Issue + рецензия по стадиям + сквозной reviewer | ✅ Реализовано |
@@ -227,35 +232,50 @@ TZ-Opti/
 
 **Стадия 4 (типовые риски)** дополнительно фильтрует шум: у рисков есть `negative_triggers` (анти-триггеры — контексты, где упоминание не является риском), а каждая находка проходит quality scoring (`stage4Scoring.js`) — галлюцинированные ключи рисков, срабатывания анти-триггеров и слабые/необоснованные совпадения отсекаются ниже порога `STAGE4_MIN_SCORE`; `basis` обязан называть конкретное денежное/объёмное/срочное последствие для ГП.
 
-> Прежний rule-based слой (файлы `stage*_*.js` без суффикса `_llm`, `shared/phrases.js`) оставлен в репозитории как superseded-история и движком не вызывается.
+> Прежний rule-based слой (файлы `stage*_*.js` без суффикса `_llm`, `shared/phrases.js`) удалён — стадии анализа полностью LLM-агентные. История доступна в git.
 
 ---
 
-## Параллельная архитектура анализа (экспериментальная)
+## Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis)
 
-Поверх 5-стадийного пайплайна строится **новый параллельный конвейер** из 4 слоёв. Он **не трогает** `issues` / `review` / `export` — у каждого слоя своя таблица, свой сервис/контроллер/роут, debug-страница (по прямому URL) и офлайн-тест чистых функций без БД (как `review/consolidation.js`). Цель — собрать находки всех стадий в единый, отранжированный и сгруппированный поток замечаний для инженера.
+Поверх 5 стадий работает **основной конвейер анализа** из 5 слоёв. Стадии 1–4 — это
+**добытчики находок** (LLM-агенты по тексту ТЗ); конвейер — **сборка**: сводит находки
+всех стадий в единый, отранжированный, сгруппированный и проверенный на полноту поток
+замечаний. Каждый слой — отдельная таблица + сервис + контроллер + роут + debug-страница +
+офлайн-тест чистых функций без БД.
 
 ```
-   5 стадий (existing)
-        │  issueRecords
+  Стадии 1–4 (LLM-агенты по тексту ТЗ)
+        │  issueRecords (+ таблица issues — backbone решений/экспорта)
         ▼
-1. signals ──▶ 2. draft_issues ──▶ 3. critic ──▶ 4. clustering
- analysis_signals   draft_issues    issue_reviews   issue_clusters
-                                                    issue_cluster_items
+1. signals ─▶ 2. draft_issues ─▶ 3. critic ─▶ 4. clustering ─▶ 5. self-analysis
+analysis_signals  draft_issues   issue_reviews  issue_clusters    self_analysis_results
+                                                issue_cluster_items
 ```
 
 | Слой | Таблица(ы) | Сервис | Что делает |
 |------|-----------|--------|------------|
-| **1. signals** | `analysis_signals` | `services/signals/signalWriter.js` | Best-effort писатель: после каждой стадии складывает её находки в единый поток сигналов (`signal_type` по стадии: 1=coverage, 2=decision, 3=condition, 4=risk). Сбой писателя не влияет на закоммиченные issues и статус стадии. |
-| **2. draft_issues** | `draft_issues` | `services/unifiedAnalysis/unifiedIssueBuilder.js` | Единый анализатор: сводит сигналы одного места ТЗ в один черновой draft_issue. |
-| **3. critic** | `issue_reviews` | `services/critic/criticService.js` | Оценивает значимость draft_issue для генподрядчика по 10 критериям, ставит `display_priority` (critical/high/medium/low) и `show_to_engineer` (мягкое скрытие low, без удаления). |
-| **4. clustering** | `issue_clusters` + `issue_cluster_items` | `services/clustering/clusteringService.js` | Сводит ПОХОЖИЕ замечания одного места ТЗ в кластер по `placeKey` (tz_clause → абзац → фрагмент) × доминирующему измерению значимости (цена/срок/договор/ответственность) × семейству действия (remove/edit/note). Разные по смыслу проблемы одного пункта (открытый объём ≠ риск оплаты) дают РАЗНЫЕ кластеры — основание каждого сохраняется. |
+| **1. signals** | `analysis_signals` | `services/signals/signalWriter.js` | Best-effort писатель: после каждой стадии 1–4 складывает её находки в единый поток сигналов (`signal_type`: 1=coverage, 2=decision, 3=condition, 4=risk). Изолирован — сбой писателя не влияет на закоммиченные issues и статус стадии. |
+| **2. draft_issues** | `draft_issues` | `services/unifiedAnalysis/unifiedIssueBuilder.js` | Единый анализатор: сводит сигналы одного места ТЗ в один черновой draft_issue (`buildDraftIssues`). |
+| **3. critic** | `issue_reviews` | `services/critic/criticService.js` | Оценивает значимость draft_issue для генподрядчика, ставит `display_priority` (critical/high/medium/low) и `show_to_engineer` (мягкое скрытие low, без удаления) (`buildIssueReviews`). |
+| **4. clustering** | `issue_clusters` + `issue_cluster_items` | `services/clustering/clusteringService.js` | Сводит ПОХОЖИЕ замечания одного места ТЗ в кластер по `placeKey` (tz_clause → абзац → фрагмент) × доминирующему измерению значимости (цена/срок/договор/ответственность) × семейству действия (remove/edit/note). Разные по смыслу проблемы одного пункта (открытый объём ≠ риск оплаты) дают РАЗНЫЕ кластеры — основание каждого сохраняется (`buildClusters`). |
+| **5. self-analysis** | `self_analysis_results` | `services/selfAnalysis/selfAnalysisService.js` | **Стадия 5** в новой роли — QC/полнота над итогом (не второй поток issues). Проверяет готовые кластеры + исходный ТЗ: `missed_coverage` (что пропустили) · `weak_cluster` (слабое основание) · `cluster_contradiction` (конфликт кластеров одного места) · `needs_enrichment` (усилить важный кластер). Эвристики + best-effort LLM (`buildSelfAnalysis`). |
 
-Слои 2–4 запускаются явно (`POST …/build`) и читаются с фильтром важности (`?mode=important|working|full`). Группировка/слияние во всех слоях — чистые функции, покрытые офлайн-тестами (`npm test`).
+Слой 1 (signals) пишется **автоматически** движком после каждой стадии 1–4. Слои 2–5 идемпотентны
+и запускаются явно (`POST …/build`); читаются с фильтром важности (`?mode=important|working|full`).
+Стадия 5 (`POST …/self-analysis/build`, она же `runStage5SelfAnalysis` в движке) **сама достраивает
+конвейер** через `ensureClusters` — если кластеров ещё нет, прогоняет draft_issues → critic →
+clustering из сигналов, затем делает QC. Группировка/слияние/эвристики во всех слоях — чистые
+функции, покрытые офлайн-тестами (`npm test`).
 
-**Debug-страницы** (без пункта меню, по прямому URL): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
+**Debug-страницы** (по прямому URL, без пункта меню): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
 
-> Статус: экспериментальный слой на ветке `sandbox/experiments`. Не подключён к основному потоку инженера (экспорт по-прежнему берёт решения из `issues`/consolidation).
+> **Что остаётся на `issues` (нужная backward-compat).** Решения инженера (`review_decisions`),
+> экран «Итог» (`review/consolidation.js`) и главный артефакт — экспорт `.docx` с Track Changes —
+> по-прежнему работают на таблице `issues`: там живут пользовательские решения, оттуда их берёт
+> экспорт. Конвейер выше — это **аналитический слой** (ранжирование/группировка/QC), он не хранит
+> решений и не порождает `.docx`. Подробности потоков и source-of-truth — в
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -268,7 +288,7 @@ TZ-Opti/
 5. **Tailwind**, не CSS modules: один источник правды, минимум boilerplate.
 6. **Zustand**, не Context API/Redux: меньше шума.
 7. **pizzip + @xmldom/xmldom**, не `docx` npm: модификация исходного .docx даёт настоящий «Word Review feel» (правки и комментарии в Word, исходное форматирование сохранено). `docx` npm генерирует с нуля и не подходит для главного юзкейса.
-8. **Настоящий Track Changes**: `delete`/`remove_from_scope` → `w:del`, `edit` → `w:del`+`w:ins`, решение «Примечание» → Word-комментарий. (Раньше удаления показывались `<w:strike/>` — `strikeWriter.js` оставлен как fallback.)
+8. **Настоящий Track Changes**: `delete`/`remove_from_scope` → `w:del`, `edit` → `w:del`+`w:ins`, решение «Примечание» → Word-комментарий. Запасной путь при сбое track-change — Word-комментарий (`status='fallback'` в отчёте экспорта). (Раньше удаления показывались `<w:strike/>`; `strikeWriter.js` удалён.)
 9. **«Исключение из активного текста»** = только Issue с действием `delete` / `remove_from_scope` исключает фрагмент для следующих стадий. Остальные принятые правки видимы и попадают в `.docx`.
 10. **Каскадный сброс** при возврате к предыдущей стадии: гарантирует консистентность экспорта.
 11. **Q&A через xlsx**: упрощает текущую итерацию, отдельный UI на портале — следующая задача.
@@ -324,14 +344,16 @@ GET    /api/tenders/:id/export/issues.json
 GET    /api/tenders/:id/export/summary.md
 GET    /api/tenders/:id/export/review.md             review.md со всеми правками
 
-# Параллельная архитектура (экспериментальная, debug)
-GET    /api/tenders/:id/signals                      поток сигналов всех стадий
+# Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis)
+GET    /api/tenders/:id/signals                      поток сигналов стадий 1–4 (?signal_type=)
 POST   /api/tenders/:id/unified/build                собрать draft_issues из сигналов
 GET    /api/tenders/:id/draft-issues
 POST   /api/tenders/:id/critic/build                 оценить значимость draft_issues
 GET    /api/tenders/:id/issue-reviews                ?mode=important|working|full
 POST   /api/tenders/:id/clustering/build             сгруппировать похожие замечания
 GET    /api/tenders/:id/issue-clusters               ?mode=important|working|full
+POST   /api/tenders/:id/self-analysis/build          QC/полнота над кластерами (Стадия 5)
+GET    /api/tenders/:id/self-analysis                ?finding_type=missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
 ```
 
 > `:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`: `open`/`running`/`reviewing`/`finished`).

@@ -159,6 +159,14 @@ export const useTenderStore = create((set, get) => ({
     return result;
   },
 
+  // Cluster-review (этап 6): решение по кластеру. Не трогает стадии/issues —
+  // основной путь рецензии поверх issue_clusters.
+  async decideCluster(clusterId, payload) {
+    const id = get().tenderId;
+    if (!id) return null;
+    return api.decideCluster(id, clusterId, payload);
+  },
+
   async patchIssue(issueId, patch) {
     const result = await api.patchIssue(issueId, patch);
     await get().refreshTender();

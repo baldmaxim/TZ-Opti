@@ -122,9 +122,19 @@ export const api = {
   listSelfAnalysis: (tenderId, findingType = null) =>
     request(`/tenders/${tenderId}/self-analysis${findingType ? `?finding_type=${encodeURIComponent(findingType)}` : ''}`),
 
-  // Решения
+  // Решения (legacy issue-level — внутри стадий 1–4)
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
   decideIssue: (id, data) => request(`/issues/${id}/decision`, { method: 'POST', body: data }),
+
+  // Cluster-review (этап 6): issue_clusters — основной объект финальной рецензии.
+  buildReviewClusters: (tenderId, force = false) =>
+    request(`/tenders/${tenderId}/review/clusters/build${force ? '?force=1' : ''}`, { method: 'POST' }),
+  listReviewClusters: (tenderId, mode = 'working') =>
+    request(`/tenders/${tenderId}/review/clusters?mode=${encodeURIComponent(mode)}`),
+  getReviewCluster: (tenderId, clusterId) =>
+    request(`/tenders/${tenderId}/review/clusters/${clusterId}`),
+  decideCluster: (tenderId, clusterId, data) =>
+    request(`/tenders/${tenderId}/review/clusters/${clusterId}/decision`, { method: 'POST', body: data }),
 
   // Превью + экспорт
   reviewPreviewUrl: (tenderId) => `${BASE}/tenders/${tenderId}/review/preview`,

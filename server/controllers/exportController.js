@@ -8,6 +8,7 @@ const { exportReviewedDocx } = require('../services/reviewDocx');
 const exportSvc = require('../services/exportService');
 const { renderReviewMd } = require('../services/mdReview/renderer');
 const { dedupeExportDecisions } = require('../services/review/consolidation');
+const clusterReview = require('../services/review/clusterReviewService');
 
 async function getTzOriginal(tenderId) {
   // Для экспорта в .docx нужен именно .docx-файл (не .md и не .pdf).
@@ -59,9 +60,22 @@ async function prepareDocxExport(tenderId, query) {
   }
   if (!fs.existsSync(tz.file_path)) throw notFound('Файл ТЗ отсутствует на диске');
   const stage = query.stage ? Number(query.stage) : null;
-  const decisions = await loadDecisions(tenderId, stage);
+
+  // Этап 6: основной путь — решения по кластерам (issue_clusters → review_decisions.cluster_id).
+  // Fallback на legacy issue-level решения, если кластерных решений нет (старый тендер /
+  // конвейер не собран). Явный ?source=issues принудительно включает legacy-путь.
+  let source = 'clusters';
+  let decisions = [];
+  if (query.source !== 'issues' && !stage) {
+    decisions = await clusterReview.loadClusterDecisions(tenderId);
+  }
+  if (!decisions.length) {
+    source = 'issues';
+    decisions = await loadDecisions(tenderId, stage);
+  }
+
   const author = (query.author || tender.owner || 'TZ-Opti').toString();
-  return { tender, tz, stage, decisions, author };
+  return { tender, tz, stage, decisions, author, source };
 }
 
 function setReportHeaders(res, summary) {
@@ -71,9 +85,18 @@ function setReportHeaders(res, summary) {
   res.setHeader('X-Skipped-Count', String(summary.skipped));
 }
 
-// На одно место ТЗ применяется решение primary (слой сборки); дубли — в отчёт
-// со статусом skipped. Возвращает { buffer, report } с учётом дедупа.
-function buildDedupedExport(tzPath, decisions, meta) {
+// Сборка docx-экспорта из решений.
+//   source='clusters' — кластер уже является единицей дедупа (разные semantic-bucket
+//     кластеры в одном абзаце легитимны), поэтому дедуп НЕ применяется.
+//   source='issues'   — legacy-путь: на одно место ТЗ применяется решение primary,
+//     дубли уходят в отчёт со статусом skipped (dedupeExportDecisions).
+// Возвращает { buffer, report }; report.source проставляется для прозрачности.
+function buildDedupedExport(tzPath, decisions, meta, source = 'issues') {
+  if (source === 'clusters') {
+    const { buffer, report } = exportReviewedDocx(tzPath, decisions, meta);
+    report.source = source;
+    return { buffer, report };
+  }
   const { kept, duplicates } = dedupeExportDecisions(decisions);
   const { buffer, report } = exportReviewedDocx(tzPath, kept, meta);
   for (const d of duplicates) {
@@ -89,17 +112,19 @@ function buildDedupedExport(tzPath, decisions, meta) {
     report.summary.skipped += 1;
     report.summary.total += 1;
   }
+  report.source = source;
   return { buffer, report };
 }
 
 exports.docx = async (req, res) => {
-  const { tender, tz, stage, decisions, author } = await prepareDocxExport(req.params.id, req.query);
-  const { buffer, report } = buildDedupedExport(tz.file_path, decisions, { author, date: new Date() });
+  const { tender, tz, stage, decisions, author, source } = await prepareDocxExport(req.params.id, req.query);
+  const { buffer, report } = buildDedupedExport(tz.file_path, decisions, { author, date: new Date() }, source);
 
   const safeTitle = (tender.title || 'tender').replace(/[^a-zA-Zа-яА-Я0-9_-]+/g, '_').slice(0, 60);
   const suffix = stage ? `__stage${stage}` : '';
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeTitle)}${suffix}__review.docx"`);
+  res.setHeader('X-Export-Source', source);
   setReportHeaders(res, report.summary);
   res.send(buffer);
 };
@@ -107,8 +132,8 @@ exports.docx = async (req, res) => {
 // Dry-run: строит экспорт в памяти и возвращает только JSON-отчёт «что легло /
 // через комментарий / не легло / дубликат» — без бинарника. Для показа в портале.
 exports.docxReport = async (req, res) => {
-  const { tz, decisions, author } = await prepareDocxExport(req.params.id, req.query);
-  const { report } = buildDedupedExport(tz.file_path, decisions, { author, date: new Date() });
+  const { tz, decisions, author, source } = await prepareDocxExport(req.params.id, req.query);
+  const { report } = buildDedupedExport(tz.file_path, decisions, { author, date: new Date() }, source);
   const issueById = new Map(decisions.map((d) => [d.issue.id, d.issue]));
   const items = report.items.map((it) => {
     const iss = issueById.get(it.issueId) || {};
@@ -119,7 +144,7 @@ exports.docxReport = async (req, res) => {
       fragment: (iss.source_fragment || '').slice(0, 160),
     };
   });
-  res.json({ summary: report.summary, items });
+  res.json({ summary: report.summary, items, source });
 };
 
 exports.csv = async (req, res) => {

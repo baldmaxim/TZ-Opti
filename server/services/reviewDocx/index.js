@@ -7,9 +7,8 @@ const { splitParagraphRuns } = require('./runSplitter');
 const { addCommentForRange, addCommentForNodes, nextCommentId } = require('./commentWriter');
 const { applyDeletion, applyInsertion, nextTrackChangeId } = require('./trackChangesWriter');
 const { decisionVisual, resolveRedaction, resolveActionTarget } = require('../review/decisionModel');
-// strikeWriter оставлен в репо как fallback/опция, но больше не вызывается —
-// его место занял настоящий Track Changes (w:del / w:ins). Запасной путь при
-// сбое track-change — Word-комментарий (см. applyOne).
+// Удаления/правки кладутся настоящим Track Changes (w:del / w:ins). Запасной
+// путь при сбое track-change — Word-комментарий (см. applyOne).
 const { ensureCommentsRegistered } = require('./manifestUpdater');
 
 /**

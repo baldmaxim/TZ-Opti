@@ -1,0 +1,141 @@
+# Архитектура анализа — developer doc
+
+Краткий справочник для разработчика: какие сущности идут по этапам, что является
+source of truth, и как один тендер проходит весь pipeline. Пользовательский обзор —
+в [../README.md](../README.md), инструкция для Claude Code — в [../CLAUDE.md](../CLAUDE.md).
+
+В системе **два сцепленных слоя**, и важно их не путать:
+
+- **Backbone решений и экспорта** — таблица `issues` + `review_decisions`. Здесь живут
+  находки стадий 1–4 как редактируемые записи, решения инженера и источник для главного
+  артефакта (`.docx` с Track Changes). Менять/удалять решения можно только здесь.
+- **Конвейер анализа** — `signals → draft_issues → critic → clustering → self-analysis`.
+  Это **read-only аналитика поверх находок**: ранжирование, группировка, контроль полноты.
+  Конвейер НЕ хранит решений инженера и НЕ порождает `.docx`.
+
+```
+        ┌─────────────────────────── BACKBONE (решения + экспорт) ───────────────────────────┐
+        │                                                                                     │
+Стадии 1–4 ──▶ issues ──▶ review_decisions ──▶ consolidation.consolidate ──▶ «Итог» (UI)     │
+(LLM-агенты)     │                              consolidation.dedupeExportDecisions ──▶ .docx │
+        │        │                                                                            │
+        └────────┼────────────────────────────────────────────────────────────────────────-─┘
+                 │ writeSignalsForStage (авто, best-effort)
+                 ▼
+        ┌──────────────────────────── КОНВЕЙЕР АНАЛИЗА (read-only) ───────────────────────────┐
+        │ 1. signals ─▶ 2. draft_issues ─▶ 3. critic ─▶ 4. clustering ─▶ 5. self-analysis      │
+        │ analysis_signals  draft_issues   issue_reviews  issue_clusters    self_analysis_…    │
+        │                                                 issue_cluster_items                  │
+        └─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 1. Сущности по этапам
+
+Каждая строка — что появляется на этапе, в какой таблице, кто пишет, из чего читает.
+
+| # | Этап | Таблица | Пишет (сервис · функция) | Вход | Идемпотентность |
+|---|------|---------|--------------------------|------|------------------|
+| — | Стадии 1–4 (добыча) | `issues`, `analysis_runs` | `stageAnalysis/stageAnalysisEngine.js` · `runStageInner` → `stageN_llm.js` | ТЗ.md + справочники стадии (чек-лист/ВОР, Q&A/характеристики, условия, риски) | при ре-ране удаляются `pending`-issues стадии |
+| 1 | signals | `analysis_signals` | `signals/signalWriter.js` · `writeSignalsForStage` | `issueRecords` стадии (авто, после коммита issues) | удаляет старые сигналы `(tender, stage)` перед записью |
+| 2 | draft_issues | `draft_issues` | `unifiedAnalysis/unifiedIssueBuilder.js` · `buildDraftIssues` | `analysis_signals` | пересобирает все draft_issues тендера |
+| 3 | critic | `issue_reviews` | `critic/criticService.js` · `buildIssueReviews` | `draft_issues` + `analysis_signals` | пересобирает все reviews тендера |
+| 4 | clustering | `issue_clusters` + `issue_cluster_items` | `clustering/clusteringService.js` · `buildClusters` | `draft_issues` + `issue_reviews` | пересобирает все кластеры тендера |
+| 5 | self-analysis (Стадия 5) | `self_analysis_results` | `selfAnalysis/selfAnalysisService.js` · `buildSelfAnalysis` | `issue_clusters` + `issue_reviews` + `analysis_signals` + ТЗ.md | пересобирает все QC-замечания тендера |
+
+**Что несёт каждая сущность (ключевые поля):**
+
+- **`issues`** — `analysis_stage`, локализация (`paragraph_index`/`char_start`/`char_end` или `source_fragment`), `problem_type`, `criticality`, `basis`, `suggested_action`, `suggested_redaction`, `review_status` (`pending|accepted|rejected|edited`), `selected_for_export`. Это **редактируемая** запись.
+- **`review_decisions`** — решение инженера по issue: `decision` (`accept|reject|edit|delete|remove_from_scope`), `edited_redaction`, `final_comment`, `target_text` (выбранная подчасть фрагмента).
+- **`analysis_signals`** — `signal_type` (`coverage|decision|condition|risk` ← стадия 1–4), `source_entity_id` (= id issue), локализация + `weight` (из `confidence`), `signal_payload_json`.
+- **`draft_issues`** — сводный черновик по одному месту ТЗ: `created_from_signal_ids` (JSON), `category` (свод signal_type), `basis`/`suggested_action`/`suggested_redaction`, `confidence`.
+- **`issue_reviews`** — оценка значимости draft_issue: `business_impact`, `{price,schedule,contract,responsibility}_impact`, `display_priority` (`critical|high|medium|low`), `show_to_engineer` (0=мягко скрыт), `score`, `criteria_json`.
+- **`issue_clusters`** / **`issue_cluster_items`** — кластер похожих замечаний одного места: `cluster_title`, `merged_basis`, `merged_recommendation`, `overall_criticality`, `semantic_bucket`, `show_to_engineer`; items связывают кластер с `draft_issue` ролью `primary|related`.
+- **`self_analysis_results`** — QC-замечание о РАЗБОРЕ: `finding_type` (`missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment`), `cluster_id` (адресат, NULL = про весь ТЗ), `comment`, `suggested_improvement`, `source` (`heuristic|llm`).
+
+---
+
+## 2. Source of truth (кто чем владеет)
+
+| Вопрос | Source of truth | Не здесь |
+|--------|-----------------|----------|
+| Сырые находки стадий 1–4 | `issues` | — |
+| **Решение инженера** по находке (этап 6) | `review_decisions.cluster_id` → `issue_clusters` (финальная рецензия). Legacy `review_decisions.issue_id` — пер-стадийная рецензия внутри стадий 1–4 | — |
+| Что попадёт в `.docx` (Track Changes) | **primary:** `issue_clusters` + `review_decisions.cluster_id` (`clusterReviewService.loadClusterDecisions`). **fallback:** `issues` + `review_decisions.issue_id` (когда кластерных решений нет) | — |
+| Экран «Итог» / финальная «Рецензия» | `review/clusterReviewService.js` `listReviewClusters(tenderId)` поверх `issue_clusters` | consolidation.js — вторичный (legacy) вид |
+| Исключение фрагментов из активного текста для следующих стадий | `tz_excluded_ranges` (пишется в `finishStage` по `delete`/`remove_from_scope`) | — |
+| Ранжирование/группировка/полнота находок (аналитика) | конвейер: `analysis_signals` → … → `self_analysis_results` | НЕ влияет на экспорт |
+| Названия стадий | сервер `STAGE_LABELS` (`stageAnalysisEngine.js`), клиент `STAGE_META` (`client/src/utils/labels.js`) — тексты должны совпадать | не хардкодить в других местах |
+| Зоны ответственности агентов (`problem_type` по стадии) | `review/stageDomains.js` | — |
+| «Вид решения» (delete vs вынести vs правка vs примечание) в docx/preview/md | `review/decisionModel.js` (`decisionVisual` + `resolveRedaction`) | — |
+
+> **Этап 6 — финальная рецензия и экспорт переведены на кластеры.** Финальный шаг мастера
+> «Рецензия» и экспорт `.docx` теперь работают от `issue_clusters` через
+> `review/clusterReviewService.js`: одно решение на кластер (`review_decisions.cluster_id`),
+> экспорт собирается из primary draft_issue кластера (docx локализует место по тексту
+> `source_fragment`, поэтому переписывать `reviewDocx` не понадобилось). id кластера
+> **детерминирован** (`clusteringService.clusterId` от `tenderId + cluster_key`) — решение по
+> `cluster_id` переживает идемпотентную пересборку конвейера. **Backward-compat:** issue-level
+> путь (`review_decisions.issue_id`, `consolidation.js`, пер-стадийная рецензия внутри стадий
+> 1–4) сохранён как fallback; экспорт авто-падает на него, когда кластерных решений нет.
+> Старые `issues`/`review_decisions(issue_id)` не удалялись.
+
+---
+
+## 3. Как один тендер проходит pipeline (end-to-end)
+
+**A. Подготовка (инженер).** Создать тендер → загрузить ТЗ (`.docx`/`.pdf`) и **`.md`-копию ТЗ**
+(анализ идёт только по `.md`), ВОР.xlsx, заполнить чек-лист / условия / риски / характеристики /
+Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, `setupParams`.
+
+**B. Стадии 1–4 (добыча находок).** Для каждой стадии:
+1. `POST /api/tenders/:id/stages/:n/run` — движок (`startStageBackground`) проверяет доступность
+   и запускает прогон **в фоне**, сразу отвечая `{status:'running'}`. Гард: один прогон на
+   `(tender,stage)`.
+2. `runStageInner` собирает контекст (`buildContextForStage`), зовёт `stageN_llm.js`, в одной
+   транзакции пишет `analysis_runs` + `issues` (`review_status='pending'`), ставит стадию
+   `reviewing`.
+3. Сразу после коммита — `writeSignalsForStage` (best-effort, своя транзакция): находки стадии
+   копируются в `analysis_signals`. Сбой этого писателя не роняет стадию.
+4. Клиент опрашивает `GET /api/tenders/:id/stages` (`stageN_status`: `open|running|reviewing|finished`).
+5. Инженер проходит таблицу: `PATCH /api/issues/:id` и `POST /api/issues/:id/decision`
+   (пишет `review_decisions`). `POST …/stages/:n/finish` фиксирует стадию, применяет
+   `tz_excluded_ranges` для `delete`/`remove_from_scope` и разлочивает следующую стадию.
+   Возврат назад — `POST …/stages/:n/reset` (каскадный сброс стадий ≥ N).
+
+**C. Стадия 5 — QC над итогом (новая роль).** `POST /api/tenders/:id/self-analysis/build`
+(она же `runStage5SelfAnalysis` в движке). `buildSelfAnalysis`:
+1. `ensureClusters(tenderId)` — если кластеров ещё нет, **сам достраивает конвейер** из сигналов:
+   `buildDraftIssues` → `buildIssueReviews` → `buildClusters`.
+2. Прогоняет чистые эвристики (пропуски/слабые/противоречия/обогащение) + best-effort
+   LLM-обогащение (`stage5_llm.js`), пишет `self_analysis_results`.
+3. **Не пишет issues** (`runStage5SelfAnalysis` возвращает `issues=[]`).
+
+> Слои 2–4 можно собрать и явно/раньше: `POST …/unified/build` → `POST …/critic/build` →
+> `POST …/clustering/build`. Чтение каждого слоя — с фильтром важности
+> `?mode=important|working|full`. Debug-страницы (по прямому URL):
+> `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis`.
+
+**D. Итог и экспорт (backbone).**
+- `GET /api/tenders/:id/review/consolidated` → экран «Итог»: `consolidate` группирует `issues`
+  по месту ТЗ (primary по критичности, прочие related, конфликты помечены).
+- `GET /api/tenders/:id/export/docx` → `exportReviewedDocx`: на одно место — одно решение
+  (`dedupeExportDecisions`), `delete/remove_from_scope` → `w:del`, `edit` → `w:del`+`w:ins`,
+  «Примечание» → Word-комментарий. Отчёт: `GET …/export/docx/report`
+  (`applied|fallback|failed|skipped`). Также CSV / JSON / summary.md / review.md.
+
+---
+
+## 4. Конвенции конвейера
+
+- **Чистые функции тестируются без БД.** Группировка/слияние/скоринг/эвристики каждого слоя —
+  отдельные экспортируемые функции, покрытые офлайн-тестами (`server/test/*.test.js`, `npm test`):
+  `consolidation.test.js`, `critic.test.js`, `clustering.test.js`, `selfAnalysis.test.js`,
+  `stage4Scoring.test.js`, `reviewExport.test.js`. БД и LLM в тестах не нужны.
+- **Идемпотентность.** Каждый `build*` пересобирает свой слой целиком по тендеру; повторный
+  вызов безопасен. Каскад FK (`ON DELETE CASCADE`) чистит зависимые слои при пересборке
+  родителя — после `unified/build` нужно перезапустить `critic/build` → `clustering/build`.
+- **Изоляция от backbone.** Слой signals — best-effort: его сбой не влияет на `issues`/статус
+  стадии. Остальные слои конвейера запускаются отдельными эндпоинтами и не пишут в `issues`.
+- **Один файл ≤ 600 строк**, UI на русском, код/имена — на английском (см. CLAUDE.md).

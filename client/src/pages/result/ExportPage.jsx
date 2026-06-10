@@ -115,6 +115,15 @@ export default function ExportPage() {
           </button>
         </div>
 
+        {report?.source && (
+          <div className="text-xs mt-2">
+            Источник решений:{' '}
+            <span className={`px-1.5 py-0.5 rounded ${report.source === 'clusters' ? 'text-brand-700 bg-brand-50' : 'text-gray-600 bg-gray-100'}`}>
+              {report.source === 'clusters' ? 'кластеры (основной путь)' : 'находки стадий (legacy-fallback)'}
+            </span>
+          </div>
+        )}
+
         {reportErr && <div className="text-xs text-red-600 mt-2">{reportErr}</div>}
 
         {summary && (

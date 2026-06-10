@@ -20,8 +20,17 @@
 // Группировка/слияние — чистые функции (тестируются без БД), как в
 // review/consolidation.js и unifiedAnalysis.
 
+const crypto = require('crypto');
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
+
+// Детерминированный id кластера от (tenderId + clusterKey). Этап 6: решения инженера
+// привязываются к cluster_id, а buildClusters пересобирает кластеры (DELETE+INSERT) —
+// со случайным id решение терялось бы. Хэш стабилен → решение переживает пересборку.
+function clusterId(tenderId, key) {
+  const h = crypto.createHash('sha1').update(`${tenderId}::${key}`).digest('hex').slice(0, 24);
+  return `clu_${h}`;
+}
 
 const CRIT_RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
 const IMPACT_RANK = { high: 3, medium: 2, low: 1, none: 0 };
@@ -154,8 +163,13 @@ function buildCluster(tenderId, pairs) {
     (a, b) => critOf(b) - critOf(a) || scoreOf(b) - scoreOf(a),
   );
 
+  // Стабильный ключ группы = ключ места + смысловой bucket primary-элемента
+  // (тот же clusterKey, по которому pairs были сгруппированы). Основа id и привязки решений.
+  const cluster_key = clusterKey(pd, primary.review || {});
+
   return {
-    id: newId(),
+    id: clusterId(tenderId, cluster_key),
+    cluster_key,
     tender_id: tenderId,
     tz_clause,
     cluster_title,
@@ -250,11 +264,11 @@ async function buildClusters(tenderId) {
         `INSERT INTO issue_clusters (
            id, tender_id, tz_clause, cluster_title, merged_basis, merged_recommendation,
            overall_criticality, show_to_engineer, final_problem_type,
-           semantic_bucket, item_count, paragraph_index, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           semantic_bucket, cluster_key, item_count, paragraph_index, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         c.id, c.tender_id, c.tz_clause, c.cluster_title, c.merged_basis, c.merged_recommendation,
         c.overall_criticality, c.show_to_engineer ? 1 : 0, c.final_problem_type,
-        c.semantic_bucket, c.item_count, c.paragraph_index, createdAt,
+        c.semantic_bucket, c.cluster_key, c.item_count, c.paragraph_index, createdAt,
       );
       for (const it of c.items) {
         await tx.queryRun(
@@ -334,6 +348,7 @@ async function listClusters(tenderId, mode = 'working') {
 
 module.exports = {
   // чистое ядро (офлайн-тесты/демо)
+  clusterId,
   placeKey,
   dominantDimension,
   actionFamily,

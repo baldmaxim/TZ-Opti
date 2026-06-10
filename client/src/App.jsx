@@ -18,6 +18,7 @@ import DraftIssuesPage from './pages/debug/DraftIssuesPage';
 import IssueReviewsPage from './pages/debug/IssueReviewsPage';
 import ClustersPage from './pages/debug/ClustersPage';
 import SelfAnalysisPage from './pages/debug/SelfAnalysisPage';
+import PipelinePage from './pages/debug/PipelinePage';
 
 export default function App() {
   return (
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="debug/issue-reviews" element={<IssueReviewsPage />} />
           <Route path="debug/clusters" element={<ClustersPage />} />
           <Route path="debug/self-analysis" element={<SelfAnalysisPage />} />
+          <Route path="debug/pipeline" element={<PipelinePage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

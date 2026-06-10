@@ -122,6 +122,14 @@ export const api = {
   listSelfAnalysis: (tenderId, findingType = null) =>
     request(`/tenders/${tenderId}/self-analysis${findingType ? `?finding_type=${encodeURIComponent(findingType)}` : ''}`),
 
+  // Pipeline (оркестратор конвейера: draft_issues → critic → clustering → self-analysis)
+  runPipeline: (tenderId, { withSelfAnalysis = true } = {}) =>
+    request(`/tenders/${tenderId}/pipeline/run`, {
+      method: 'POST',
+      body: { with_self_analysis: withSelfAnalysis },
+    }),
+  getPipelineStatus: (tenderId) => request(`/tenders/${tenderId}/pipeline/status`),
+
   // Решения (legacy issue-level — внутри стадий 1–4)
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
   decideIssue: (id, data) => request(`/issues/${id}/decision`, { method: 'POST', body: data }),

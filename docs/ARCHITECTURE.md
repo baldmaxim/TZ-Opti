@@ -113,9 +113,15 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 3. **Не пишет issues** (`runStage5SelfAnalysis` возвращает `issues=[]`).
 
 > Слои 2–4 можно собрать и явно/раньше: `POST …/unified/build` → `POST …/critic/build` →
-> `POST …/clustering/build`. Чтение каждого слоя — с фильтром важности
+> `POST …/clustering/build`, либо все слои 2–5 одним вызовом через оркестратор
+> `POST …/pipeline/run` (`services/pipeline/analysisPipeline.js`; тело
+> `{with_self_analysis:false}` — без QC-шага, единственного с LLM). Порядок шагов фиксирован
+> зависимостями; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}`
+> предсказуем (сбой шага ≠ HTTP-ошибка). Свежесть слоёв — `GET …/pipeline/status`
+> (count/built_at/`stale` на слой: пуст при непустом родителе или собран раньше родителя;
+> сводный `needs_rebuild`). Чтение каждого слоя — с фильтром важности
 > `?mode=important|working|full`. Debug-страницы (по прямому URL):
-> `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis`.
+> `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline`.
 
 **D. Итог и экспорт (backbone).**
 - `GET /api/tenders/:id/review/consolidated` → экран «Итог»: `consolidate` группирует `issues`
@@ -132,7 +138,8 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 - **Чистые функции тестируются без БД.** Группировка/слияние/скоринг/эвристики каждого слоя —
   отдельные экспортируемые функции, покрытые офлайн-тестами (`server/test/*.test.js`, `npm test`):
   `consolidation.test.js`, `critic.test.js`, `clustering.test.js`, `selfAnalysis.test.js`,
-  `stage4Scoring.test.js`, `reviewExport.test.js`. БД и LLM в тестах не нужны.
+  `clusterReview.test.js`, `pipeline.test.js`, `stage4Scoring.test.js`, `reviewExport.test.js`.
+  БД и LLM в тестах не нужны.
 - **Идемпотентность.** Каждый `build*` пересобирает свой слой целиком по тендеру; повторный
   вызов безопасен. Каскад FK (`ON DELETE CASCADE`) чистит зависимые слои при пересборке
   родителя — после `unified/build` нужно перезапустить `critic/build` → `clustering/build`.

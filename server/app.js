@@ -31,6 +31,7 @@ const unifiedRouter = require('./routes/unified');
 const criticRouter = require('./routes/critic');
 const clusteringRouter = require('./routes/clustering');
 const selfAnalysisRouter = require('./routes/selfAnalysis');
+const pipelineRouter = require('./routes/pipeline');
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -63,6 +64,7 @@ app.use('/api', unifiedRouter);
 app.use('/api', criticRouter);
 app.use('/api', clusteringRouter);
 app.use('/api', selfAnalysisRouter);
+app.use('/api', pipelineRouter);
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) {

@@ -206,6 +206,7 @@ TZ-Opti/
 | Извлечение текста (.docx / .pdf / .xlsx / .txt / .md) | ✅ Реализовано |
 | Стадии 1–4 — LLM-агенты по тексту ТЗ (Чек-лист+ВОР, Q&A+характеристики, Условия компании, Риски) | ✅ Реализовано |
 | Конвейер анализа: signals → draft_issues → critic → clustering → self-analysis (Стадия 5 = QC над итогом, issues не порождает) | ✅ Реализовано |
+| Оркестратор конвейера: пересборка слоёв одним вызовом + статус свежести слоёв (`pipeline/run`, `pipeline/status`) | ✅ Реализовано |
 | Фоновый прогон стадии + опрос статуса (снимает таймауты на долгих ТЗ) | ✅ Реализовано |
 | 3 режима системного промта на стадию (`structural`/`strict`/`full`) через env | ✅ Реализовано |
 | Реестр Issue + рецензия по стадиям + сквозной reviewer | ✅ Реализовано |
@@ -268,7 +269,16 @@ analysis_signals  draft_issues   issue_reviews  issue_clusters    self_analysis_
 clustering из сигналов, затем делает QC. Группировка/слияние/эвристики во всех слоях — чистые
 функции, покрытые офлайн-тестами (`npm test`).
 
-**Debug-страницы** (по прямому URL, без пункта меню): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
+**Оркестратор конвейера** (`services/pipeline/analysisPipeline.js`) пересобирает слои 2–5 одним
+вызовом — `POST /api/tenders/:id/pipeline/run` (тело `{ with_self_analysis: false }` — без
+QC-шага, единственного с LLM). Порядок шагов фиксирован зависимостями; после сбоя шага оставшиеся
+помечаются `skipped`, отчёт прогона предсказуем (`{ ok, failed_step, steps[] }` со статусом
+`done|failed|skipped` и `summary` слоя на каждый шаг — как у отчёта экспорта, сбой шага не
+превращается в HTTP-ошибку). Свежесть слоёв — `GET /api/tenders/:id/pipeline/status`: счётчик +
+время сборки + флаг `stale` на слой (слой пуст при непустом родителе или собран раньше родителя)
+и сводный `needs_rebuild`. Тест — `server/test/pipeline.test.js`.
+
+**Debug-страницы** (по прямому URL, без пункта меню): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
 
 > **Что остаётся на `issues` (нужная backward-compat).** Решения инженера (`review_decisions`),
 > экран «Итог» (`review/consolidation.js`) и главный артефакт — экспорт `.docx` с Track Changes —
@@ -354,6 +364,8 @@ POST   /api/tenders/:id/clustering/build             сгруппировать 
 GET    /api/tenders/:id/issue-clusters               ?mode=important|working|full
 POST   /api/tenders/:id/self-analysis/build          QC/полнота над кластерами (Стадия 5)
 GET    /api/tenders/:id/self-analysis                ?finding_type=missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
+POST   /api/tenders/:id/pipeline/run                  пересобрать слои 2–5 одним вызовом ({with_self_analysis:false} — без QC-шага)
+GET    /api/tenders/:id/pipeline/status               свежесть слоёв (count/built_at/stale на слой, сводный needs_rebuild)
 ```
 
 > `:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`: `open`/`running`/`reviewing`/`finished`).

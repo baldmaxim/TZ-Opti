@@ -1,5 +1,9 @@
 'use strict';
 
+// Issue-level решения — внутристадийная рецензия стадий 1–4 (backbone) и
+// legacy-fallback финальной рецензии. Основной путь финального решения с этапов 6–7 —
+// по кластерам: clusterReviewController → review_decisions(cluster_id).
+
 const db = require('../db/connection');
 const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');

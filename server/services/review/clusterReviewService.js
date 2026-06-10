@@ -1,11 +1,13 @@
 'use strict';
 
-// Слой cluster-review (этап 6) — делает issue_clusters основным объектом рецензии и
-// экспорта поверх конвейера signals → draft_issues → critic → clustering.
+// Слой cluster-review (этапы 6–7) — делает issue_clusters основным объектом рецензии
+// и всех выгрузок. Source of truth:
+//   signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export.
 //
-// Backbone до этапа 6: issues → review_decisions(issue_id) → export. Теперь основной
-// путь — issue_clusters → review_decisions(cluster_id) → export, а issue-level путь
-// сохранён как fallback (exportController, decisionsController) для back-compat.
+// Отсюда читают ВСЕ cluster-level поверхности: docx-экспорт (exportController),
+// CSV/JSON/summary.md (exportService), HTML-preview (reviewHtmlService) и review.md
+// (mdReview/renderer). Issue-level путь (issues → review_decisions.issue_id) сохранён
+// только как legacy-fallback, когда кластеров нет или запрошен ?source=issues.
 //
 // Ключевая идея экспорта без переписывания reviewDocx: docx локализует место по ТЕКСТУ
 // (source_fragment, см. reviewDocx/index.js locateTarget), поэтому кластеру достаточно
@@ -188,6 +190,23 @@ async function saveClusterDecision(tenderId, clusterId, body = {}) {
   return { cluster_id: clusterId, decision: row };
 }
 
+// Общий источник cluster-level выгрузок (CSV/JSON/summary.md, HTML-preview):
+// ВСЕ кластеры тендера (включая нерешённые) + последнее решение + primary draft_issue.
+async function loadClusterReviewRows(tenderId, mode = 'full') {
+  const clusters = await clustering.listClusters(tenderId, mode);
+  if (!clusters.length) return [];
+  const ids = clusters.map((c) => c.id);
+  const [decisions, primaries] = await Promise.all([
+    loadDecisionsByCluster(ids),
+    loadPrimaryDrafts(ids),
+  ]);
+  return clusters.map((c) => ({
+    cluster: c,
+    primary: primaries.get(c.id) || null,
+    decision: decisions.get(c.id) || null,
+  }));
+}
+
 // Источник для экспорта: кластеры с решением (кроме reject) → синтетический issue +
 // данные решения. Формат строки совпадает с issue-путём (exportController.loadDecisions):
 //   { issue, decision_kind, final_comment, edited_redaction, target_text }
@@ -227,4 +246,5 @@ module.exports = {
   getReviewCluster,
   saveClusterDecision,
   loadClusterDecisions,
+  loadClusterReviewRows,
 };

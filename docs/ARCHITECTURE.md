@@ -4,28 +4,45 @@
 source of truth, и как один тендер проходит весь pipeline. Пользовательский обзор —
 в [../README.md](../README.md), инструкция для Claude Code — в [../CLAUDE.md](../CLAUDE.md).
 
-В системе **два сцепленных слоя**, и важно их не путать:
-
-- **Backbone решений и экспорта** — таблица `issues` + `review_decisions`. Здесь живут
-  находки стадий 1–4 как редактируемые записи, решения инженера и источник для главного
-  артефакта (`.docx` с Track Changes). Менять/удалять решения можно только здесь.
-- **Конвейер анализа** — `signals → draft_issues → critic → clustering → self-analysis`.
-  Это **read-only аналитика поверх находок**: ранжирование, группировка, контроль полноты.
-  Конвейер НЕ хранит решений инженера и НЕ порождает `.docx`.
+**Главная цепочка (этапы 6–7) — source of truth всего результата:**
 
 ```
-        ┌─────────────────────────── BACKBONE (решения + экспорт) ───────────────────────────┐
+signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export
+```
+
+Стадии 1–4 добывают находки; конвейер сводит их в кластеры; инженер принимает **одно
+решение на кластер** (`review_decisions.cluster_id`); из решений по кластерам собираются
+ВСЕ выгрузки: `.docx` с Track Changes, HTML-preview, review.md, CSV/JSON/summary.md и
+экраны «Рецензия»/«Итог».
+
+В системе при этом **два сцепленных слоя**, и важно их не путать:
+
+- **Конвейер анализа + cluster-review** (основной путь) — `signals → draft_issues →
+  critic → clustering (→ self-analysis QC)` и поверх него `review/clusterReviewService.js`:
+  решения инженера по кластерам и все выгрузки.
+- **Issue-level backbone (legacy-fallback)** — таблица `issues` + `review_decisions(issue_id)`.
+  Здесь живут находки стадий 1–4 как редактируемые записи и пер-стадийная рецензия
+  внутри стадий (она же управляет `tz_excluded_ranges`). Как путь финальной рецензии и
+  выгрузок используется только fallback-ом: когда кластеров/кластерных решений нет
+  (конвейер не собран, старый тендер) или запрошен явный `?source=issues`.
+
+```
+        ┌──────────────────── ISSUE-LEVEL BACKBONE (legacy-fallback) ─────────────────────────┐
         │                                                                                     │
-Стадии 1–4 ──▶ issues ──▶ review_decisions ──▶ consolidation.consolidate ──▶ «Итог» (UI)     │
-(LLM-агенты)     │                              consolidation.dedupeExportDecisions ──▶ .docx │
+Стадии 1–4 ──▶ issues ──▶ review_decisions(issue_id) ──▶ пер-стадийная рецензия,             │
+(LLM-агенты)     │         tz_excluded_ranges; consolidation ──▶ fallback выгрузок            │
         │        │                                                                            │
         └────────┼────────────────────────────────────────────────────────────────────────-─┘
                  │ writeSignalsForStage (авто, best-effort)
                  ▼
-        ┌──────────────────────────── КОНВЕЙЕР АНАЛИЗА (read-only) ───────────────────────────┐
+        ┌──────────────────────── ОСНОВНОЙ ПУТЬ (этапы 6–7) ──────────────────────────────────┐
         │ 1. signals ─▶ 2. draft_issues ─▶ 3. critic ─▶ 4. clustering ─▶ 5. self-analysis      │
         │ analysis_signals  draft_issues   issue_reviews  issue_clusters    self_analysis_…    │
         │                                                 issue_cluster_items                  │
+        │                                                       │                              │
+        │                        review_decisions(cluster_id) ◀─┴── инженер («Рецензия»)       │
+        │                                     │                                                │
+        │     .docx (Track Changes) · HTML-preview · review.md · CSV/JSON/summary.md · «Итог» │
         └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -62,24 +79,27 @@ source of truth, и как один тендер проходит весь pipel
 |--------|-----------------|----------|
 | Сырые находки стадий 1–4 | `issues` | — |
 | **Решение инженера** по находке (этап 6) | `review_decisions.cluster_id` → `issue_clusters` (финальная рецензия). Legacy `review_decisions.issue_id` — пер-стадийная рецензия внутри стадий 1–4 | — |
-| Что попадёт в `.docx` (Track Changes) | **primary:** `issue_clusters` + `review_decisions.cluster_id` (`clusterReviewService.loadClusterDecisions`). **fallback:** `issues` + `review_decisions.issue_id` (когда кластерных решений нет) | — |
-| Экран «Итог» / финальная «Рецензия» | `review/clusterReviewService.js` `listReviewClusters(tenderId)` поверх `issue_clusters` | consolidation.js — вторичный (legacy) вид |
-| Исключение фрагментов из активного текста для следующих стадий | `tz_excluded_ranges` (пишется в `finishStage` по `delete`/`remove_from_scope`) | — |
-| Ранжирование/группировка/полнота находок (аналитика) | конвейер: `analysis_signals` → … → `self_analysis_results` | НЕ влияет на экспорт |
+| Что попадёт в `.docx` (Track Changes) | **primary:** `issue_clusters` + `review_decisions.cluster_id` (`clusterReviewService.loadClusterDecisions`). **fallback:** `issues` + `review_decisions.issue_id` (когда кластерных решений нет или `?source=issues`) | — |
+| HTML-preview / review.md / CSV / JSON / summary.md (этап 7) | **primary:** те же кластерные решения (`loadClusterReviewRows` / `loadClusterDecisions`); фактический источник — в `X-Export-Source` и шапке файла. **fallback:** issue-level, когда кластеров нет или `?source=issues` | — |
+| Экран «Итог» / финальная «Рецензия» | `review/clusterReviewService.js` `listReviewClusters(tenderId)` поверх `issue_clusters` | consolidation.js — legacy-fallback |
+| Исключение фрагментов из активного текста для следующих стадий | `tz_excluded_ranges` (пишется в `finishStage` по `delete`/`remove_from_scope` issue-level решений стадий 1–4) | — |
+| Ранжирование/группировка/полнота находок (аналитика) | конвейер: `analysis_signals` → … → `self_analysis_results` | — |
 | Названия стадий | сервер `STAGE_LABELS` (`stageAnalysisEngine.js`), клиент `STAGE_META` (`client/src/utils/labels.js`) — тексты должны совпадать | не хардкодить в других местах |
 | Зоны ответственности агентов (`problem_type` по стадии) | `review/stageDomains.js` | — |
 | «Вид решения» (delete vs вынести vs правка vs примечание) в docx/preview/md | `review/decisionModel.js` (`decisionVisual` + `resolveRedaction`) | — |
 
-> **Этап 6 — финальная рецензия и экспорт переведены на кластеры.** Финальный шаг мастера
-> «Рецензия» и экспорт `.docx` теперь работают от `issue_clusters` через
-> `review/clusterReviewService.js`: одно решение на кластер (`review_decisions.cluster_id`),
-> экспорт собирается из primary draft_issue кластера (docx локализует место по тексту
-> `source_fragment`, поэтому переписывать `reviewDocx` не понадобилось). id кластера
-> **детерминирован** (`clusteringService.clusterId` от `tenderId + cluster_key`) — решение по
-> `cluster_id` переживает идемпотентную пересборку конвейера. **Backward-compat:** issue-level
-> путь (`review_decisions.issue_id`, `consolidation.js`, пер-стадийная рецензия внутри стадий
-> 1–4) сохранён как fallback; экспорт авто-падает на него, когда кластерных решений нет.
-> Старые `issues`/`review_decisions(issue_id)` не удалялись.
+> **Этапы 6–7 — рецензия и ВСЕ выгрузки переведены на кластеры.** Финальный шаг мастера
+> «Рецензия», экспорт `.docx`, HTML-preview, review.md и CSV/JSON/summary.md работают от
+> `issue_clusters` через `review/clusterReviewService.js`: одно решение на кластер
+> (`review_decisions.cluster_id`), выгрузки собираются из primary draft_issue кластера
+> (docx/preview/md локализуют место по тексту `source_fragment`, поэтому переписывать
+> `reviewDocx` не понадобилось). id кластера **детерминирован** (`clusteringService.clusterId`
+> от `tenderId + cluster_key`) — решение по `cluster_id` переживает идемпотентную пересборку
+> конвейера. **Backward-compat:** issue-level путь (`review_decisions.issue_id`,
+> `consolidation.js`, пер-стадийная рецензия внутри стадий 1–4) сохранён как fallback; каждая
+> выгрузка авто-падает на него, когда кластеров/кластерных решений нет, и принудительно — по
+> `?source=issues` (фактический источник виден в `X-Export-Source`). Старые
+> `issues`/`review_decisions(issue_id)` не удалялись.
 
 ---
 
@@ -123,13 +143,21 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 > `?mode=important|working|full`. Debug-страницы (по прямому URL):
 > `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline`.
 
-**D. Итог и экспорт (backbone).**
-- `GET /api/tenders/:id/review/consolidated` → экран «Итог»: `consolidate` группирует `issues`
-  по месту ТЗ (primary по критичности, прочие related, конфликты помечены).
-- `GET /api/tenders/:id/export/docx` → `exportReviewedDocx`: на одно место — одно решение
-  (`dedupeExportDecisions`), `delete/remove_from_scope` → `w:del`, `edit` → `w:del`+`w:ins`,
-  «Примечание» → Word-комментарий. Отчёт: `GET …/export/docx/report`
-  (`applied|fallback|failed|skipped`). Также CSV / JSON / summary.md / review.md.
+**D. Рецензия, итог и выгрузки (cluster-primary).**
+- `POST /api/tenders/:id/review/clusters/build` (+`?force=1`) → достроить конвейер до
+  кластеров; `GET …/review/clusters` → шаг «Рецензия»: кластер + дочерние draft_issues +
+  заметки self-analysis. Решение инженера: `POST …/review/clusters/:clusterId/decision`
+  → `review_decisions.cluster_id` (одно активное решение на кластер).
+- `GET /api/tenders/:id/export/docx` → `clusterReviewService.loadClusterDecisions` →
+  `exportReviewedDocx`: кластер = единица дедупа, `delete/remove_from_scope` → `w:del`,
+  `edit` → `w:del`+`w:ins`, «Примечание» → Word-комментарий. Отчёт: `GET …/export/docx/report`
+  (`applied|fallback|failed|skipped`, `source`).
+- `GET …/review/preview` (HTML), `GET …/export/review.md`, `GET …/export/issues.csv`,
+  `GET …/export/issues.json`, `GET …/export/summary.md` — те же кластерные решения
+  (`loadClusterReviewRows`); фактический источник — в `X-Export-Source` / шапке файла.
+- **Legacy-fallback:** каждая выгрузка авто-падает на issue-level
+  (`issues` + `review_decisions.issue_id`; `?source=issues` — принудительно);
+  `GET …/review/consolidated` (`consolidate` по issues) сохранён для back-compat.
 
 ---
 
@@ -138,8 +166,8 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 - **Чистые функции тестируются без БД.** Группировка/слияние/скоринг/эвристики каждого слоя —
   отдельные экспортируемые функции, покрытые офлайн-тестами (`server/test/*.test.js`, `npm test`):
   `consolidation.test.js`, `critic.test.js`, `clustering.test.js`, `selfAnalysis.test.js`,
-  `clusterReview.test.js`, `pipeline.test.js`, `stage4Scoring.test.js`, `reviewExport.test.js`.
-  БД и LLM в тестах не нужны.
+  `clusterReview.test.js`, `clusterExports.test.js`, `pipeline.test.js`,
+  `stage4Scoring.test.js`, `reviewExport.test.js`. БД и LLM в тестах не нужны.
 - **Идемпотентность.** Каждый `build*` пересобирает свой слой целиком по тендеру; повторный
   вызов безопасен. Каскад FK (`ON DELETE CASCADE`) чистит зависимые слои при пересборке
   родителя — после `unified/build` нужно перезапустить `critic/build` → `clustering/build`.

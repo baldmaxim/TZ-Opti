@@ -211,7 +211,8 @@ TZ-Opti/
 | 3 режима системного промта на стадию (`structural`/`strict`/`full`) через env | ✅ Реализовано |
 | Реестр Issue + рецензия по стадиям + сквозной reviewer | ✅ Реализовано |
 | Зоны ответственности агентов (реестр `problem_type` на стадию) + гард домена | ✅ Реализовано |
-| Слой сборки итога: находки 5 стадий по одному месту ТЗ → группы (primary/конфликты) + экран «Итог» | ✅ Реализовано |
+| Рецензия и ВСЕ выгрузки от кластеров: одно решение на кластер (`review_decisions.cluster_id`) → docx / preview / review.md / CSV / JSON / summary.md (этапы 6–7) | ✅ Реализовано |
+| Слой сборки итога по issues (группы primary/конфликты, `review/consolidated`) — legacy-fallback | ✅ Реализовано |
 | Каскадный сброс стадий, исключение фрагментов из активного текста | ✅ Реализовано |
 | Экспорт `.docx` с **настоящими Track Changes** (`w:ins`/`w:del`) + Word-комментарии | ✅ Реализовано |
 | Единый «вид решения» в preview / таблице / docx (delete vs «вынести из объёма» различаются) | ✅ Реализовано |
@@ -219,8 +220,8 @@ TZ-Opti/
 | Устойчивое сопоставление `.md↔.docx` при экспорте (терпимо к пробелам → таблицы по ячейкам → нечёткий → комментарий-фолбэк) | ✅ Реализовано |
 | Стадия 4: анти-триггеры рисков + quality scoring (порог `STAGE4_MIN_SCORE`) — меньше ложных совпадений | ✅ Реализовано |
 | Регресс-набор: экспорт (абзац / список / таблица / мультиформат / повтор) + scoring Стадии 4 — `npm test` | ✅ Реализовано |
-| HTML-preview рецензии | ✅ Реализовано |
-| CSV / JSON / Markdown summary экспорты | ✅ Реализовано |
+| HTML-preview рецензии (cluster-primary, issue-fallback) | ✅ Реализовано |
+| CSV / JSON / Markdown summary экспорты (cluster-primary, issue-fallback, `X-Export-Source`) | ✅ Реализовано |
 | Q&A форма прямо в портале (вместо xlsx-загрузки) | ⚙️ Контракт `qaImportService` совместим. Следующая задача — UI-страница ввода. |
 | A/B-тюнинг промтов стадий и калибровка режимов на реальных ТЗ | ⚙️ Инфраструктура (3 режима + env) готова; нужен прогон на корпусе ТЗ. |
 
@@ -280,11 +281,14 @@ QC-шага, единственного с LLM). Порядок шагов фи�
 
 **Debug-страницы** (по прямому URL, без пункта меню): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
 
-> **Что остаётся на `issues` (нужная backward-compat).** Решения инженера (`review_decisions`),
-> экран «Итог» (`review/consolidation.js`) и главный артефакт — экспорт `.docx` с Track Changes —
-> по-прежнему работают на таблице `issues`: там живут пользовательские решения, оттуда их берёт
-> экспорт. Конвейер выше — это **аналитический слой** (ранжирование/группировка/QC), он не хранит
-> решений и не порождает `.docx`. Подробности потоков и source-of-truth — в
+> **Source of truth (этапы 6–7).** Главная цепочка результата:
+> `signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export`.
+> Инженер принимает **одно решение на кластер**; из кластерных решений собираются ВСЕ выгрузки:
+> `.docx` с Track Changes, HTML-preview, review.md, CSV/JSON/summary.md и экраны «Рецензия»/«Итог».
+> Issue-level путь (`issues` + `review_decisions.issue_id`) остаётся для пер-стадийной рецензии
+> внутри стадий 1–4 (включая `tz_excluded_ranges`) и как **legacy-fallback** выгрузок — когда
+> кластеров/кластерных решений нет или запрошен явный `?source=issues` (фактический источник —
+> в заголовке `X-Export-Source`). Подробности потоков и source-of-truth — в
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
@@ -345,14 +349,21 @@ GET    /api/tenders/:id/stages/:n/issues             ?criticality=&review_status
 PATCH  /api/issues/:id                               review_status, edited_redaction, selected_for_export
 POST   /api/issues/:id/decision                      {decision, edited_redaction, final_comment}
 
+# Финальная рецензия (этапы 6–7): одно решение на кластер
+POST   /api/tenders/:id/review/clusters/build        достроить конвейер до кластеров (?force=1 — пересобрать)
+GET    /api/tenders/:id/review/clusters              кластеры + решения + draft_issues + self-analysis
+POST   /api/tenders/:id/review/clusters/:cid/decision {decision, edited_redaction, final_comment, target_text}
+
+# Выгрузки: cluster-primary, issue-fallback (?source=issues — принудительно legacy;
+# фактический источник — заголовок X-Export-Source)
 GET    /api/tenders/:id/review/preview               HTML-preview рецензии
-GET    /api/tenders/:id/review/consolidated          экран «Итог» (группы по месту ТЗ)
 GET    /api/tenders/:id/export/docx                  ТЗ.docx с Track Changes
-GET    /api/tenders/:id/export/docx/report           пер-issue отчёт экспорта (applied/fallback/failed/skipped)
-GET    /api/tenders/:id/export/issues.csv
+GET    /api/tenders/:id/export/docx/report           отчёт экспорта (applied/fallback/failed/skipped, source)
+GET    /api/tenders/:id/export/issues.csv            CSV-реестр (от кластеров; legacy — реестр issues)
 GET    /api/tenders/:id/export/issues.json
 GET    /api/tenders/:id/export/summary.md
 GET    /api/tenders/:id/export/review.md             review.md со всеми правками
+GET    /api/tenders/:id/review/consolidated          legacy-итог по issues (fallback/back-compat)
 
 # Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis)
 GET    /api/tenders/:id/signals                      поток сигналов стадий 1–4 (?signal_type=)

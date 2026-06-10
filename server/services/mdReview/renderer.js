@@ -2,6 +2,7 @@
 
 const db = require('../../db/connection');
 const { decisionVisual, resolveRedaction, resolveActionTarget } = require('../review/decisionModel');
+const clusterReview = require('../review/clusterReviewService');
 
 // Помечает только выбранную подчасть внутри фрагмента (delete/edit на части):
 // возвращает текст фрагмента, где `part` обёрнут wrapFn, остальное не тронуто.
@@ -25,6 +26,11 @@ function markPartInFragment(fragment, part, wrapFn) {
  * Поиск фрагмента — по точному совпадению source_fragment в тексте
  * (текстовый поиск, не по offset'ам, т.к. .md может отличаться от .docx).
  * Длинные фрагменты применяются первыми, чтобы не накладывались на короткие.
+ *
+ * Источник решений (этап 7) — кластеры: review_decisions(cluster_id) + primary
+ * draft_issue (тот же, что у docx-экспорта). Legacy issue-level решения — fallback:
+ * когда кластерных решений нет, запрошен ?source=issues или задан фильтр стадии
+ * (у кластера нет единой стадии).
  */
 
 async function getTzMdDocument(tenderId) {
@@ -45,6 +51,22 @@ async function getTzDocxDocument(tenderId) {
   );
 }
 
+// Решения от кластеров (основной путь): тот же источник, что у docx-экспорта
+// (кластеры с решением, кроме reject). Формат строки совпадает с issue-путём.
+async function loadClusterDecisionRows(tenderId) {
+  const rows = await clusterReview.loadClusterDecisions(tenderId);
+  return rows.map((r) => ({
+    issue_id: r.issue.id,
+    source_fragment: r.issue.source_fragment,
+    source_clause: r.issue.source_clause,
+    decision: r.decision_kind,
+    edited_redaction: r.edited_redaction,
+    final_comment: r.final_comment,
+    target_text: r.target_text,
+  }));
+}
+
+// Legacy: issue-level решения (внутристадийная рецензия).
 async function loadDecisions(tenderId, stageFilter = null) {
   if (stageFilter) {
     return db.queryAll(
@@ -73,7 +95,7 @@ async function loadDecisions(tenderId, stageFilter = null) {
   );
 }
 
-async function renderReviewMd(tenderId, { stage = null } = {}) {
+async function renderReviewMd(tenderId, { stage = null, source = null } = {}) {
   // 1. Источник: .md если есть, иначе extracted_text от .docx.
   let sourceText = null;
   let sourceLabel = null;
@@ -97,8 +119,15 @@ async function renderReviewMd(tenderId, { stage = null } = {}) {
     return '# Review\n\n⚠ В тендер не загружен ТЗ (.md или .docx).\n';
   }
 
-  // 2. Решения (только те, по которым есть запись в review_decisions).
-  const decisions = await loadDecisions(tenderId, stage);
+  // 2. Решения: кластеры — основной путь; legacy issue-level — при фильтре стадии,
+  //    явном ?source=issues или когда кластерных решений нет.
+  let decisions = [];
+  let decisionsSource = 'issues';
+  if (!stage && source !== 'issues') {
+    decisions = await loadClusterDecisionRows(tenderId);
+    if (decisions.length) decisionsSource = 'clusters';
+  }
+  if (!decisions.length) decisions = await loadDecisions(tenderId, stage);
 
   // 3. Применяем длинные фрагменты первыми — они не должны попадать в подстроки коротких.
   const sorted = [...decisions].sort(
@@ -157,6 +186,7 @@ async function renderReviewMd(tenderId, { stage = null } = {}) {
   const headerLines = [
     `<!-- TZ-Opti review.md -->`,
     `<!-- Источник: ${sourceLabel}${sourceFile ? ` (${sourceFile})` : ''} -->`,
+    `<!-- Решения: ${decisionsSource === 'clusters' ? 'кластеры замечаний (основной путь)' : 'находки стадий (legacy)'} -->`,
     stage
       ? `<!-- Стадия: ${stage} (только решения этой стадии) -->`
       : `<!-- Стадии: все -->`,

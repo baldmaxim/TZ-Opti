@@ -1,4 +1,4 @@
--- TZ-Opti: схема БД (SQLite)
+-- TZ-Opti: схема БД (PostgreSQL / Supabase; применяется через db/migrate.js)
 -- ID = UUID v4 (TEXT). Даты — ISO 8601 (TEXT).
 
 CREATE TABLE IF NOT EXISTS tenders (

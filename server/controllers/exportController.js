@@ -147,30 +147,36 @@ exports.docxReport = async (req, res) => {
   res.json({ summary: report.summary, items, source });
 };
 
+// CSV/JSON/summary — cluster-primary с issue-fallback (диспетчеры exportService);
+// фактический источник виден в X-Export-Source и имени файла.
 exports.csv = async (req, res) => {
-  const csv = await exportSvc.exportIssuesCsv(req.params.id);
+  const { content, source } = await exportSvc.exportCsv(req.params.id, { source: req.query.source });
+  const prefix = source === 'clusters' ? 'clusters' : 'issues';
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="issues_${req.params.id}.csv"`);
-  res.send(csv);
+  res.setHeader('Content-Disposition', `attachment; filename="${prefix}_${req.params.id}.csv"`);
+  res.setHeader('X-Export-Source', source);
+  res.send(content);
 };
 
 exports.json = async (req, res) => {
-  const json = await exportSvc.exportIssuesJson(req.params.id);
+  const { content, source } = await exportSvc.exportJson(req.params.id, { source: req.query.source });
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="analysis_${req.params.id}.json"`);
-  res.send(json);
+  res.setHeader('X-Export-Source', source);
+  res.send(content);
 };
 
 exports.summary = async (req, res) => {
-  const md = await exportSvc.exportSummaryMd(req.params.id);
+  const { content, source } = await exportSvc.exportSummary(req.params.id, { source: req.query.source });
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="summary_${req.params.id}.md"`);
-  res.send(md);
+  res.setHeader('X-Export-Source', source);
+  res.send(content);
 };
 
 exports.reviewMd = async (req, res) => {
   const stage = req.query.stage ? Number(req.query.stage) : null;
-  const md = await renderReviewMd(req.params.id, { stage });
+  const md = await renderReviewMd(req.params.id, { stage, source: req.query.source });
   const suffix = stage ? `_stage${stage}` : '';
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="review_${req.params.id}${suffix}.md"`);

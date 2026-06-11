@@ -4,13 +4,12 @@ import { api } from '../../services/api';
 import { toastError } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import { withViewTransition } from '../../utils/viewTransition';
-import ClusterList from '../../components/clusters/ClusterList';
-import SelfAnalysisFindings from '../../components/selfAnalysis/SelfAnalysisFindings';
 
-// Страница «Анализ ТЗ»: одна кнопка «Начать анализ» → агент прогоняет добытчиков
-// стадий 1–4 + самоанализ (store.runAnalysis) → по завершении показываются замечания
-// (кластеры) и блок самоанализа, плюс переходы на Рецензию и Экспорт. Если анализ
-// уже собран ранее — результат показывается сразу, без повторного прогона.
+// Страница «Анализ ТЗ» — лаунчер анализа. Одна кнопка «Начать анализ» → агент
+// прогоняет добытчиков стадий 1–4 + самоанализ (store.runAnalysis). По завершении
+// пользователь сразу попадает на «Рецензию», где замечания редактируемы (решения
+// по кластерам + правка редакции/комментария, самоанализ внутри карточек). Сам
+// список замечаний здесь не показывается — это шаг запуска, а не просмотра.
 
 export default function AnalysisRunPage() {
   const tender = useTenderStore((s) => s.tender);
@@ -20,38 +19,36 @@ export default function AnalysisRunPage() {
   const analysisStep = useTenderStore((s) => s.analysisStep);
   const navigate = useNavigate();
 
-  const [clusters, setClusters] = useState([]);
-  const [selfAnalysis, setSelfAnalysis] = useState([]);
-  const [loaded, setLoaded] = useState(false);
+  const [clusterCount, setClusterCount] = useState(null); // null = ещё не загружено
   const [ranOnce, setRanOnce] = useState(false);
 
-  const load = async () => {
-    if (!tenderId) return;
+  // Грузим только факт наличия замечаний (кластеров) — список здесь не нужен.
+  const loadCount = async () => {
+    if (!tenderId) return 0;
     try {
-      const [cl, sa] = await Promise.all([
-        api.listClusters(tenderId, 'working'),
-        api.listSelfAnalysis(tenderId).catch(() => ({ items: [] })),
-      ]);
-      setClusters(cl.items || []);
-      setSelfAnalysis(sa.items || []);
-      setLoaded(true);
-    } catch (err) { toastError(err.message); setLoaded(true); }
+      const res = await api.listClusters(tenderId, 'working');
+      const n = (res.items || []).length;
+      setClusterCount(n);
+      return n;
+    } catch (err) { toastError(err.message); setClusterCount(0); return 0; }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tenderId]);
+  useEffect(() => { loadCount(); /* eslint-disable-next-line */ }, [tenderId]);
+
+  const goReview = () => navigate(`/tenders/${tenderId}/review`);
 
   const onStart = async () => {
     const res = await runAnalysis({ withSelfAnalysis: true });
-    if (res?.ok) {
-      setRanOnce(true);
-      await load();
-    }
+    if (!res?.ok) return;
+    setRanOnce(true);
+    const n = await loadCount();
+    if (n > 0) goReview(); // сразу на «Рецензию» — там замечания редактируемы
   };
 
   if (!tender || !tenderId) return null;
 
   const goOverview = () => withViewTransition('back', () => navigate(`/tenders/${tenderId}`));
-  const hasResults = clusters.length > 0;
+  const hasResults = clusterCount != null && clusterCount > 0;
 
   return (
     <div className="space-y-6">
@@ -75,85 +72,57 @@ export default function AnalysisRunPage() {
         </span>
       </div>
 
-      {/* Стартовый/прогон-блок: единственная кнопка запуска анализа. */}
-      {!hasResults ? (
-        <div className="bg-white border border-gray-200 rounded-lg p-10 flex flex-col items-center text-center">
-          <h2 className="text-lg font-semibold text-gray-900">Анализ технического задания</h2>
-          <p className="text-sm text-gray-600 mt-2 max-w-xl">
-            Агент проверит ТЗ по всем направлениям (покрытие расчёта, Q&A и характеристики,
-            существенные условия, типовые риски) и проведёт самоанализ итога. По завершении
-            ниже появятся найденные замечания.
-          </p>
-          <button
-            type="button"
-            onClick={onStart}
-            disabled={analysisRunning}
-            className="btn btn-primary mt-6 px-8 py-3 text-base"
-          >
-            {analysisRunning ? (analysisStep || 'Анализ выполняется…') : 'Начать анализ'}
-          </button>
-          {analysisRunning && (
-            <p className="text-xs text-gray-500 mt-3">
-              Анализ идёт в фоне и может занять несколько минут. Не закрывайте вкладку.
+      <div className="bg-white border border-gray-200 rounded-lg p-10 flex flex-col items-center text-center">
+        {hasResults ? (
+          <>
+            <h2 className="text-lg font-semibold text-gray-900">Анализ выполнен</h2>
+            <p className="text-sm text-gray-600 mt-2 max-w-xl">
+              Найдено замечаний (кластеров): <strong>{clusterCount}</strong>. Перейдите к рецензии,
+              чтобы принять решения по каждому замечанию, или перезапустите анализ заново.
             </p>
-          )}
-          {!analysisRunning && ranOnce && (
-            <p className="text-sm text-emerald-700 mt-4 inline-block bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
-              ✓ Анализ завершён — замечаний не найдено.
-            </p>
-          )}
-          {!analysisRunning && !ranOnce && loaded && (
-            <p className="text-xs text-gray-400 mt-3">Замечаний пока нет — запустите анализ.</p>
-          )}
-        </div>
-      ) : (
-        <>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-lg font-semibold">Найденные замечания</h2>
-              <p className="text-sm text-gray-600 mt-0.5">
-                Замечания сгруппированы по местам ТЗ (кластеры). Решения принимаются на экране «Рецензия».
-              </p>
+            <div className="flex flex-wrap gap-3 justify-center mt-6">
+              <button type="button" onClick={goReview} className="btn btn-primary px-8 py-3 text-base">
+                Перейти к рецензии →
+              </button>
+              <button
+                type="button"
+                onClick={onStart}
+                disabled={analysisRunning}
+                className="btn btn-secondary px-6 py-3 text-base"
+              >
+                {analysisRunning ? (analysisStep || 'Анализ…') : 'Перезапустить анализ'}
+              </button>
             </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-lg font-semibold text-gray-900">Анализ технического задания</h2>
+            <p className="text-sm text-gray-600 mt-2 max-w-xl">
+              Агент проверит ТЗ по всем направлениям (покрытие расчёта, Q&A и характеристики,
+              существенные условия, типовые риски) и проведёт самоанализ итога. По завершении
+              откроется «Рецензия» с найденными замечаниями.
+            </p>
             <button
               type="button"
               onClick={onStart}
               disabled={analysisRunning}
-              className="btn btn-secondary text-sm"
+              className="btn btn-primary mt-6 px-8 py-3 text-base"
             >
-              {analysisRunning ? (analysisStep || 'Анализ…') : 'Перезапустить анализ'}
+              {analysisRunning ? (analysisStep || 'Анализ выполняется…') : 'Начать анализ'}
             </button>
-          </div>
-
-          <ClusterList items={clusters} />
-
-          <div className="space-y-2">
-            <h3 className="text-base font-semibold">Самоанализ</h3>
-            {selfAnalysis.length > 0 ? (
-              <SelfAnalysisFindings items={selfAnalysis} />
-            ) : (
-              <p className="text-sm text-gray-500">Самоанализ не выявил дополнительных замечаний по итогу разбора.</p>
+            {analysisRunning && (
+              <p className="text-xs text-gray-500 mt-3">
+                Анализ идёт в фоне и может занять несколько минут. Не закрывайте вкладку.
+              </p>
             )}
-          </div>
-
-          <div className="flex flex-wrap gap-3 pt-2 border-t">
-            <button
-              type="button"
-              onClick={() => navigate(`/tenders/${tenderId}/review`)}
-              className="btn btn-primary"
-            >
-              Перейти к рецензии →
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate(`/tenders/${tenderId}/export`)}
-              className="btn btn-secondary"
-            >
-              Экспорт
-            </button>
-          </div>
-        </>
-      )}
+            {!analysisRunning && ranOnce && (
+              <p className="text-sm text-emerald-700 mt-4 inline-block bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+                ✓ Анализ завершён — замечаний не найдено.
+              </p>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -21,6 +21,8 @@ const {
   issueToAnnotation,
 } = require('../services/reviewHtmlService');
 
+const { humanizeNoteText } = require('../services/review/noteText');
+
 // --- Фабрики фикстур ----------------------------------------------------------
 
 function cluster(extra = {}) {
@@ -176,7 +178,31 @@ test('annotation: без решения -> pending «на рассмотрени
 test('annotation: remove_from_scope несёт тег «Вынесено из объёма» (как в docx/md)', () => {
   const a = clusterToAnnotation(cluster(), primary(), decision({ decision: 'remove_from_scope' }), null);
   assert.equal(a.visual.mark, 'strike');
-  assert.equal(a.visual.tag, 'Вынесено из объёма');
+  assert.equal(a.visual.tag, 'Вынесено из объёма ГП');
+});
+
+// --- humanizeNoteText (служебный токен in_calc не должен утечь в выгрузки) -----
+
+test('humanizeNoteText: in_calc=0/1/null -> человеческий русский', () => {
+  assert.equal(
+    humanizeNoteText('in_calc=0 по чек-листу. Раздел отсутствует в ВОР.'),
+    'не входит в объём ГП по чек-листу. Раздел отсутствует в ВОР.',
+  );
+  assert.equal(
+    humanizeNoteText('Позиция №28 — in_calc=0.'),
+    'Позиция №28 — не входит в объём ГП.',
+  );
+  assert.equal(humanizeNoteText('Работа есть, in_calc = 1.'), 'Работа есть, входит в объём ГП.');
+  assert.equal(humanizeNoteText('in_calc=null'), 'статус не определён');
+  // вариант без знака равенства: «in_calc не определён» (агент пишет словами)
+  assert.equal(
+    humanizeNoteText('Позиция «Автополив» отсутствует (in_calc не определён).'),
+    'Позиция «Автополив» отсутствует (статус не определён).',
+  );
+  // нет токена / пусто — без изменений
+  assert.equal(humanizeNoteText('Обычное замечание.'), 'Обычное замечание.');
+  assert.equal(humanizeNoteText(null), null);
+  assert.equal(humanizeNoteText(''), '');
 });
 
 test('annotation (legacy issue): бейдж = номер стадии, pending без решения', () => {

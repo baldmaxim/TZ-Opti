@@ -19,8 +19,31 @@ const { badRequest, notFound } = require('../../utils/errors');
 const clustering = require('../clustering/clusteringService');
 const critic = require('../critic/criticService');
 const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
+const { humanizeNoteText } = require('./noteText');
 
 const ALLOWED_DECISIONS = ['accept', 'reject', 'edit', 'delete', 'remove_from_scope'];
+
+// hn — короткий алиас humanizeNoteText для текстовых полей инженера.
+const hn = humanizeNoteText;
+
+// Чистые обёртки: возвращают КОПИЮ объекта с гуманизированными текстовыми
+// полями (source_fragment не трогаем — дословная цитата ТЗ). null-безопасны.
+function scrubCluster(c) {
+  if (!c) return c;
+  return {
+    ...c,
+    merged_basis: hn(c.merged_basis),
+    merged_recommendation: hn(c.merged_recommendation),
+  };
+}
+function scrubDraft(d) {
+  if (!d) return d;
+  return {
+    ...d,
+    basis: hn(d.basis),
+    suggested_redaction: hn(d.suggested_redaction),
+  };
+}
 
 // --- Чистое ядро (тестируется без БД) --------------------------------------
 
@@ -39,9 +62,9 @@ function clusterToExportIssue(cluster, primaryDraft = {}) {
       cluster.paragraph_index != null ? cluster.paragraph_index : (primaryDraft.paragraph_index ?? null),
     problem_type: cluster.final_problem_type || primaryDraft.problem_type || null,
     suggested_action: primaryDraft.suggested_action || null,
-    suggested_redaction: primaryDraft.suggested_redaction || null,
+    suggested_redaction: hn(primaryDraft.suggested_redaction) || null,
     // review_comment — подсказка для UI; в Word уходит только final_comment из решения.
-    review_comment: cluster.merged_recommendation || null,
+    review_comment: hn(cluster.merged_recommendation) || null,
     criticality: cluster.overall_criticality || null,
   };
 }
@@ -201,8 +224,8 @@ async function loadClusterReviewRows(tenderId, mode = 'full') {
     loadPrimaryDrafts(ids),
   ]);
   return clusters.map((c) => ({
-    cluster: c,
-    primary: primaries.get(c.id) || null,
+    cluster: scrubCluster(c),
+    primary: scrubDraft(primaries.get(c.id) || null),
     decision: decisions.get(c.id) || null,
   }));
 }
@@ -229,7 +252,7 @@ async function loadClusterDecisions(tenderId) {
       issue: clusterToExportIssue(r, primary),
       decision_kind: decisionKindFor(r.decision_kind),
       final_comment: r.final_comment,
-      edited_redaction: r.dec_redaction || primary.suggested_redaction || null,
+      edited_redaction: hn(r.dec_redaction || primary.suggested_redaction) || null,
       target_text: r.target_text || null,
     };
   });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { criticalityClass, CRITICALITY, DECISIONS, formatProblemType } from '../../utils/labels';
+import { formatTzClause, clusterTopic, humanizeNote } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
@@ -12,7 +13,7 @@ const EXPORT_HINT = {
   accept: 'Примечание — Word-комментарий',
   edit: 'Замена — Track Changes (w:del + w:ins)',
   delete: 'Удаление — Track Changes (w:del)',
-  remove_from_scope: 'Удаление + метка «Вынесено из объёма»',
+  remove_from_scope: 'Удаление + метка «Вынесено из объёма ГП»',
   reject: 'Не экспортируется',
 };
 
@@ -23,9 +24,26 @@ const FINDING_LABEL = {
   needs_enrichment: 'Можно усилить',
 };
 
-function ClusterCard({ cluster, onDecide }) {
+// Кнопки решений: по умолчанию нейтральные (btn-secondary), выбранное решение
+// подсвечивается заливкой + кольцом — чтобы было видно, что выбрал инженер.
+const DECISION_BUTTONS = [
+  { key: 'reject', label: 'Отклонить', active: 'bg-gray-700 text-white ring-2 ring-offset-1 ring-gray-400' },
+  { key: 'edit', label: 'Принять с правкой', active: 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-300' },
+  { key: 'accept', label: 'Принять', active: 'bg-green-600 text-white ring-2 ring-offset-1 ring-green-300' },
+  { key: 'remove_from_scope', label: 'Вынести из объёма', active: 'bg-amber-500 text-white ring-2 ring-offset-1 ring-amber-300' },
+  { key: 'delete', label: 'Удалить из ТЗ', active: 'bg-red-600 text-white ring-2 ring-offset-1 ring-red-300' },
+];
+
+// Главный (наиболее значимый) элемент кластера — у него берём отрывок ТЗ и краткое
+// основание для шапки карточки.
+function pickPrimaryItem(items) {
+  return items.find((it) => it.item_role === 'primary') || items[0] || null;
+}
+
+function ClusterCard({ index, cluster, onDecide }) {
   const decided = cluster.decision || null;
-  const [red, setRed] = useState(decided?.edited_redaction ?? cluster.merged_recommendation ?? '');
+  // Поле инженера НЕ префиллим вариантом ИИ — стартует пустым (или из решения).
+  const [red, setRed] = useState(decided?.edited_redaction ?? '');
   const [com, setCom] = useState(decided?.final_comment ?? '');
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -41,20 +59,23 @@ function ClusterCard({ cluster, onDecide }) {
 
   const items = cluster.items || [];
   const notes = cluster.self_analysis || [];
+  const primary = pickPrimaryItem(items);
+  const aiVariant = humanizeNote(cluster.merged_recommendation || '');
+  const shortDescription = humanizeNote((primary && primary.basis) || clusterTopic(cluster) || '—');
+  const clause = formatTzClause(cluster.tz_clause);
 
   return (
-    <div className="card p-4">
-      <div className="flex flex-wrap items-center gap-2 mb-2">
+    <div className="card p-4 space-y-3">
+      {/* 1. Шапка: номер + критичность + краткая тема + статус решения. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-base font-bold text-gray-900">№{index}</span>
         <span className={`tag ${criticalityClass(cluster.overall_criticality)}`}>
           {CRITICALITY[cluster.overall_criticality] || cluster.overall_criticality}
         </span>
-        <span className="font-semibold text-sm">{cluster.cluster_title}</span>
+        <span className="font-semibold text-sm">{clusterTopic(cluster)}</span>
         {!cluster.show_to_engineer && (
           <span className="tag bg-gray-100 text-gray-500 text-xs">малозначимо</span>
         )}
-        <span className="tag bg-gray-100 text-gray-700 text-xs">
-          {items.length} {items.length === 1 ? 'основание' : 'оснований'}
-        </span>
         {decided && (
           <span className="tag bg-green-100 text-green-800 text-xs">
             Решение: {DECISIONS[decided.decision] || decided.decision}
@@ -62,82 +83,143 @@ function ClusterCard({ cluster, onDecide }) {
         )}
       </div>
 
-      {cluster.tz_clause && (
-        <div className="text-xs text-gray-600 mb-2">Пункт ТЗ: <strong>{cluster.tz_clause}</strong></div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <div className="label">Объединённое основание</div>
-          <div className="p-3 bg-gray-50 border rounded text-sm whitespace-pre-wrap">
-            {cluster.merged_basis || '—'}
+      {/* 2. Место в ТЗ: компактная локация + дословный отрывок (главный ориентир). */}
+      <div>
+        <div className="label">Место в ТЗ</div>
+        {clause && <div className="text-xs text-gray-500">{clause}</div>}
+        {primary && primary.source_fragment && (
+          <div className="mt-1 p-3 bg-gray-50 border-l-2 border-gray-300 rounded text-sm text-gray-700 italic whitespace-pre-wrap">
+            «{primary.source_fragment}»
           </div>
+        )}
+      </div>
 
+      {/* 3. Краткое описание замечания. */}
+      <div>
+        <div className="label">Замечание</div>
+        <div className="text-sm text-gray-800 whitespace-pre-wrap">{shortDescription}</div>
+      </div>
+
+      {/* 4. Вариант от Агента ИИ (read-only) + кнопка «Взять в правку». */}
+      <div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="label mb-0">Вариант от ИИ — как лучше исправить</div>
           <button
             type="button"
-            className="text-xs text-brand-600 mt-2 hover:underline"
-            onClick={() => setOpen((v) => !v)}
+            className="btn btn-secondary text-xs py-1"
+            disabled={!aiVariant}
+            onClick={() => setRed(aiVariant)}
           >
-            {open ? '▾ Скрыть' : '▸ Показать'} исходные замечания и сигналы ({items.length})
+            Взять в правку →
           </button>
-          {open && (
-            <div className="mt-2 space-y-2">
-              {items.map((it) => (
-                <div key={it.draft_issue_id} className="text-xs border rounded p-2 bg-white">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`tag text-[10px] ${it.item_role === 'primary' ? 'bg-brand-100 text-brand-800' : 'bg-gray-100 text-gray-600'}`}>
-                      {it.item_role === 'primary' ? 'основной' : 'связанный'}
-                    </span>
-                    {it.category && <span className="text-gray-500">[{it.category}]</span>}
-                    {it.problem_type && <span className="text-gray-600">{formatProblemType(it.problem_type)}</span>}
-                  </div>
-                  {it.basis && <div className="text-gray-700">{it.basis}</div>}
-                  {it.source_fragment && (
-                    <div className="text-gray-500 mt-1 italic">«{it.source_fragment}»</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+        </div>
+        <div className="mt-1 p-3 bg-blue-50 border border-blue-100 rounded text-sm text-gray-800 whitespace-pre-wrap">
+          {aiVariant || 'ИИ не предложил конкретной правки.'}
+        </div>
+      </div>
 
-          {notes.length > 0 && (
-            <div className="mt-3">
-              <div className="label">Самоанализ (Стадия 5)</div>
-              <div className="space-y-1">
-                {notes.map((n) => (
-                  <div key={n.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
-                    <span className="font-medium text-amber-800">{FINDING_LABEL[n.finding_type] || n.finding_type}:</span>{' '}
-                    <span className="text-gray-700">{n.comment}</span>
-                    {n.suggested_improvement && (
-                      <div className="text-gray-600 mt-0.5">→ {n.suggested_improvement}</div>
+      {/* 5. Ручной ввод инженера. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className="label">Текст правки в ТЗ</div>
+          <textarea
+            className="input min-h-[88px]"
+            placeholder="Ваш вариант редакции (или нажмите «Взять в правку»)"
+            value={red}
+            onChange={(e) => setRed(e.target.value)}
+          />
+        </div>
+        <div>
+          <div className="label">Комментарий для Word</div>
+          <textarea
+            className="input min-h-[88px]"
+            placeholder="Пояснение, которое уйдёт в Word-комментарий"
+            value={com}
+            onChange={(e) => setCom(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {/* 6. Решения: нейтральные по умолчанию, подсвечивается только выбранное. */}
+      <div className="flex flex-wrap items-center gap-2 justify-end pt-1 border-t">
+        {DECISION_BUTTONS.map((b) => {
+          const selected = decided?.decision === b.key;
+          return (
+            <button
+              key={b.key}
+              className={`btn ${selected ? b.active : 'btn-secondary'}`}
+              disabled={busy}
+              onClick={() => decide(b.key)}
+            >
+              {b.label}
+            </button>
+          );
+        })}
+      </div>
+      {decided && (
+        <div className="text-xs text-gray-500 text-right">
+          В экспорт: {EXPORT_HINT[decided.decision] || '—'}
+        </div>
+      )}
+
+      {/* 7. Подробности (свёрнуто): основание, исходные сигналы, самоанализ. */}
+      <div className="border-t pt-2">
+        <button
+          type="button"
+          className="text-xs text-brand-600 hover:underline"
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? '▾ Скрыть подробности' : '▸ Подробнее'} (основание, сигналы стадий, самоанализ)
+        </button>
+        {open && (
+          <div className="mt-2 space-y-3">
+            <div>
+              <div className="label">Объединённое основание</div>
+              <div className="p-3 bg-gray-50 border rounded text-sm whitespace-pre-wrap">
+                {cluster.merged_basis || '—'}
+              </div>
+            </div>
+
+            <div>
+              <div className="label">Исходные замечания и сигналы ({items.length})</div>
+              <div className="space-y-2">
+                {items.map((it) => (
+                  <div key={it.draft_issue_id} className="text-xs border rounded p-2 bg-white">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`tag text-[10px] ${it.item_role === 'primary' ? 'bg-brand-100 text-brand-800' : 'bg-gray-100 text-gray-600'}`}>
+                        {it.item_role === 'primary' ? 'основной' : 'связанный'}
+                      </span>
+                      {it.category && <span className="text-gray-500">[{it.category}]</span>}
+                      {it.problem_type && <span className="text-gray-600">{formatProblemType(it.problem_type)}</span>}
+                    </div>
+                    {it.basis && <div className="text-gray-700">{it.basis}</div>}
+                    {it.source_fragment && (
+                      <div className="text-gray-500 mt-1 italic">«{it.source_fragment}»</div>
                     )}
                   </div>
                 ))}
               </div>
             </div>
-          )}
-        </div>
 
-        <div>
-          <div className="label">Объединённая рекомендация / редакция</div>
-          <textarea className="input min-h-[120px]" value={red} onChange={(e) => setRed(e.target.value)} />
-          <div className="label mt-2">Комментарий для Word</div>
-          <textarea className="input min-h-[70px]" value={com} onChange={(e) => setCom(e.target.value)} />
-        </div>
+            {notes.length > 0 && (
+              <div>
+                <div className="label">Самоанализ (Стадия 5)</div>
+                <div className="space-y-1">
+                  {notes.map((n) => (
+                    <div key={n.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
+                      <span className="font-medium text-amber-800">{FINDING_LABEL[n.finding_type] || n.finding_type}:</span>{' '}
+                      <span className="text-gray-700">{n.comment}</span>
+                      {n.suggested_improvement && (
+                        <div className="text-gray-600 mt-0.5">→ {n.suggested_improvement}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2 justify-end">
-        <button className="btn btn-secondary" disabled={busy} onClick={() => decide('reject')}>Отклонить</button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => decide('edit')}>Принять с правкой</button>
-        <button className="btn btn-primary" disabled={busy} onClick={() => decide('accept')}>Принять</button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => decide('remove_from_scope')}>Вынести из объёма</button>
-        <button className="btn btn-danger" disabled={busy} onClick={() => decide('delete')}>Удалить из ТЗ</button>
-      </div>
-      {decided && (
-        <div className="text-xs text-gray-500 mt-2 text-right">
-          В экспорт: {EXPORT_HINT[decided.decision] || '—'}
-        </div>
-      )}
     </div>
   );
 }
@@ -228,7 +310,7 @@ export default function ReviewPage() {
           action={loaded ? <button className="btn btn-primary" disabled={building} onClick={build}>{building ? 'Собираю…' : 'Собрать итог'}</button> : null}
         />
       ) : (
-        clusters.map((c) => <ClusterCard key={c.id} cluster={c} onDecide={onDecide} />)
+        clusters.map((c, i) => <ClusterCard key={c.id} index={i + 1} cluster={c} onDecide={onDecide} />)
       )}
     </div>
   );

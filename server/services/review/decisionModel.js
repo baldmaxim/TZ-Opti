@@ -19,7 +19,7 @@ const VISUALS = {
   accept: { docx: 'comment', mark: 'note', label: 'Примечание' },
   edit: { docx: 'del+ins', mark: 'replace', label: 'Изменить' },
   delete: { docx: 'del', mark: 'strike', label: 'Удалить' },
-  remove_from_scope: { docx: 'del', mark: 'strike', label: 'Вынести из объёма', tag: 'Вынесено из объёма' },
+  remove_from_scope: { docx: 'del', mark: 'strike', label: 'Вынести из объёма', tag: 'Вынесено из объёма ГП' },
   reject: { docx: 'none', mark: 'rejected', label: 'Отклонить' },
 };
 

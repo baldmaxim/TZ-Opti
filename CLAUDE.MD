@@ -48,7 +48,7 @@ TZ-Opti/
 
 ## Главный артефакт
 
-Экспорт `/api/tenders/:id/export/docx` собирает исходный ТЗ.docx с настоящими Word Track Changes и комментариями: `delete` → `w:del`, `remove_from_scope` → `w:del` + комментарий-тег «Вынесено из объёма», `edit` → `w:del` + `w:ins`, «Примечание» (accept) → Word-комментарий (`server/services/reviewDocx/trackChangesWriter.js`, `commentWriter.js`). Запасной путь при сбое track-change — Word-комментарий (`status='fallback'` в отчёте).
+Экспорт `/api/tenders/:id/export/docx` собирает исходный ТЗ.docx с настоящими Word Track Changes и комментариями: `delete` → `w:del`, `remove_from_scope` → `w:del` + комментарий-тег «Вынесено из объёма ГП», `edit` → `w:del` + `w:ins`, «Примечание» (accept) → Word-комментарий (`server/services/reviewDocx/trackChangesWriter.js`, `commentWriter.js`). Запасной путь при сбое track-change — Word-комментарий (`status='fallback'` в отчёте).
 
 **Единый «вид решения»** — `server/services/review/decisionModel.js` (`decisionVisual` + `resolveRedaction`): из него берут docx-экспорт, HTML-preview (`reviewHtmlService.js`) и md-рендер (`mdReview/renderer.js`) — одно решение видно одинаково в preview, таблице и Word.
 

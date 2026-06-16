@@ -289,7 +289,7 @@ function applyOne(decision, paragraphs, commentsDoc, docDoc, { author, date }) {
     }
 
     // Сопутствующий Word-комментарий к track-change. Объединяем:
-    //   visual.tag      — метка «Вынесено из объёма» (для remove_from_scope);
+    //   visual.tag      — метка «Вынесено из объёма ГП» (для remove_from_scope);
     //   finalComment    — примечание инженера (edit/delete + примечание).
     // Анкерим ВОКРУГ <w:del>/<w:ins> (addCommentForNodes), а не на их runs —
     // иначе commentReference попал бы внутрь удаления и Word не показал бы примечание.

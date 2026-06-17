@@ -16,8 +16,12 @@ server/db/*.db-wal
 
 # локальные настройки и memory Claude Code
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 memory.md
 memory/
 
 # scratch для чтения xlsx-фикстур (локальный)
 .tmp_xlsx/
+
+# диагностические дампы dev-бриджа (локальный, dev-only)
+server/devtools/.debug/

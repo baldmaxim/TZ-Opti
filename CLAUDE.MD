@@ -4,7 +4,7 @@
 
 ## Обзор проекта
 
-**TZ-Opti** — MVP-портал для инженера тендерного отдела строительной компании. Анализ ТЗ на СМР через 4-стадийный последовательный пайплайн с экспортом исходного ТЗ в `.docx` с правками и комментариями в логике Word Review.
+**TZ-Opti** — MVP-портал для инженера тендерного отдела строительной компании. Анализ ТЗ на СМР через 5-стадийный последовательный пайплайн (LLM-агенты) с экспортом исходного ТЗ в `.docx` с правками и комментариями в логике Word Review.
 
 ## Стек
 
@@ -48,17 +48,28 @@ TZ-Opti/
 
 ## Главный артефакт
 
-Экспорт `/api/tenders/:id/export/docx` собирает исходный ТЗ.docx с комментариями (Word Comments API) и визуальным вычёркиванием для решений `delete` / `remove_from_scope`. Настоящий Track Changes (`w:ins` / `w:del`) — следующая задача, архитектура готова (`server/services/reviewDocx/trackChangesWriter.js` — stub).
+Экспорт `/api/tenders/:id/export/docx` собирает исходный ТЗ.docx с настоящими Word Track Changes и комментариями: `delete` → `w:del`, `remove_from_scope` → `w:del` + комментарий-тег «Вынесено из объёма», `edit` → `w:del` + `w:ins`, «Примечание» (accept) → Word-комментарий (`server/services/reviewDocx/trackChangesWriter.js`, `commentWriter.js`). `strikeWriter.js` оставлен как fallback и не вызывается.
+
+**Единый «вид решения»** — `server/services/review/decisionModel.js` (`decisionVisual` + `resolveRedaction`): из него берут docx-экспорт, HTML-preview (`reviewHtmlService.js`) и md-рендер (`mdReview/renderer.js`) — одно решение видно одинаково в preview, таблице и Word.
+
+**Предсказуемость экспорта.** `exportReviewedDocx` → `{ buffer, report }`, где `report.items[]` = `{ issueId, status: 'applied'|'fallback'|'failed'|'skipped', reason, ... }`. При сбое track-change — fallback на Word-комментарий (`status='fallback'`). Отчёт без скачивания: `GET /api/tenders/:id/export/docx/report` (показывается на странице «Экспорт»). Регресс-набор экспорта — `npm test` (`server/test/`, node:test; абзац/список/таблица/мультиформат/повтор; без БД и LLM).
 
 ## Анализатор
 
-4 стадии (последовательно), rule-based:
+5 стадий (последовательно), LLM-агенты (OpenAI-совместимый клиент `stageAnalysis/llm/openaiClient.js`; в dev — bridge к Claude):
 1. ТЗ + Чек-лист + ВОР
-2. ТЗ + Q&A форма + Таблица характеристик (Q&A загружается xlsx)
-3. ТЗ + Типовые риски
-4. Самоанализ ТЗ (скрытые работы / двусмыслия / срок)
+2. Q&A + Характеристики
+3. Существенные условия компании
+4. Типовые риски
+5. Самоанализ ТЗ
+
+**Названия стадий — единый источник.** Сервер: `STAGE_LABELS` в `stageAnalysisEngine.js` (идёт в `summary.label`). Клиент: `STAGE_META` в `client/src/utils/labels.js` (из него берут `stageConfig.jsx`, `wizardSteps.js`, `AnalysisOverview.jsx`, `ReviewPage.jsx` через хелперы `stageTitle/stageLabel/stageShort`). Тексты `title` на клиенте и сервере должны совпадать — не хардкодить названия в других местах.
+
+Каждая стадия — пара файлов в `server/services/stageAnalysis/`: `stageN_llm.js` (логика стадии + схема находки) и `stageNPrompts.js` (системный промт: общий блок `SHARED` + 3 режима `structural` | `strict` | `full`, переключатель env `STAGE{N}_PROMPT_VARIANT`, дефолт `structural`). Общий каркас (сегментация / локализация фрагмента / дедуп / раннер) — в `shared/llmStage.js`. Движок и статусы стадий — в `stageAnalysisEngine.js`.
 
 После каждой стадии решения с действием `delete` / `remove_from_scope` исключают фрагменты из активного текста для следующих стадий.
+
+**Зоны ответственности и сборка итога.** Каждый агент пишет ТОЛЬКО в свой домен `problem_type` — единый реестр `server/services/review/stageDomains.js` (Stage1 покрытие расчёта; Stage2 Q&A+характеристики; Stage3 условия; Stage4 риски; Stage5 самоанализ); движок логирует находки вне домена (`off_domain` в summary). Слой сборки `server/services/review/consolidation.js` (`consolidate(tenderId)`) сводит находки разных стадий, указывающие на одно место ТЗ (абзац + перекрытие char-диапазонов; фолбэк — цитата), в группы: **primary** по критичности (тай-брейк — порядок стадий), прочие — `related`, конфликты помечаются (решает инженер). Один итог: `GET /api/tenders/:id/review/consolidated` → экран «Итог» (`client/src/pages/result/SummaryPage.jsx`). Экспорт берёт **одно** решение на место (primary; дубли попадают в отчёт экспорта как `skipped`) через `dedupeExportDecisions`. Тесты слоя — `server/test/consolidation.test.js`.
 
 ## .env
 

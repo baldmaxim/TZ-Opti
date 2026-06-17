@@ -4,19 +4,24 @@ const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { badRequest } = require('../../utils/errors');
 const { getActiveTzText, getDocumentByType } = require('../tzActiveTextService');
-const { runStage1 } = require('./stage1_checklistVor');
-const { runStage2 } = require('./stage2_qaDecisions');
-const { runStage3 } = require('./stage3_companyConditions');
-const { runStage4 } = require('./stage4_risks');
-const { runStage5 } = require('./stage5_selfAnalysis');
+const { runStage1Llm } = require('./stage1_llm');
+const { runStage2Llm } = require('./stage2_llm');
+const { runStage3Llm } = require('./stage3_llm');
+const { runStage4Llm } = require('./stage4_llm');
+const { runStage5Llm } = require('./stage5_llm');
 const { importQaXlsx } = require('../qaImportService');
+const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
+const { isOwnedBy, stageResultType } = require('../review/stageDomains');
+const progressRegistry = require('./progressRegistry');
 
+// Единый серверный источник названий стадий (идёт в summary.label).
+// Тексты должны совпадать с STAGE_META на клиенте (client/src/utils/labels.js).
 const STAGE_LABELS = {
   1: 'ТЗ + Чек-лист + ВОР',
-  2: 'Q&A → правки в ТЗ (решения СУ-10)',
-  3: 'ТЗ + Существенные условия компании',
-  4: 'ТЗ + Типовые риски',
-  5: 'Самоанализ ТЗ (скрытые работы, двусмыслия, срок)',
+  2: 'Q&A + Характеристики',
+  3: 'Существенные условия компании',
+  4: 'Типовые риски',
+  5: 'Самоанализ ТЗ',
 };
 
 async function getStageState(tenderId) {
@@ -63,16 +68,18 @@ async function unlockNextStage(tenderId, stage, runner = db) {
 }
 
 async function buildContextForStage(tenderId, stage) {
-  const { document: tzDoc, paragraphs, activeText, rawText } = await getActiveTzText(tenderId, stage);
-  if (!tzDoc) {
-    throw badRequest('В тендер не загружен документ типа «ТЗ» (doc_type=tz). Стадии анализа недоступны.');
+  const { document: tzDoc, paragraphs, blocks, activeText, rawText, missingMd } = await getActiveTzText(tenderId, stage);
+  if (missingMd || !tzDoc) {
+    throw badRequest('Загрузите .md-копию ТЗ в слот «ТЗ → Markdown» — анализ ведётся только по .md.');
   }
   const ctx = {
     tenderId,
     sourceDocumentId: tzDoc.id,
     paragraphs,
+    blocks,
     activeText,
     rawText,
+    rawMd: rawText,
   };
   if (stage === 1) {
     const vorDoc = await getDocumentByType(tenderId, 'vor');
@@ -81,6 +88,12 @@ async function buildContextForStage(tenderId, stage) {
   }
   if (stage === 2) {
     ctx.qaEntries = await db.queryAll('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC', tenderId);
+    // Таблица характеристик — второй справочник принятого (значения, принятые
+    // компанией в расчёт). Стадия 2 сверяет ТЗ и с Q&A-решениями, и с ней.
+    ctx.characteristics = await db.queryAll(
+      'SELECT * FROM characteristics WHERE tender_id = ? ORDER BY sort_order ASC, name ASC',
+      tenderId,
+    );
   }
   // Стадия 3 (Существенные условия) и Стадия 4 (Типовые риски) сами загружают
   // нужные данные из БД (company_conditions / risks_state) — отдельный
@@ -90,20 +103,105 @@ async function buildContextForStage(tenderId, stage) {
 
 function runStageOrchestrator(stage, ctx) {
   switch (stage) {
-    case 1: return runStage1(ctx);
-    case 2: return runStage2(ctx);
-    case 3: return runStage3(ctx);
-    case 4: return runStage4(ctx);
-    case 5: return runStage5(ctx);
+    case 1: return runStage1Llm(ctx);
+    case 2: return runStage2Llm(ctx);
+    case 3: return runStage3Llm(ctx);
+    case 4: return runStage4Llm(ctx);
+    case 5: return runStage5Llm(ctx);
     default: throw badRequest('Допустимы стадии 1..5');
   }
 }
 
+// Подписка Claude Code НЕ держит параллель: одновременные прогоны Стадии 1
+// душат друг друга и ловят таймаут (см. project_stage1_context_limit).
+// Гард: один прогон на (tender,stage) за раз — второй клик/запрос получает
+// понятную ошибку, а не сабботирует идущий анализ.
+const RUNNING_STAGES = new Set();
+
 async function runStage(tenderId, stage) {
+  const key = `${tenderId}:${stage}`;
+  if (RUNNING_STAGES.has(key)) {
+    throw badRequest(
+      `Анализ стадии ${stage} уже выполняется. Дождитесь завершения ` +
+        `(Стадия 1 — до ~15 минут) и не запускайте повторно: параллельные ` +
+        `прогоны мешают друг другу и приводят к таймауту.`,
+    );
+  }
+  RUNNING_STAGES.add(key);
+  try {
+    return await runStageInner(tenderId, stage);
+  } finally {
+    RUNNING_STAGES.delete(key);
+  }
+}
+
+// Падение фонового прогона: фиксируем failed-run (его увидит опрос статуса
+// клиентом) и возвращаем статус стадии в исходное (re-runnable). Никогда не
+// бросаем — это финализатор фоновой задачи.
+async function recordFailedRun(tenderId, stage, prevStatus, err) {
+  const msg = (err && err.message) || 'неизвестная ошибка анализа';
+  try {
+    await db.queryRun(
+      `INSERT INTO analysis_runs (id, tender_id, stage, started_at, finished_at, status, summary)
+       VALUES (?, ?, ?, ?, ?, 'failed', ?)`,
+      newId(),
+      tenderId,
+      stage,
+      nowIso(),
+      nowIso(),
+      JSON.stringify({ stage, label: STAGE_LABELS[stage], failed: true, error: msg }),
+    );
+    await setStageStatus(tenderId, stage, prevStatus);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(`[stageEngine] recordFailedRun сбой: ${e.message}`);
+  }
+}
+
+// Фоновый запуск: быстрые проверки синхронно (гард/доступность → понятная
+// 400 сразу), затем стадия считается В ФОНЕ сколько нужно. Клиент опрашивает
+// статус (state.stageN_status) и узнаёт исход по последнему analysis_run.
+// Это снимает «Failed to fetch»/таймаут: нет висящего HTTP-запроса.
+async function startStageBackground(tenderId, stage) {
+  const key = `${tenderId}:${stage}`;
+  if (RUNNING_STAGES.has(key)) {
+    throw badRequest(
+      `Анализ стадии ${stage} уже выполняется. Дождитесь завершения — ` +
+        `портал сам покажет результат (вкладку можно закрыть).`,
+    );
+  }
   const state = await getStageState(tenderId);
   if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
   if (!isStageRunnable(state, stage)) {
     throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
+  }
+  const prevStatus = state[`stage${stage}_status`];
+  RUNNING_STAGES.add(key);
+  await setStageStatus(tenderId, stage, 'running');
+  progressRegistry.init(tenderId, stage); // прогресс по сегментам для круговой шкалы
+  // Не ждём: ответ уходит сразу, анализ идёт в фоне.
+  (async () => {
+    try {
+      await runStageInner(tenderId, stage);
+    } catch (e) {
+      await recordFailedRun(tenderId, stage, prevStatus, e);
+    } finally {
+      RUNNING_STAGES.delete(key);
+      progressRegistry.clear(tenderId, stage);
+    }
+  })();
+  return { status: 'running' };
+}
+
+async function runStageInner(tenderId, stage) {
+  const state = await getStageState(tenderId);
+  if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
+  if (!isStageRunnable(state, stage)) {
+    throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
+  }
+  // Все стадии 1–5 — LLM-агенты, требуют настроенного ключа.
+  if (!isOpenAiConfigured()) {
+    throw badRequest(`OPENAI_API_KEY не настроен на сервере. Стадия ${stage} (LLM-агент) недоступна.`);
   }
   if (stage === 2) {
     const qaCountRow = await db.queryOne('SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?', tenderId);
@@ -137,16 +235,35 @@ async function runStage(tenderId, stage) {
   }
 
   const ctx = await buildContextForStage(tenderId, stage);
+  // Репортер прогресса по сегментам — runLlmStage зовёт setTotal/tick (см. llmStage).
+  ctx.progress = {
+    setTotal: (n) => progressRegistry.setTotal(tenderId, stage, n),
+    tick: () => progressRegistry.tick(tenderId, stage),
+  };
   const issues = await runStageOrchestrator(stage, ctx);
+
+  // Гард зоны ответственности: стадия должна писать только в свой домен
+  // (см. stageDomains). Backstop против регрессий — не теряем данные, но логируем.
+  const offDomain = issues.filter((i) => i.problem_type && !isOwnedBy(stage, i.problem_type));
+  if (offDomain.length) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[stageEngine] стадия ${stage}: ${offDomain.length} находок с чужим problem_type ` +
+        `(${[...new Set(offDomain.map((i) => i.problem_type))].join(', ')}) — вне домена стадии.`,
+    );
+  }
 
   const runId = newId();
   const startedAt = nowIso();
   const summary = {
     stage,
     label: STAGE_LABELS[stage],
+    result_type: stageResultType(stage),
     issues_count: issues.length,
+    off_domain: offDomain.length,
     by_criticality: countBy(issues, 'criticality'),
     by_problem_type: countBy(issues, 'problem_type'),
+    notes: issues.analysisNote || null,
   };
 
   await db.transaction(async (tx) => {
@@ -178,9 +295,9 @@ async function runStage(tenderId, stage) {
           source_fragment, paragraph_index, char_start, char_end,
           problem_type, risk_category, criticality, price_impact, schedule_impact,
           basis, suggested_action, suggested_redaction, review_comment, confidence,
-          review_status, selected_for_export
+          section_path, review_status, selected_for_export
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1
         )
       `,
         newId(),
@@ -203,6 +320,7 @@ async function runStage(tenderId, stage) {
         issue.suggested_redaction || null,
         issue.review_comment || null,
         issue.confidence ?? 0.6,
+        issue.section_path || null,
       );
     }
 
@@ -220,7 +338,7 @@ async function finishStage(tenderId, stage) {
   // Применяем tz_excluded_ranges для решений delete / remove_from_scope
   const closeIssues = await db.queryAll(
     `
-      SELECT i.*, d.decision FROM issues i
+      SELECT i.*, d.decision, d.target_text FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.analysis_stage = ?
     `,
@@ -233,6 +351,15 @@ async function finishStage(tenderId, stage) {
       const isDelete = issue.review_status === 'accepted'
         && (issue.decision === 'delete' || issue.decision === 'remove_from_scope');
       if (isDelete && issue.paragraph_index != null && issue.char_start != null && issue.char_end != null) {
+        // Если инженер удалил только ПОДЧАСТЬ фрагмента — исключаем из активного
+        // текста (для следующих стадий) ровно её, а не весь пункт.
+        let cStart = issue.char_start;
+        let cEnd = issue.char_end;
+        const part = (issue.target_text || '').trim();
+        if (part && issue.source_fragment) {
+          const i = issue.source_fragment.indexOf(part);
+          if (i !== -1) { cStart = issue.char_start + i; cEnd = cStart + part.length; }
+        }
         await tx.queryRun(
           `
           INSERT INTO tz_excluded_ranges (id, tender_id, source_document_id, paragraph_index, char_start, char_end, after_stage, source_issue_id, created_at)
@@ -242,8 +369,8 @@ async function finishStage(tenderId, stage) {
           tenderId,
           issue.source_document_id || null,
           issue.paragraph_index,
-          issue.char_start,
-          issue.char_end,
+          cStart,
+          cEnd,
           stage,
           issue.id,
           nowIso(),
@@ -286,7 +413,7 @@ async function resetStage(tenderId, stage) {
 
 async function listStageIssues(tenderId, stage, filters = {}) {
   let sql = `
-    SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction
+    SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction, d.target_text as decision_target_text
     FROM issues i
     LEFT JOIN review_decisions d ON d.issue_id = i.id
     WHERE i.tender_id = ? AND i.analysis_stage = ?
@@ -320,12 +447,36 @@ function countBy(arr, key) {
   return out;
 }
 
+// Авто-починка «зомби»-статусов на старте сервера. Фоновый прогон живёт в памяти
+// процесса (RUNNING_STAGES + progressRegistry); при рестарте/падении сервера он
+// гибнет, но в БД stageN_status мог остаться 'running' — тогда клиент бесконечно
+// крутит кольцо прогресса. На старте живых прогонов ещё нет, поэтому любой
+// 'running' — осиротевший: сбрасываем в 'open' (предыдущая стадия была завершена,
+// иначе запуск был бы невозможен). Issue не трогаем: успешный прогон пишет их
+// только в финальной транзакции, а следующий запуск всё равно чистит pending.
+async function recoverOrphanedRunningStages() {
+  let recovered = 0;
+  for (let s = 1; s <= 5; s += 1) {
+    const res = await db.queryRun(
+      `UPDATE tender_stage_state SET stage${s}_status = 'open' WHERE stage${s}_status = 'running'`,
+    );
+    recovered += (res && (res.changes ?? res.rowCount)) || 0;
+  }
+  if (recovered) {
+    // eslint-disable-next-line no-console
+    console.log(`[stageEngine] восстановлено осиротевших 'running'-стадий: ${recovered} → 'open'`);
+  }
+  return recovered;
+}
+
 module.exports = {
   STAGE_LABELS,
   getStageState,
   runStage,
+  startStageBackground,
   finishStage,
   resetStage,
   listStageIssues,
   getStageRunSummary,
+  recoverOrphanedRunningStages,
 };

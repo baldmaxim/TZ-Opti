@@ -105,6 +105,8 @@ export const api = {
 
   // Превью + экспорт
   reviewPreviewUrl: (tenderId) => `${BASE}/tenders/${tenderId}/review/preview`,
+  // Слой сборки: единый итог (группы находок + конфликты + вердикты).
+  getConsolidated: (tenderId) => request(`/tenders/${tenderId}/review/consolidated`),
   exportDocxUrl: (tenderId, stage = null) =>
     `${BASE}/tenders/${tenderId}/export/docx${stage ? `?stage=${stage}` : ''}`,
   exportCsvUrl: (tenderId) => `${BASE}/tenders/${tenderId}/export/issues.csv`,
@@ -112,4 +114,7 @@ export const api = {
   exportSummaryUrl: (tenderId) => `${BASE}/tenders/${tenderId}/export/summary.md`,
   exportReviewMdUrl: (tenderId, stage = null) =>
     `${BASE}/tenders/${tenderId}/export/review.md${stage ? `?stage=${stage}` : ''}`,
+  // Dry-run отчёт «что попало в Word, а что нет» (без скачивания файла).
+  exportDocxReport: (tenderId, stage = null) =>
+    request(`/tenders/${tenderId}/export/docx/report${stage ? `?stage=${stage}` : ''}`),
 };

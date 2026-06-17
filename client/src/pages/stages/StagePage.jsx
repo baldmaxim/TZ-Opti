@@ -7,6 +7,7 @@ import { useWizardState } from '../../hooks/useWizardState';
 import { withViewTransition } from '../../utils/viewTransition';
 import { STAGE_CONFIG } from './stageConfig';
 import StageRunControls from './StageRunControls';
+import AnalysisProgressRing from '../../components/stages/AnalysisProgressRing';
 import StageDecisionTable from '../../components/stages/StageDecisionTable';
 import GateNotice from '../../components/wizard/GateNotice';
 import { STAGE_STATUS, criticalityClass } from '../../utils/labels';
@@ -48,7 +49,10 @@ export default function StagePage() {
 
   const stageInfo = stages?.find((s) => s.stage === stage);
   const status = stageInfo?.status;
-  const summary = stageInfo?.summary?.summary;
+  // failed-run помечается status='failed' (его озвучит тост опроса); не
+  // показываем его как «сводку», иначе будет «Замечаний: undefined».
+  const runFailed = stageInfo?.summary?.status === 'failed';
+  const summary = runFailed ? null : stageInfo?.summary?.summary;
   const isReadOnly = status === 'finished';
 
   const runId = stageInfo?.summary?.id;
@@ -108,9 +112,20 @@ export default function StagePage() {
                 ))}
               </div>
             )}
+            {summary?.notes && (
+              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-2">
+                ⚠ {summary.notes}
+              </div>
+            )}
           </div>
           <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
         </div>
+
+        {status === 'running' && tenderId && (
+          <div className="mt-4">
+            <AnalysisProgressRing tenderId={tenderId} stage={stage} progress={stageInfo?.progress} />
+          </div>
+        )}
 
         {ContextSlot && tenderId && <ContextSlot tenderId={tenderId} />}
       </div>

@@ -3,6 +3,7 @@
 const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
 const engine = require('../services/stageAnalysis/stageAnalysisEngine');
+const progressRegistry = require('../services/stageAnalysis/progressRegistry');
 
 exports.getState = async (req, res) => {
   const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', req.params.id);
@@ -14,6 +15,8 @@ exports.getState = async (req, res) => {
       label: engine.STAGE_LABELS[n],
       status: state[`stage${n}_status`],
       summary: await engine.getStageRunSummary(req.params.id, n),
+      // Прогресс по сегментам для круговой шкалы (только пока стадия считается).
+      progress: progressRegistry.get(req.params.id, n),
     })),
   );
   res.json({ state, stages });
@@ -22,8 +25,11 @@ exports.getState = async (req, res) => {
 exports.run = async (req, res) => {
   const stage = Number(req.params.n);
   if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
-  const result = await engine.runStage(req.params.id, stage);
-  res.json({ ok: true, ...result });
+  // Фоновый запуск: быстрые проверки (гард/доступность) кидают 400 сразу,
+  // иначе анализ идёт в фоне, клиент опрашивает статус. Снимает таймаут/
+  // «Failed to fetch» на длинной Стадии 1.
+  const result = await engine.startStageBackground(req.params.id, stage);
+  res.status(202).json({ ok: true, ...result });
 };
 
 exports.finish = async (req, res) => {

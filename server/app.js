@@ -11,6 +11,7 @@ const morgan = require('morgan');
 const { runMigration } = require('./db/migrate');
 const { runSeedIfEmpty } = require('./db/seed');
 const errorHandler = require('./middleware/errorHandler');
+const stageEngine = require('./services/stageAnalysis/stageAnalysisEngine');
 
 const tendersRouter = require('./routes/tenders');
 const documentsRouter = require('./routes/documents');
@@ -64,9 +65,24 @@ app.use(errorHandler);
   try {
     await runMigration();
     await runSeedIfEmpty();
-    app.listen(PORT, () => {
+    // Сброс «зомби»-статусов 'running' от прогонов, погибших при прошлом
+    // рестарте/падении сервера (иначе клиент вечно крутит кольцо прогресса).
+    await stageEngine.recoverOrphanedRunningStages();
+    const server = app.listen(PORT, () => {
       console.log(`[tz-opti-server] listening on http://localhost:${PORT}`);
     });
+    // Стадия 1 — синхронный POST на ~6-7 мин (worst ~12: бридж 600с +
+    // запас openai-клиента). Node по умолчанию рвёт запрос на 5-й мин
+    // (requestTimeout=300000) → в браузере «Failed to fetch». Поднимаем
+    // выше всей цепочки. headersTimeout > keepAliveTimeout (рекомендация
+    // Node), server.timeout=0 — без сокет-таймаута простоя (данные не
+    // текут до самого ответа).
+    // Цепочка таймаутов (каждый внешний > внутреннего):
+    // бридж 900000 < openai-клиент 1020000 < сервер 1140000 < Vite-прокси.
+    server.requestTimeout = 1140000;
+    server.keepAliveTimeout = 1145000;
+    server.headersTimeout = 1150000;
+    server.timeout = 0;
   } catch (err) {
     console.error('[tz-opti-server] startup failed:', err);
     process.exit(1);

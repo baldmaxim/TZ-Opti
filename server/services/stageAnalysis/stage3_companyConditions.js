@@ -1,5 +1,8 @@
 'use strict';
 
+// ⚠️ SUPERSEDED: Стадия 3 переведена на LLM-агента (stage3_llm.js). Этот
+// rule-based модуль больше не подключён движком, оставлен для справки/отката.
+
 const db = require('../../db/connection');
 const { normalize, findInParagraphs } = require('./shared/fragmentMatcher');
 const {

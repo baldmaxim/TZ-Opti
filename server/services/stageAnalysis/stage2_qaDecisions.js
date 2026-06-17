@@ -1,5 +1,9 @@
 'use strict';
 
+// ⚠️ SUPERSEDED: Стадия 2 переведена на LLM-агента (stage2_llm.js). Этот
+// rule-based модуль больше не подключён движком (stageAnalysisEngine), оставлен
+// для справки/отката (как stage1_checklistVor.js после перевода Стадии 1).
+
 /**
  * Стадия 2: Q&A → правки в ТЗ.
  *

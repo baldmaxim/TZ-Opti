@@ -1,8 +1,20 @@
+import { stageLabel, stageShort } from './labels';
+
 export const SECTIONS = [
   { id: 'setup', label: 'Подготовка', order: 1 },
   { id: 'analysis', label: 'Анализ ТЗ', order: 2 },
   { id: 'result', label: 'Результат', order: 3 },
 ];
+
+// Названия стадий берутся из единого STAGE_META (utils/labels.js) через
+// stageLabel/stageShort — здесь не хардкодить.
+const stageStep = (n) => ({
+  id: `stage${n}`,
+  section: 'analysis',
+  label: stageLabel(n),
+  shortLabel: stageShort(n),
+  stage: n,
+});
 
 export const STEPS = [
   { id: 'documents', section: 'setup', label: 'Документы', sub: 'documents', countKey: 'documents' },
@@ -10,11 +22,12 @@ export const STEPS = [
   { id: 'conditions', section: 'setup', label: 'Условия компании', sub: 'conditions', countKey: 'conditions' },
   { id: 'risks', section: 'setup', label: 'База рисков', sub: 'risks', countKey: 'risks' },
   { id: 'qa', section: 'setup', label: 'Q&A форма', sub: 'qa' },
-  { id: 'stage1', section: 'analysis', label: 'Стадия 1: ТЗ + Чек-лист + ВОР', shortLabel: 'Стадия 1', stage: 1 },
-  { id: 'stage2', section: 'analysis', label: 'Стадия 2: Q&A → правки в ТЗ', shortLabel: 'Стадия 2', stage: 2 },
-  { id: 'stage3', section: 'analysis', label: 'Стадия 3: Существенные условия', shortLabel: 'Стадия 3', stage: 3 },
-  { id: 'stage4', section: 'analysis', label: 'Стадия 4: Типовые риски', shortLabel: 'Стадия 4', stage: 4 },
-  { id: 'stage5', section: 'analysis', label: 'Стадия 5: Самоанализ ТЗ', shortLabel: 'Стадия 5', stage: 5 },
+  stageStep(1),
+  stageStep(2),
+  stageStep(3),
+  stageStep(4),
+  stageStep(5),
+  { id: 'summary', section: 'result', label: 'Итог', tail: 'summary' },
   { id: 'review', section: 'result', label: 'Рецензия', tail: 'review' },
   { id: 'export', section: 'result', label: 'Экспорт', tail: 'export' },
 ];
@@ -31,12 +44,13 @@ export function findStep(id) {
 }
 
 export function stepFromPath(pathname) {
-  const m = pathname.match(/\/tenders\/[^/]+\/(setup\/([^/?#]+)|stage\/(\d+)|review|export)/);
+  const m = pathname.match(/\/tenders\/[^/]+\/(setup\/([^/?#]+)|stage\/(\d+)|summary|review|export)/);
   if (!m) return null;
   if (m[2]) return STEPS.find((s) => s.sub === m[2]) || null;
   if (m[3]) return STEPS.find((s) => s.stage === Number(m[3])) || null;
-  if (m[1] === 'review') return STEPS.find((s) => s.tail === 'review') || null;
-  if (m[1] === 'export') return STEPS.find((s) => s.tail === 'export') || null;
+  if (['summary', 'review', 'export'].includes(m[1])) {
+    return STEPS.find((s) => s.tail === m[1]) || null;
+  }
   return null;
 }
 

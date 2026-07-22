@@ -6,8 +6,28 @@
 // валидация ключа делается на ручке runStage.
 
 const OpenAI = require('openai');
+const { isTestProcess } = require('../../../utils/runtimeMode');
 
 let _client = null;
+
+// Тестовый провайдер (dependency injection). Ставится ТОЛЬКО в тестовом
+// процессе — в проде подмена запрещена, чтобы шов нельзя было включить
+// случайно/незаметно. Возвращает функцию отката.
+let _provider = null;
+
+function setChatJsonProvider(fn) {
+  if (!isTestProcess()) {
+    throw new Error('setChatJsonProvider доступен только в тестовом процессе (NODE_ENV=test / node --test).');
+  }
+  if (typeof fn !== 'function' && fn !== null) {
+    throw new TypeError('setChatJsonProvider: ожидается функция или null.');
+  }
+  const prev = _provider;
+  _provider = fn;
+  return () => {
+    _provider = prev;
+  };
+}
 
 function isConfigured() {
   return Boolean((process.env.OPENAI_API_KEY || '').trim());
@@ -71,6 +91,17 @@ function describeLlmError(err) {
 // Вызов модели со structured output. Возвращает уже распарсенный JSON.
 // Бросает ошибку с понятным сообщением, если API вернул не-JSON.
 async function chatJson({ system, user, jsonSchema, schemaName = 'response', model, temperature }) {
+  const call = { system, user, jsonSchema, schemaName, model, temperature };
+  if (_provider) return _provider(call);
+  // Fail-closed: тесты никогда не ходят в реальный LLM. Если провайдер не
+  // установлен — это ошибка теста, а не повод открыть сеть.
+  if (isTestProcess()) {
+    const err = new Error(
+      'Тестовый процесс: реальный вызов LLM запрещён. Установите fake-провайдер (test/helpers/fakeLlm.js).',
+    );
+    err.code = 'LLM_CALL_IN_TEST_PROCESS';
+    throw err;
+  }
   const client = getClient();
   const useModel = model || getModel();
 
@@ -122,4 +153,5 @@ module.exports = {
   isConfigured,
   getModel,
   chatJson,
+  setChatJsonProvider,
 };

@@ -12,7 +12,7 @@ const {
   pickPrimary,
   buildGroup,
   dedupeExportDecisions,
-} = require('../services/review/consolidation');
+} = require('../../services/review/consolidation');
 
 function mk(o) {
   return {

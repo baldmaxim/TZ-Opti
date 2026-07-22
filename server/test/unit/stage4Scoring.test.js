@@ -5,7 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { scoreStage4Finding } = require('../services/stageAnalysis/stage4Scoring');
+const { scoreStage4Finding } = require('../../services/stageAnalysis/stage4Scoring');
 
 // Эталонный риск из справочника.
 const RISK = {

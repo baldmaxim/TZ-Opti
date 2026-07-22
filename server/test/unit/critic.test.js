@@ -7,7 +7,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { evaluateDraft, reviewDrafts } = require('../services/critic/criticService');
+const { evaluateDraft, reviewDrafts } = require('../../services/critic/criticService');
 
 // --- Фабрики фикстур --------------------------------------------------------
 

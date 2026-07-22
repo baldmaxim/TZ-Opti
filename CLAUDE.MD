@@ -24,7 +24,16 @@ npm run install:all   # установить зависимости root/server/
 npm run dev           # запустить server (:4000) и client (:5173) одновременно
 npm run seed          # пересеять Postgres-БД демо-данными (--force чтобы перезаписать)
 npm run build         # production-сборка клиента
+npm run test:unit     # серверные юнит-тесты (без БД, без сети, без LLM)
+npm run verify        # unit → integration (доступные) → сборка клиента
+npm run verify:integration  # integration строго: нужен TEST_DATABASE_URL, иначе падает
 ```
+
+Точка входа сервера — `server/server.js` (миграция, авто-сид, listen).
+`server/app.js` экспортирует только `createApp()` и при импорте ничего не
+делает — приложение можно собрать в тесте офлайн. Матрица команд и переменные
+тестовой БД — [docs/development.md](docs/development.md); инварианты —
+[docs/safety-invariants.md](docs/safety-invariants.md).
 
 ## Архитектура
 

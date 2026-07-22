@@ -12,7 +12,7 @@ const {
   planSteps,
   summarizeRun,
   computeLayerStatus,
-} = require('../services/pipeline/analysisPipeline');
+} = require('../../services/pipeline/analysisPipeline');
 
 // --- planSteps ----------------------------------------------------------------
 

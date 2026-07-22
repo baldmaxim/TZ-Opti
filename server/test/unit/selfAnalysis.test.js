@@ -16,7 +16,7 @@ const {
   normalizeLlmFinding,
   assembleFindings,
   runHeuristics,
-} = require('../services/selfAnalysis/selfAnalysisService');
+} = require('../../services/selfAnalysis/selfAnalysisService');
 
 // Кластер в форме, которую отдаёт clustering.listClusters('full').
 function cluster(over = {}) {

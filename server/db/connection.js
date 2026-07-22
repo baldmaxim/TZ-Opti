@@ -1,21 +1,32 @@
 'use strict';
 
 const { Pool } = require('pg');
+const { resolveConnectionString, sslOptionFor } = require('./connectionTarget');
 
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-  throw new Error('DATABASE_URL is not set. See .env.example.');
+// Пул создаётся ЛЕНИВО — на первом реальном обращении к БД, а не на импорте
+// модуля. Это позволяет юнит-тестам и smoke-тестам подключать сервисы и
+// createApp() без Postgres и без сети. Fail-closed сохраняется: любой запрос
+// без корректной цели подключения бросает (см. connectionTarget.js).
+let pool = null;
+
+function getPool() {
+  if (pool) return pool;
+  const connectionString = resolveConnectionString(process.env);
+  pool = new Pool({
+    connectionString,
+    ssl: sslOptionFor(connectionString),
+    max: 10,
+  });
+  pool.on('error', (err) => {
+    console.error('[pg pool] idle client error:', err);
+  });
+  return pool;
 }
 
-const pool = new Pool({
-  connectionString,
-  ssl: { rejectUnauthorized: false },
-  max: 10,
-});
-
-pool.on('error', (err) => {
-  console.error('[pg pool] idle client error:', err);
-});
+// Ленивый executor: подставляется в makeRunner вместо готового пула.
+const lazyExecutor = {
+  query: (text, params) => getPool().query(text, params),
+};
 
 // Конвертирует sqlite-style плейсхолдеры (?) в postgres-style ($1, $2, ...).
 // Учитывает строковые литералы '...' (со escape ''), идентификаторы "...",
@@ -110,7 +121,7 @@ function makeRunner(executor) {
 }
 
 async function transaction(fn) {
-  const client = await pool.connect();
+  const client = await getPool().connect();
   try {
     await client.query('BEGIN');
     const tx = makeRunner(client);
@@ -129,16 +140,25 @@ async function transaction(fn) {
   }
 }
 
+// Закрывает пул, если он вообще был создан (иначе — no-op, чтобы код
+// завершения не поднимал соединение только ради его закрытия).
 async function close() {
-  await pool.end();
+  if (!pool) return;
+  const p = pool;
+  pool = null;
+  await p.end();
 }
 
 const db = {
-  ...makeRunner(pool),
+  ...makeRunner(lazyExecutor),
   transaction,
   close,
-  pool,
 };
+
+// db.pool сохранён для обратной совместимости, но теперь это геттер:
+// обращение к нему поднимает пул, простой импорт модуля — нет.
+Object.defineProperty(db, 'pool', { get: getPool, enumerable: false });
 
 module.exports = db;
 module.exports._convertPlaceholders = convertPlaceholders;
+module.exports.isPoolOpen = () => pool !== null;

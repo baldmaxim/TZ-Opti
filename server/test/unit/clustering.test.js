@@ -6,7 +6,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { clusterPairs, dominantDimension, semanticBucket } = require('../services/clustering/clusteringService');
+const { clusterPairs, dominantDimension, semanticBucket } = require('../../services/clustering/clusteringService');
 
 const T = 'tender-1';
 

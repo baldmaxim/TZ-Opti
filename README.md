@@ -56,7 +56,8 @@ MVP-портал для инженера тендерного отдела ст�
 
 ## Запуск
 
-Требуется Node.js ≥ 18.
+Требуется Node.js ≥ 20 (нужны `--env-file` и `node --test` с glob-шаблонами;
+проверено на 24.14.1).
 
 ```bash
 # 1. Установить зависимости root + client + server
@@ -89,7 +90,15 @@ npm run dev
 | `npm run bridge` | только LLM-bridge (`node server/devtools/claudeBridge.js`) |
 | `npm run seed` | принудительный сброс и пересоздание demo-данных (`node server/db/seed.js -f`) |
 | `npm run build` | production-сборка клиента |
-| `npm test` | регресс-тесты экспорта в Word (`node --test`, без БД и LLM) |
+| `npm test` | серверные тесты: unit + integration (integration без `TEST_DATABASE_URL` — skip) |
+| `npm run test:unit` | только юнит-тесты (`server/test/unit/**`): без БД, без сети, без LLM |
+| `npm run test:integration` | integration (`server/test/integration/**`) по `TEST_DATABASE_URL`; нет БД → skip с причиной |
+| `npm run verify` | единая проверка: unit → integration (доступные) → production-сборка клиента |
+| `npm run verify:integration` | integration в строгом режиме — без `TEST_DATABASE_URL` падает, а не пропускает |
+
+Матрица команд, переменные тестовой БД и test helpers — [docs/development.md](docs/development.md).
+Инварианты безопасности (что обязано выполняться всегда и чем это проверено) —
+[docs/safety-invariants.md](docs/safety-invariants.md).
 
 ---
 
@@ -105,7 +114,8 @@ TZ-Opti/
 │       ├── services/api.js
 │       └── utils/         labels, format
 └── server/    Express + pg (Postgres) + Multer
-    ├── app.js                                        — миграция + авто-сид на старте
+    ├── server.js                                     — entrypoint: .env, миграция, авто-сид, listen
+    ├── app.js                                        — createApp(): маршруты и middleware, без side-effect'ов
     ├── routes/            tenders, documents, checklist, conditions, risks, qa,
     │                      stages, decisions, review, export, setupLocks, setupParams
     ├── controllers/       тонкие контроллеры под каждый route

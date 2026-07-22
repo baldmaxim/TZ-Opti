@@ -8,9 +8,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { clusterToExportIssue, decisionKindFor } = require('../services/review/clusterReviewService');
-const { clusterId } = require('../services/clustering/clusteringService');
-const { resolveRedaction, resolveActionTarget, decisionVisual } = require('../services/review/decisionModel');
+const { clusterToExportIssue, decisionKindFor } = require('../../services/review/clusterReviewService');
+const { clusterId } = require('../../services/clustering/clusteringService');
+const { resolveRedaction, resolveActionTarget, decisionVisual } = require('../../services/review/decisionModel');
 
 const cluster = {
   id: 'clu_abc',

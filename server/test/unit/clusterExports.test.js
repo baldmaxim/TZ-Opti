@@ -13,15 +13,15 @@ const {
   clusterCsvRow,
   clustersToCsv,
   clusterSummaryStats,
-} = require('../services/exportService');
+} = require('../../services/exportService');
 
 const {
   locateFragment,
   clusterToAnnotation,
   issueToAnnotation,
-} = require('../services/reviewHtmlService');
+} = require('../../services/reviewHtmlService');
 
-const { humanizeNoteText } = require('../services/review/noteText');
+const { humanizeNoteText } = require('../../services/review/noteText');
 
 // --- Фабрики фикстур ----------------------------------------------------------
 

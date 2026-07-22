@@ -2,7 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+
+// .env читается ТОЛЬКО при самостоятельном запуске (npm run migrate).
+// При импорте модуля (server.js, тесты) окружение настраивает вызывающий —
+// иначе production-.env незаметно протекал бы в тестовый процесс.
+if (require.main === module) {
+  require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+}
+
 const db = require('./connection');
 
 async function columnExists(table, column) {

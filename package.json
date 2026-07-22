@@ -11,7 +11,14 @@
     "bridge": "node server/devtools/claudeBridge.js",
     "seed": "npm --prefix server run seed",
     "build": "npm --prefix client run build",
-    "test": "npm --prefix server run test"
+    "test": "npm --prefix server run test",
+    "test:unit": "npm --prefix server run test:unit",
+    "test:integration": "npm --prefix server run test:integration",
+    "verify": "npm run test:unit && npm run test:integration && npm run build",
+    "verify:integration": "npm --prefix server run test:integration:strict"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "devDependencies": {
     "concurrently": "^9.0.1"

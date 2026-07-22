@@ -13,10 +13,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const xpath = require('xpath');
 
-const { exportReviewedDocx } = require('../services/reviewDocx');
-const { DocxPackage, W_NS } = require('../services/reviewDocx/docxPackage');
-const { extractParagraphs } = require('../services/reviewDocx/quoteLocator');
-const { para, list, multiRunPara, table, buildDocxBuffer } = require('./fixtures/docxCases');
+const { exportReviewedDocx } = require('../../services/reviewDocx');
+const { DocxPackage, W_NS } = require('../../services/reviewDocx/docxPackage');
+const { extractParagraphs } = require('../../services/reviewDocx/quoteLocator');
+const { para, list, multiRunPara, table, buildDocxBuffer } = require('../fixtures/docxCases');
 
 const select = xpath.useNamespaces({ w: W_NS });
 const tmpFiles = [];

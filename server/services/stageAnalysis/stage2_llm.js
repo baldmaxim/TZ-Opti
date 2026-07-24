@@ -5,7 +5,10 @@
 // (значения, принятые в расчёт). Агент фиксирует принятое и ищет в ТЗ
 // НЕСООТВЕТСТВИЯ обязанностей/значений принятому + сопутствующее. Каждое
 // замечание ссылается на конкретный источник (запись Q&A или строку таблицы).
-// Нужен ВЕСЬ ТЗ в контексте (requireSingleSegment). Промт — в stage2Prompts.js.
+// Большое ТЗ идёт ЧАСТЯМИ (иерархическая сегментация): ОБА справочника
+// повторяются в каждой части, поэтому «весь документ в одном контексте» больше
+// не требуется, а связи между разделами закрывает финальная межраздельная
+// сверка (shared/crossSegmentReview.js). Промт — в stage2Prompts.js.
 // Контракт: (context{ blocks, qaEntries, characteristics, sourceDocumentId }) → Issue[]
 
 const { getModel } = require('./llm/openaiClient');
@@ -127,9 +130,15 @@ function formatCharacteristics(chars) {
   return lines.join('\n').trim();
 }
 
-function buildUserMessage({ tzText, qaText, charsText }) {
+function buildUserMessage({ tzText, qaText, charsText, partIdx, partTotal }) {
+  const partNote =
+    partTotal > 1
+      ? `## ТЗ — часть ${partIdx}/${partTotal} (markdown)\n\nЭто ФРАГМЕНТ ТЗ. Сверяй справочники с приведённым ниже текстом; ` +
+        'остальные части ТЗ сверяются отдельно. Если источник (запись Q&A / характеристика) ' +
+        'к этой части не относится — просто не возвращай по нему находку здесь.'
+      : '## ТЗ (markdown, целиком)';
   return [
-    '## ТЗ (markdown, целиком)',
+    partNote,
     '',
     tzText && tzText.trim() ? tzText : '(пусто)',
     '',
@@ -302,10 +311,9 @@ async function runStage2Llm(context) {
     issueDefaults: { suggestedAction: 'comment', confidence: 0.6 },
     logTag: 'stage2_llm',
     keepUnlocated: true,
-    requireSingleSegment: true,
     mapFinding: makeMapFinding(entries, chars),
-    buildUserMessage: (segBlocks) =>
-      buildUserMessage({ tzText: renderSegment(segBlocks), qaText, charsText }),
+    buildUserMessage: (segment, partIdx, partTotal) =>
+      buildUserMessage({ tzText: renderSegment(segment), qaText, charsText, partIdx, partTotal }),
   });
 }
 

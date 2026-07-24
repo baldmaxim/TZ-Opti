@@ -20,6 +20,7 @@ import IssueReviewsPage from './pages/debug/IssueReviewsPage';
 import ClustersPage from './pages/debug/ClustersPage';
 import SelfAnalysisPage from './pages/debug/SelfAnalysisPage';
 import PipelinePage from './pages/debug/PipelinePage';
+import SegmentsPage from './pages/debug/SegmentsPage';
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="debug/clusters" element={<ClustersPage />} />
           <Route path="debug/self-analysis" element={<SelfAnalysisPage />} />
           <Route path="debug/pipeline" element={<PipelinePage />} />
+          <Route path="debug/segments" element={<SegmentsPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

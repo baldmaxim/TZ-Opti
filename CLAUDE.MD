@@ -90,9 +90,29 @@ TZ-Opti/
 
 **Названия стадий — единый источник.** Сервер: `STAGE_LABELS` в `stageAnalysisEngine.js` (идёт в `summary.label`). Клиент: `STAGE_META` в `client/src/utils/labels.js` (из него берут `stageConfig.jsx`, `wizardSteps.js`, `AnalysisOverview.jsx`, `ReviewPage.jsx` через хелперы `stageTitle/stageLabel/stageShort`). Тексты `title` на клиенте и сервере должны совпадать — не хардкодить названия в других местах.
 
-Стадии 1–4 — пара файлов в `server/services/stageAnalysis/`: `stageN_llm.js` (логика стадии + схема находки) и `stageNPrompts.js` (системный промт: общий блок `SHARED` + 3 режима `structural` | `strict` | `full`, переключатель env `STAGE{N}_PROMPT_VARIANT`, дефолт `structural`). Общий каркас (сегментация / локализация фрагмента / дедуп / раннер) — в `shared/llmStage.js`. Движок и статусы стадий — в `stageAnalysisEngine.js`. Прежний rule-based слой (`stage*_*.js` без `_llm`, `shared/phrases.js`) удалён.
+Стадии 1–4 — пара файлов в `server/services/stageAnalysis/`: `stageN_llm.js` (логика стадии + схема находки) и `stageNPrompts.js` (системный промт: общий блок `SHARED` + 3 режима `structural` | `strict` | `full`, переключатель env `STAGE{N}_PROMPT_VARIANT`, дефолт `structural`). Общий каркас (сегментация / локализация фрагмента / сверка / раннер) — в `shared/llmStage.js`. Движок стадий — `stageAnalysisEngine.js`, статусы и гейты (`tender_stage_state`) — `stageState.js` (движок их реэкспортирует). Прежний rule-based слой (`stage*_*.js` без `_llm`, `shared/phrases.js`) удалён.
 
-**Стадия 5 — QC, не добытчик issues.** `runStage5SelfAnalysis` в движке возвращает `issues=[]` (после прогона `SELECT COUNT(*) FROM issues WHERE analysis_stage=5` = 0) и вместо этого пишет в `self_analysis_results` через `selfAnalysis/selfAnalysisService.js` (5-й слой конвейера, см. ниже). `stage5_llm.js` — QC-агент над кластерами (без сегментации текста).
+**Большое ТЗ — иерархическая token-aware сегментация, а не «весь документ одним куском».**
+`shared/segmentation.js`: блок крупнее бюджета дробится по предложениям с перекрытием
+(`paragraph_index` сохраняется — локализация цитаты работает); блоки собираются в пункты
+(заголовок — граница, «3.4.1 …»/«а)»/«-» начинают новый, списки и строки таблиц прилипают);
+пункты пакуются в части под ТОКЕННЫЙ бюджет (`STAGE_SEGMENT_TOKENS`, дефолт 20000) по границам
+разделов, с перекрытием хвоста предыдущей части и с заголовочным контекстом в шапке.
+**Ни одна стадия не требует весь ТЗ в одном контексте**: справочники (Q&A/характеристики,
+условия, риски) повторяются в каждой части; `requireSingleSegment` удалён — не возвращать.
+Стадия 5 тоже идёт по частям (усечение ТЗ по 200000 символов убрано).
+После всех частей — **финальная межраздельная сверка** `shared/crossSegmentReview.js`:
+детерминированный дедуп «швов» (обязателен) + LLM-шаг (best-effort, `STAGE_CROSS_SEGMENT_REVIEW=0`
+выключает), который убирает повторы одного места ТЗ и помечает связи/противоречия разделов
+(критичность может поднять, понизить — нет).
+**Статус и результат каждой части — в `analysis_segments`** (`segments/segmentStore.js`,
+best-effort: сбой хранилища не роняет анализ). Повтор стадии переиспользует посчитанные части
+по `input_hash`; одну часть можно пересчитать точечно — `engine.retryStageSegment` →
+`POST /api/tenders/:id/stages/:n/segments/:idx/retry`, список — `GET …/segments`,
+debug-страница `/tenders/:id/debug/segments`. Офлайн-тесты — `server/test/unit/segmentation.test.js`
+(большое синтетическое ТЗ + риск на границе двух сегментов), БД-слой — `server/test/integration/segments.integration.test.js`.
+
+**Стадия 5 — QC, не добытчик issues.** `runStage5SelfAnalysis` в движке возвращает `issues=[]` (после прогона `SELECT COUNT(*) FROM issues WHERE analysis_stage=5` = 0) и вместо этого пишет в `self_analysis_results` через `selfAnalysis/selfAnalysisService.js` (5-й слой конвейера, см. ниже). `stage5_llm.js` — QC-агент над кластерами; ТЗ подаётся ему ЧАСТЯМИ (кластеры повторяются в каждой части), упавшая часть не обнуляет остальные — QC отдаёт то, что посчиталось, и пишет `failed_parts`.
 
 После стадий 1–4 решения с действием `delete` / `remove_from_scope` исключают фрагменты из активного текста для следующих стадий.
 

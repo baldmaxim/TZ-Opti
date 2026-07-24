@@ -26,6 +26,7 @@ const { listSignals } = require('../signals/signalWriter');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { getActiveTzText } = require('../tzActiveTextService');
 const { runSelfAnalysisLlm, FINDING_TYPES } = require('../stageAnalysis/stage5_llm');
+const { makeStageSegmentStore } = require('../stageAnalysis/segments/segmentStore');
 const { FAMILY } = require('../analysis/actions');
 
 const CRIT_RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
@@ -280,10 +281,16 @@ async function buildSelfAnalysis(tenderId, runId) {
   const signals = await listSignals(tenderId, {});
   const signalStats = computeSignalStats(signals, clusters);
 
+  // ТЗ для QC берём БЛОКАМИ: агент проверяет полноту разбора по частям
+  // документа (иерархическая сегментация), а не по усечённому началу файла.
   let tzText = '';
+  let tzBlocks = [];
+  let tzRevisionId = null;
   try {
     const tz = await getActiveTzText(tenderId, 5);
     tzText = (tz && (tz.activeText || tz.rawText)) || '';
+    tzBlocks = (tz && tz.blocks) || [];
+    tzRevisionId = (tz && tz.revisionId) || null;
   } catch (e) {
     // ТЗ.md может отсутствовать — QC по кластерам всё равно отработает на эвристиках.
     // eslint-disable-next-line no-console
@@ -294,7 +301,17 @@ async function buildSelfAnalysis(tenderId, runId) {
 
   let llm = [];
   try {
-    const raw = await runSelfAnalysisLlm({ tzText, clusters, signalStats });
+    const raw = await runSelfAnalysisLlm({
+      tzText,
+      tzBlocks,
+      clusters,
+      signalStats,
+      // Статус/результат каждой части QC — в analysis_segments (стадия 5):
+      // видно, какая часть не досчиталась, и её можно перезапустить точечно.
+      segmentStore: makeStageSegmentStore({
+        tenderId, stage: 5, revisionId: tzRevisionId, runId: rid, logTag: 'selfAnalysis',
+      }),
+    });
     const clusterIds = new Set(clusters.map((c) => c.id));
     llm = raw.map((r) => normalizeLlmFinding(r, clusterIds));
   } catch (e) {

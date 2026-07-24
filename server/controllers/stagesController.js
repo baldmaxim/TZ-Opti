@@ -50,6 +50,28 @@ exports.reset = async (req, res) => {
   res.json({ ok: true, state });
 };
 
+// Части ТЗ этой стадии со статусом каждой (иерархическая сегментация):
+// что посчитано, что упало и почему, сколько находок дала часть.
+exports.listSegments = async (req, res) => {
+  const stage = Number(req.params.n);
+  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
+  const result = await engine.listStageSegments(req.params.id, stage);
+  res.json(result);
+};
+
+// Перезапуск ОДНОЙ части ТЗ: в LLM уйдёт только она, остальные части стадия
+// возьмёт из сохранённых результатов.
+exports.retrySegment = async (req, res) => {
+  const stage = Number(req.params.n);
+  if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
+  const index = Number(req.params.idx);
+  if (!Number.isInteger(index)) throw badRequest('Номер части должен быть целым числом');
+  const result = await engine.retryStageSegment(req.params.id, stage, index, {
+    idempotencyKey: req.get('Idempotency-Key') || (req.body && req.body.idempotency_key) || null,
+  });
+  res.status(202).json({ ok: true, ...result });
+};
+
 exports.listIssues = async (req, res) => {
   const stage = Number(req.params.n);
   const filters = {

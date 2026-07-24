@@ -241,9 +241,9 @@ async function runStage1Llm(context) {
     issueDefaults: { suggestedAction: 'clarify', confidence: 0.7 },
     analysisNote,
     logTag: 'stage1_llm',
-    buildUserMessage: (segBlocks, partIdx, partTotal) =>
+    buildUserMessage: (segment, partIdx, partTotal) =>
       buildSegmentUserMessage({
-        tzText: renderSegment(segBlocks),
+        tzText: renderSegment(segment),
         vorText: vorForLlm,
         checklist: cl,
         partIdx,

@@ -182,8 +182,8 @@ async function runStage4Llm(context) {
     issueDefaults: { suggestedAction: 'comment', confidence: 0.7 },
     logTag: 'stage4_llm',
     mapFinding,
-    buildUserMessage: (segBlocks, partIdx, partTotal) =>
-      buildSegmentUserMessage({ tzText: renderSegment(segBlocks), risksText, partIdx, partTotal }),
+    buildUserMessage: (segment, partIdx, partTotal) =>
+      buildSegmentUserMessage({ tzText: renderSegment(segment), risksText, partIdx, partTotal }),
   });
   // eslint-disable-next-line no-console
   console.log(`[stage4_llm] scoring: отсеяно ${droppedScore}, осталось issues=${issues.length}`);

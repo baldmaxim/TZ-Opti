@@ -100,6 +100,12 @@ export const api = {
     return request(`/tenders/${tenderId}/stages/${n}/issues` + (q ? '?' + q : ''));
   },
 
+  // Части ТЗ (иерархическая token-aware сегментация): статус каждой части и
+  // точечный пересчёт одной части вместо повтора всего документа.
+  listStageSegments: (tenderId, n) => request(`/tenders/${tenderId}/stages/${n}/segments`),
+  retryStageSegment: (tenderId, n, idx) =>
+    request(`/tenders/${tenderId}/stages/${n}/segments/${idx}/retry`, { method: 'POST' }),
+
   // Сигналы (debug-слой новой архитектуры анализа: signals)
   listSignals: (tenderId, signalType = null) =>
     request(`/tenders/${tenderId}/signals${signalType ? `?signal_type=${encodeURIComponent(signalType)}` : ''}`),

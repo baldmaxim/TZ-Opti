@@ -504,3 +504,45 @@ CREATE TABLE IF NOT EXISTS analysis_tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_claim ON analysis_tasks(status, run_after, priority, seq);
 CREATE INDEX IF NOT EXISTS idx_tasks_job ON analysis_tasks(job_id, seq);
 CREATE INDEX IF NOT EXISTS idx_tasks_lease ON analysis_tasks(status, lease_expires_at);
+
+-- Сегменты анализа ТЗ (иерархическая token-aware сегментация, shared/segmentation.js).
+-- Большое ТЗ анализируется ПО ЧАСТЯМ: каждая часть — строка здесь, со своим
+-- статусом, попытками, оценкой размера и СОХРАНЁННЫМ результатом (findings_json).
+-- Зачем таблица, а не только checkpoint задачи очереди:
+--   • статус каждого сегмента виден инженеру (какая часть ТЗ не досчиталась);
+--   • результат переживает завершение задания → повтор стадии не переспрашивает
+--     LLM про уже посчитанные части (сверка по input_hash);
+--   • можно перезапустить ОДИН сегмент (status='pending' + очистка findings),
+--     не гоняя заново весь документ.
+-- Ключ идентичности — (тендер, стадия, номер сегмента); input_hash защищает от
+-- переиспользования результата, если текст ТЗ или справочники изменились.
+CREATE TABLE IF NOT EXISTS analysis_segments (
+  id                    TEXT PRIMARY KEY,
+  tender_id             TEXT NOT NULL,
+  analysis_stage        INTEGER NOT NULL,
+  analysis_run_id       TEXT,               -- прогон, в котором сегмент посчитан (последний)
+  document_revision_id  TEXT,               -- ревизия ТЗ, под которую нарезаны сегменты
+  segment_index         INTEGER NOT NULL,   -- 0-based номер части
+  segment_total         INTEGER,            -- всего частей в этой нарезке
+  segment_key           TEXT,               -- детерминированный ключ содержимого части
+  heading_path          TEXT,               -- заголовочный контекст части ('1. Общие › 1.2 Объём')
+  first_block_index     INTEGER,            -- диапазон блоков ТЗ, покрытый частью
+  last_block_index      INTEGER,
+  chars                 INTEGER,
+  tokens_estimate       INTEGER,
+  input_hash            TEXT,               -- хэш user-сообщения (ТЗ-часть + справочники)
+  status                TEXT NOT NULL DEFAULT 'pending', -- pending|running|completed|failed
+  attempts              INTEGER NOT NULL DEFAULT 0,
+  findings_count        INTEGER DEFAULT 0,
+  findings_json         TEXT,               -- сырые находки части (переиспользуются при повторе)
+  error                 TEXT,
+  created_at            TEXT NOT NULL,
+  started_at            TEXT,
+  finished_at           TEXT,
+  updated_at            TEXT NOT NULL,
+  UNIQUE (tender_id, analysis_stage, segment_index),
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_segments_stage ON analysis_segments(tender_id, analysis_stage, segment_index);
+CREATE INDEX IF NOT EXISTS idx_segments_status ON analysis_segments(tender_id, status);

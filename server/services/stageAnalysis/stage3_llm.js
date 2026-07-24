@@ -7,9 +7,12 @@
 //   противоречит         → ТЗ говорит несовместимое (Issue с цитатой ТЗ)
 //   отражено_корректно   → пропускаем
 // Условия, которых в ТЗ нет вовсе, НЕ флагаются (отсутствие договорного условия
-// в техническом ТЗ — норма). Нужен ВЕСЬ ТЗ в одном контексте
-// (requireSingleSegment): условие сверяется против всего текста. Промт — в
-// stage3Prompts.js. Контракт: (context) → Issue[]
+// в техническом ТЗ — норма). Большое ТЗ сверяется ЧАСТЯМИ (иерархическая
+// сегментация): справочник условий повторяется в каждой части, поэтому «весь
+// текст в одном контексте» больше не требуется; повторы со стыков и связи между
+// разделами снимает финальная межраздельная сверка
+// (shared/crossSegmentReview.js). Промт — в stage3Prompts.js.
+// Контракт: (context) → Issue[]
 
 const db = require('../../db/connection');
 const { getModel } = require('./llm/openaiClient');
@@ -120,9 +123,15 @@ function formatConditions(conds) {
   return lines.join('\n').trim();
 }
 
-function buildUserMessage({ tzText, condsText }) {
+function buildUserMessage({ tzText, condsText, partIdx, partTotal }) {
+  const partNote =
+    partTotal > 1
+      ? `## ТЗ — часть ${partIdx}/${partTotal} (markdown)\n\nЭто ФРАГМЕНТ ТЗ. Проверяй условия против приведённого ниже ` +
+        'текста; остальные части ТЗ проверяются отдельно. Условие, тема которого в этой части ' +
+        'не затронута, просто не возвращай (в другой части оно может быть затронуто).'
+      : '## ТЗ (markdown, целиком)';
   return [
-    '## ТЗ (markdown, целиком)',
+    partNote,
     '',
     tzText && tzText.trim() ? tzText : '(пусто)',
     '',
@@ -208,10 +217,9 @@ async function runStage3Llm(context) {
     issueDefaults: { suggestedAction: 'replace', confidence: 0.7 },
     logTag: 'stage3_llm',
     keepUnlocated: false,
-    requireSingleSegment: true,
     mapFinding: makeMapFinding(byName),
-    buildUserMessage: (segBlocks) =>
-      buildUserMessage({ tzText: renderSegment(segBlocks), condsText }),
+    buildUserMessage: (segment, partIdx, partTotal) =>
+      buildUserMessage({ tzText: renderSegment(segment), condsText, partIdx, partTotal }),
   });
 }
 

@@ -126,7 +126,7 @@ export default function CharacteristicsPage() {
 
   const hasAnyComment = items.some((it) => (it.comment || '').trim());
 
-  if (loading) return <div className="text-center text-gray-500 py-8">Загрузка…</div>;
+  if (loading) return <div className="text-center text-gray-500 dark:text-gray-400 py-8">Загрузка…</div>;
 
   return (
     <div className="space-y-4">
@@ -137,7 +137,7 @@ export default function CharacteristicsPage() {
         <div className="flex items-center gap-2 flex-wrap">
           {!locked && hasAnyComment && (
             <button
-              className="btn btn-ghost text-gray-600"
+              className="btn btn-ghost text-gray-600 dark:text-gray-400"
               onClick={handleClearAllComments}
               title="Очистить комментарии у всех характеристик"
             >
@@ -184,26 +184,26 @@ export default function CharacteristicsPage() {
                 <col className="w-10" />
               </colgroup>
               <thead>
-                <tr className="bg-gray-50">
-                  <th className="px-3 py-2.5 text-sm font-semibold text-gray-800 text-center">№</th>
-                  <th className="px-3 py-2.5 text-sm font-semibold text-gray-800 text-center">Название</th>
-                  <th className="px-3 py-2.5 text-sm font-semibold text-gray-800 text-center">Комментарии СУ-10</th>
+                <tr className="bg-gray-50 dark:bg-gray-800">
+                  <th className="px-3 py-2.5 text-sm font-semibold text-gray-800 dark:text-gray-100 text-center">№</th>
+                  <th className="px-3 py-2.5 text-sm font-semibold text-gray-800 dark:text-gray-100 text-center">Название</th>
+                  <th className="px-3 py-2.5 text-sm font-semibold text-gray-800 dark:text-gray-100 text-center">Комментарии СУ-10</th>
                   <th className="px-3 py-2.5"></th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((it, idx) => (
-                  <tr key={it.id} className="border-t border-gray-100 align-top">
-                    <td className="table-cell text-gray-400 text-center">{idx + 1}</td>
+                  <tr key={it.id} className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 align-top">
+                    <td className="table-cell text-gray-400 dark:text-gray-500 text-center">{idx + 1}</td>
                     <td className="table-cell">
-                      <div className="text-sm font-medium text-gray-900 py-1.5 px-1" title="Название — константа, редактирование запрещено">
+                      <div className="text-sm font-medium text-gray-900 dark:text-gray-100 py-1.5 px-1" title="Название — константа, редактирование запрещено">
                         {it.name || '—'}
                       </div>
                     </td>
                     <td className="table-cell">
                       {locked ? (
-                        <div className="text-sm text-gray-900 whitespace-pre-wrap py-1.5 px-1 leading-snug">
-                          {it.comment ? it.comment : <span className="text-gray-400">—</span>}
+                        <div className="text-sm text-gray-900 dark:text-gray-100 whitespace-pre-wrap py-1.5 px-1 leading-snug">
+                          {it.comment ? it.comment : <span className="text-gray-400 dark:text-gray-500">—</span>}
                         </div>
                       ) : (
                         <div className="relative">
@@ -219,7 +219,7 @@ export default function CharacteristicsPage() {
                             <button
                               type="button"
                               onClick={() => handleClearComment(it.id)}
-                              className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100 text-xs leading-none"
+                              className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center rounded text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 text-xs leading-none"
                               title="Очистить поле"
                               tabIndex={-1}
                             >
@@ -234,7 +234,7 @@ export default function CharacteristicsPage() {
                         <button
                           type="button"
                           onClick={() => handleDelete(it.id)}
-                          className="text-gray-400 hover:text-red-600 text-lg leading-none"
+                          className="text-gray-400 dark:text-gray-500 hover:text-red-600 dark:hover:text-red-300 text-lg leading-none"
                           title="Удалить"
                         >
                           ✕

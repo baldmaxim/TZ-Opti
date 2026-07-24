@@ -136,7 +136,7 @@ export default function ChecklistPage() {
     return { total, yes, no, unknown };
   }, [rows]);
 
-  if (loading) return <div className="text-center text-gray-500 py-8">Загрузка…</div>;
+  if (loading) return <div className="text-center text-gray-500 dark:text-gray-400 py-8">Загрузка…</div>;
 
   if (!rows.length) {
     return (
@@ -161,9 +161,9 @@ export default function ChecklistPage() {
           <h2 className="text-lg font-semibold">Состав работ</h2>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Stat label="Учтено" count={stats.yes} cls="bg-green-100 text-green-800" />
-          <Stat label="Не учтено" count={stats.no} cls="bg-red-100 text-red-800" />
-          <Stat label="Не указано" count={stats.unknown} cls="bg-gray-100 text-gray-600" />
+          <Stat label="Учтено" count={stats.yes} cls="bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300" />
+          <Stat label="Не учтено" count={stats.no} cls="bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300" />
+          <Stat label="Не указано" count={stats.unknown} cls="bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400" />
           {locked ? (
             <button className="btn btn-control" onClick={handleEdit} disabled={busy}>
               {busy ? 'Открываю…' : '✎ Редактировать'}
@@ -211,7 +211,7 @@ export default function ChecklistPage() {
             + Добавить свою работу
           </button>
           <button
-            className="btn btn-ghost text-gray-600"
+            className="btn btn-ghost text-gray-600 dark:text-gray-400"
             onClick={resetToStandard}
             disabled={busy}
             title="Сбросить к стандартному списку"
@@ -228,8 +228,8 @@ export default function ChecklistPage() {
 function SectionRows({ section, items, startIdx, onSetStatus, onSetComment, onRemove, locked }) {
   return (
     <>
-      <tr className="bg-gray-50">
-        <td colSpan={5} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500">
+      <tr className="bg-gray-50 dark:bg-gray-800">
+        <td colSpan={5} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
           {section}
         </td>
       </tr>
@@ -251,18 +251,18 @@ function SectionRows({ section, items, startIdx, onSetStatus, onSetComment, onRe
 function ChecklistRow({ num, row, onSetStatus, onSetComment, onRemove, locked }) {
   const status = statusOf(row);
   const rowClass =
-    status === 'yes' ? 'bg-green-50' :
-    status === 'no' ? 'bg-red-50' : '';
+    status === 'yes' ? 'bg-green-50 dark:bg-green-900/40' :
+    status === 'no' ? 'bg-red-50 dark:bg-red-900/40' : '';
   return (
-    <tr className={clsx('border-t border-gray-100', rowClass)}>
-      <td className="table-cell text-center text-gray-500 font-mono text-xs">{num}</td>
+    <tr className={clsx('border-t dark:border-gray-700 border-gray-100 dark:border-gray-700', rowClass)}>
+      <td className="table-cell text-center text-gray-500 dark:text-gray-400 font-mono text-xs">{num}</td>
       <td className="table-cell font-medium">{row.work_name}</td>
       <td className="table-cell">
         <StatusToggle status={status} onChange={(s) => onSetStatus(row.id, s)} disabled={locked} />
       </td>
       <td className="table-cell">
         {locked ? (
-          <span className="text-sm text-gray-700">{row.comment || <span className="text-gray-400">—</span>}</span>
+          <span className="text-sm text-gray-700 dark:text-gray-300">{row.comment || <span className="text-gray-400 dark:text-gray-500">—</span>}</span>
         ) : (
           <input
             className="input"
@@ -277,7 +277,7 @@ function ChecklistRow({ num, row, onSetStatus, onSetComment, onRemove, locked })
         {!locked && (
           <button
             type="button"
-            className="text-red-600 hover:text-red-800 text-sm px-1.5"
+            className="text-red-600 dark:text-red-300 hover:text-red-800 dark:hover:text-red-300 text-sm px-1.5"
             onClick={() => onRemove(row.id, row.work_name)}
             title="Удалить строку"
             aria-label="Удалить"
@@ -292,7 +292,7 @@ function StatusToggle({ status, onChange, disabled }) {
   return (
     <div
       className={clsx(
-        'inline-flex rounded-md border border-gray-300 overflow-hidden text-xs',
+        'inline-flex rounded-md border dark:border-gray-700 border-gray-300 dark:border-gray-700 overflow-hidden text-xs',
         disabled && 'opacity-70'
       )}
     >
@@ -300,8 +300,8 @@ function StatusToggle({ status, onChange, disabled }) {
         type="button"
         className={clsx(
           'px-3 py-1.5 font-medium transition',
-          status === 'yes' ? 'bg-green-600 text-white' : 'bg-white text-gray-700',
-          !disabled && 'hover:bg-green-50',
+          status === 'yes' ? 'bg-green-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300',
+          !disabled && 'hover:bg-green-50 dark:hover:bg-green-900/40',
           disabled && 'cursor-not-allowed'
         )}
         onClick={() => !disabled && onChange('yes')}
@@ -310,9 +310,9 @@ function StatusToggle({ status, onChange, disabled }) {
       <button
         type="button"
         className={clsx(
-          'px-3 py-1.5 font-medium border-l border-gray-300 transition',
-          status === 'no' ? 'bg-red-600 text-white' : 'bg-white text-gray-700',
-          !disabled && 'hover:bg-red-50',
+          'px-3 py-1.5 font-medium border-l dark:border-gray-700 border-gray-300 dark:border-gray-700 transition',
+          status === 'no' ? 'bg-red-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300',
+          !disabled && 'hover:bg-red-50 dark:hover:bg-red-900/40',
           disabled && 'cursor-not-allowed'
         )}
         onClick={() => !disabled && onChange('no')}
@@ -321,9 +321,9 @@ function StatusToggle({ status, onChange, disabled }) {
       <button
         type="button"
         className={clsx(
-          'px-2 py-1.5 font-medium border-l border-gray-300 transition text-gray-500',
-          status === 'unknown' ? 'bg-gray-200' : 'bg-white',
-          !disabled && 'hover:bg-gray-50',
+          'px-2 py-1.5 font-medium border-l dark:border-gray-700 border-gray-300 dark:border-gray-700 transition text-gray-500 dark:text-gray-400',
+          status === 'unknown' ? 'bg-gray-200 dark:bg-gray-700' : 'bg-white dark:bg-gray-800',
+          !disabled && 'hover:bg-gray-50 dark:hover:bg-gray-800',
           disabled && 'cursor-not-allowed'
         )}
         onClick={() => !disabled && onChange('unknown')}

@@ -17,13 +17,13 @@ const EXPORT_HINT = {
 };
 
 const VERDICT = {
-  review_edit: { label: 'В Word: правка', cls: 'text-blue-700 bg-blue-50' },
-  review_comment: { label: 'В Word: комментарий', cls: 'text-green-700 bg-green-50' },
-  rejected: { label: 'Отклонено', cls: 'text-gray-600 bg-gray-100' },
-  pending: { label: 'На рассмотрении', cls: 'text-amber-700 bg-amber-50' },
+  review_edit: { label: 'В Word: правка', cls: 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40' },
+  review_comment: { label: 'В Word: комментарий', cls: 'text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/40' },
+  rejected: { label: 'Отклонено', cls: 'text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700' },
+  pending: { label: 'На рассмотрении', cls: 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40' },
 };
 
-function Chip({ children, cls = 'text-gray-700 bg-gray-100' }) {
+function Chip({ children, cls = 'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700' }) {
   return <span className={`px-2 py-0.5 rounded ${cls}`}>{children}</span>;
 }
 
@@ -73,7 +73,7 @@ export default function SummaryPage() {
   return (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-gray-600 dark:text-gray-400">
           Единый итог по кластерам: замечания со всех стадий сгруппированы по местам ТЗ. Одно решение на кластер — оно и попадёт в экспорт.
         </p>
         <button type="button" className="btn btn-secondary text-xs whitespace-nowrap" onClick={load} disabled={loading}>
@@ -81,17 +81,17 @@ export default function SummaryPage() {
         </button>
       </div>
 
-      {err && <div className="text-xs text-red-600">{err}</div>}
+      {err && <div className="text-xs text-red-600 dark:text-red-300">{err}</div>}
 
       <div className="flex flex-wrap gap-2 text-xs">
         <Chip>Кластеров: {clusters.length}</Chip>
-        <Chip cls="text-green-700 bg-green-50">Решено: {decided.length}</Chip>
-        <Chip cls="text-blue-700 bg-blue-50">В Word: {toWord}</Chip>
-        <Chip cls="text-amber-700 bg-amber-50">На рассмотрении: {pending}</Chip>
+        <Chip cls="text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/40">Решено: {decided.length}</Chip>
+        <Chip cls="text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40">В Word: {toWord}</Chip>
+        <Chip cls="text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40">На рассмотрении: {pending}</Chip>
       </div>
 
       {clusters.length === 0 ? (
-        <div className="text-sm text-gray-500">
+        <div className="text-sm text-gray-500 dark:text-gray-400">
           Итог ещё не собран — пройдите стадии 1–4 и нажмите «Собрать итог» в рецензии.
         </div>
       ) : (
@@ -104,16 +104,16 @@ export default function SummaryPage() {
                     <span className={`px-1.5 py-0.5 rounded ${criticalityClass(c.overall_criticality)}`}>
                       {CRITICALITY[c.overall_criticality] || c.overall_criticality}
                     </span>
-                    <span className="font-medium text-gray-800">{c.cluster_title}</span>
+                    <span className="font-medium text-gray-800 dark:text-gray-100">{c.cluster_title}</span>
                     {c.decision ? (
-                      <span className="px-1.5 py-0.5 rounded text-green-700 bg-green-50">
+                      <span className="px-1.5 py-0.5 rounded text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/40">
                         {DECISIONS[c.decision.decision] || c.decision.decision} · {EXPORT_HINT[c.decision.decision]}
                       </span>
                     ) : (
-                      <span className="px-1.5 py-0.5 rounded text-amber-700 bg-amber-50">не решено</span>
+                      <span className="px-1.5 py-0.5 rounded text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40">не решено</span>
                     )}
                   </div>
-                  {c.merged_basis && <div className="text-sm text-gray-700 break-words whitespace-pre-wrap">{humanizeNote(c.merged_basis)}</div>}
+                  {c.merged_basis && <div className="text-sm text-gray-700 dark:text-gray-300 break-words whitespace-pre-wrap">{humanizeNote(c.merged_basis)}</div>}
                 </div>
                 {!c.decision && (
                   <button
@@ -132,21 +132,21 @@ export default function SummaryPage() {
 
       {groups.length > 0 && (
         <details className="card p-3">
-          <summary className="text-sm text-gray-600 cursor-pointer">
+          <summary className="text-sm text-gray-600 dark:text-gray-400 cursor-pointer">
             Старый сводный вид по находкам стадий (issues) — {groups.length} групп
           </summary>
           <div className="space-y-2 mt-2">
             {groups.map((g) => (
-              <div key={g.id} className={`border rounded p-2 ${g.conflict ? 'border-rose-300' : ''}`}>
+              <div key={g.id} className={`border dark:border-gray-700 rounded p-2 ${g.conflict ? 'border-rose-300 dark:border-rose-800' : ''}`}>
                 <div className="flex items-center gap-2 flex-wrap text-xs mb-1">
                   <span className={`px-1.5 py-0.5 rounded ${VERDICT[g.verdict]?.cls || ''}`}>{VERDICT[g.verdict]?.label || g.verdict}</span>
                   <span className={`px-1.5 py-0.5 rounded ${criticalityClass(g.primary.criticality)}`}>{g.primary.criticality || '—'}</span>
-                  <span className="text-gray-500">Стадия {g.primary.stage} · {formatProblemType(g.primary.problem_type)}</span>
-                  {g.conflict && <span className="px-1.5 py-0.5 rounded text-rose-700 bg-rose-50">⚠ конфликт</span>}
+                  <span className="text-gray-500 dark:text-gray-400">Стадия {g.primary.stage} · {formatProblemType(g.primary.problem_type)}</span>
+                  {g.conflict && <span className="px-1.5 py-0.5 rounded text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-900/40">⚠ конфликт</span>}
                 </div>
-                <div className="text-sm text-gray-800 break-words">{g.fragment ? `«${g.fragment}»` : '—'}</div>
+                <div className="text-sm text-gray-800 dark:text-gray-100 break-words">{g.fragment ? `«${g.fragment}»` : '—'}</div>
                 {g.primary.decision_kind && (
-                  <div className="text-xs text-gray-500 mt-0.5">
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                     Решение: {USER_DECISION_LABELS[g.primary.decision_kind] || g.primary.decision_kind}
                   </div>
                 )}

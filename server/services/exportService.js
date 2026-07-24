@@ -12,6 +12,7 @@
 
 const db = require('../db/connection');
 const clusterReview = require('./review/clusterReviewService');
+const analysisRuns = require('./analysisRuns/analysisRunsService');
 
 // --- Чистое ядро cluster-level (офлайн-тесты) --------------------------------
 
@@ -167,15 +168,16 @@ const ISSUE_CSV_HEADERS = [
 ];
 
 async function exportIssuesCsv(tenderId) {
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   const rows = await db.queryAll(
     `
       SELECT i.*, d.decision as decision, d.final_comment as final_comment
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ?
+      WHERE i.tender_id = ?${rf.sql}
       ORDER BY i.analysis_stage ASC, i.criticality DESC, i.paragraph_index ASC
     `,
-    tenderId,
+    tenderId, ...rf.params,
   );
   const lines = [ISSUE_CSV_HEADERS.join(';')];
   for (const r of rows) {
@@ -190,15 +192,16 @@ async function exportIssuesJson(tenderId) {
     'SELECT * FROM analysis_runs WHERE tender_id = ? ORDER BY stage ASC, started_at ASC',
     tenderId,
   );
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   const issues = await db.queryAll(
     `
       SELECT i.*, d.decision as decision, d.final_comment as final_comment, d.edited_redaction as decision_redaction
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ?
+      WHERE i.tender_id = ?${rf.sql}
       ORDER BY i.analysis_stage ASC, i.criticality DESC
     `,
-    tenderId,
+    tenderId, ...rf.params,
   );
   return JSON.stringify({ tender, runs: runs.map(parseSummary), source: 'issues', issues }, null, 2);
 }
@@ -206,13 +209,14 @@ async function exportIssuesJson(tenderId) {
 async function exportIssuesSummaryMd(tenderId) {
   const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!tender) return '# Тендер не найден';
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   const issues = await db.queryAll(
     `
       SELECT i.*, d.decision as decision FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ?
+      WHERE i.tender_id = ?${rf.sql}
     `,
-    tenderId,
+    tenderId, ...rf.params,
   );
   const checklist = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ?', tenderId);
 

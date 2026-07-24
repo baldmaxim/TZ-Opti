@@ -17,6 +17,8 @@ const { buildDraftIssues } = require('../unifiedAnalysis/unifiedIssueBuilder');
 const { buildIssueReviews } = require('../critic/criticService');
 const { buildClusters } = require('../clustering/clusteringService');
 const { buildSelfAnalysis } = require('../selfAnalysis/selfAnalysisService');
+const { STATUS } = require('../analysis/resultStatus');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 
 // Шаги прогона в порядке зависимости (каждый читает слой предыдущего).
 // optional: self-analysis — единственный шаг с LLM-вызовом, нужен не на каждой
@@ -46,10 +48,14 @@ function planSteps({ withSelfAnalysis = true } = {}) {
 }
 
 // Свёртка отчёта прогона: ok — все шаги done; failed_step — первый сбой.
+// status — единый контракт результата (resultStatus): полный успех либо сбой.
+// Пустой прогон (0 шагов) успехом НЕ считается.
 function summarizeRun(stepResults) {
   const failed = stepResults.find((s) => s.status === 'failed') || null;
+  const ok = !failed && stepResults.length > 0 && stepResults.every((s) => s.status === 'done');
   return {
-    ok: !failed && stepResults.length > 0 && stepResults.every((s) => s.status === 'done'),
+    ok,
+    status: ok ? STATUS.COMPLETED : STATUS.FAILED,
     steps_done: stepResults.filter((s) => s.status === 'done').length,
     steps_total: stepResults.length,
     failed_step: failed ? failed.step : null,
@@ -86,45 +92,98 @@ const STEP_RUNNERS = {
   self_analysis: buildSelfAnalysis,
 };
 
-// Пересобрать конвейер тендера целиком (идемпотентно — каждый build* слоя
-// перезаписывает свой набор). Возвращает отчёт, не бросает на сбое шага.
-async function runPipeline(tenderId, opts = {}) {
+const stepMeta = (key) => PIPELINE_STEPS.find((s) => s.key === key) || { key, label: key };
+
+// Начало прогона: новый (пока не активированный) pipeline-прогон + контекст
+// снимка. Вынесено отдельным шагом, потому что конвейер собирается не только
+// синхронным вызовом, но и очередью (задание = задача на шаг, см. jobs/handlers).
+async function beginPipelineRun(tenderId, runs = analysisRuns) {
+  const documentsRevisionId = await runs.currentDocumentsRevision(tenderId);
+  const configVersion = runs.currentConfigVersion();
+  const runId = await runs.beginRun(tenderId, runs.SCOPE_PIPELINE, { documentsRevisionId, configVersion });
+  return { runId, documentsRevisionId, configVersion };
+}
+
+// Один шаг конвейера в уже начатый прогон. Бросает при сбое — решение
+// «повторить/признать провал» принимает вызывающий (оркестратор или воркер).
+async function runPipelineStep(tenderId, runId, key, runners = STEP_RUNNERS) {
+  const meta = stepMeta(key);
+  const t0 = Date.now();
+  const res = await runners[key](tenderId, runId);
+  return { step: key, label: meta.label, status: 'done', ms: Date.now() - t0, summary: (res && res.summary) || null };
+}
+
+// Финал прогона: по успеху всех шагов — активация снимка (указатель переводится,
+// прежний архивируется), иначе прогон помечается failed, указатель не двигается.
+async function finalizePipelineRun(tenderId, runId, steps, ctx = {}, runs = analysisRuns) {
+  const report = { ...summarizeRun(steps), steps, run_id: runId };
+  if (report.ok) {
+    await runs.activateRun(tenderId, runs.SCOPE_PIPELINE, runId, {
+      documentsRevisionId: ctx.documentsRevisionId, configVersion: ctx.configVersion,
+    });
+  } else {
+    await runs.failRun(runId, JSON.stringify({ failed_step: report.failed_step }));
+  }
+  return report;
+}
+
+// Пересобрать конвейер тендера целиком в ОДИН новый неизменяемый снимок
+// (pipeline-прогон). Каждый build* пишет в этот прогон; прошлые прогоны не
+// трогаются (архив). По успеху прогон активируется (указатель переводится, старый
+// архивируется), при сбое помечается failed и указатель остаётся на прежнем.
+// runners/runs инъектируем (по умолчанию боевые) — для офлайн-тестов без БД/LLM.
+async function runPipeline(tenderId, opts = {}, runners = STEP_RUNNERS, runs = analysisRuns) {
   const keys = planSteps(opts);
   const steps = [];
   let failed = false;
+
+  const { runId, documentsRevisionId, configVersion } = await beginPipelineRun(tenderId, runs);
+
   for (const key of keys) {
-    const meta = PIPELINE_STEPS.find((s) => s.key === key);
+    const meta = stepMeta(key);
     if (failed) {
       steps.push({ step: key, label: meta.label, status: 'skipped', reason: 'предыдущий шаг не выполнен' });
       continue;
     }
     const t0 = Date.now();
     try {
-      const res = await STEP_RUNNERS[key](tenderId);
-      steps.push({
-        step: key,
-        label: meta.label,
-        status: 'done',
-        ms: Date.now() - t0,
-        summary: (res && res.summary) || null,
-      });
+      // eslint-disable-next-line no-await-in-loop
+      steps.push(await runPipelineStep(tenderId, runId, key, runners));
     } catch (e) {
       failed = true;
       steps.push({ step: key, label: meta.label, status: 'failed', ms: Date.now() - t0, error: e.message });
     }
   }
-  return { ...summarizeRun(steps), steps };
+
+  return finalizePipelineRun(tenderId, runId, steps, { documentsRevisionId, configVersion }, runs);
 }
 
 // Статус свежести слоёв конвейера: счётчик + время последней сборки на слой,
 // stale-флаги и сводный needs_rebuild.
 async function pipelineStatus(tenderId) {
+  // Свежесть считаем по АКТУАЛЬНЫМ прогонам: signals — по stage-прогонам,
+  // производные слои — по pipeline-прогону.
+  const pipelineRunId = await analysisRuns.getActivePipelineRunId(tenderId);
+  const stageRunIds = await analysisRuns.getActiveStageRunIds(tenderId);
   const raw = [];
   for (const l of LAYER_TABLES) {
-    const row = await db.queryOne(
-      `SELECT COUNT(*) AS c, MAX(created_at) AS built_at FROM ${l.table} WHERE tender_id = ?`,
-      tenderId,
-    );
+    let row = { c: 0, built_at: null };
+    if (l.key === 'signals') {
+      if (stageRunIds.length) {
+        const ph = stageRunIds.map(() => '?').join(', ');
+        row = await db.queryOne(
+          `SELECT COUNT(*) AS c, MAX(created_at) AS built_at FROM ${l.table}
+            WHERE tender_id = ? AND analysis_run_id IN (${ph})`,
+          tenderId, ...stageRunIds,
+        );
+      }
+    } else if (pipelineRunId) {
+      row = await db.queryOne(
+        `SELECT COUNT(*) AS c, MAX(created_at) AS built_at FROM ${l.table}
+          WHERE tender_id = ? AND analysis_run_id = ?`,
+        tenderId, pipelineRunId,
+      );
+    }
     raw.push({
       key: l.key,
       label: l.label,
@@ -142,7 +201,11 @@ module.exports = {
   planSteps,
   summarizeRun,
   computeLayerStatus,
+  STEP_RUNNERS,
   // DB
+  beginPipelineRun,
+  runPipelineStep,
+  finalizePipelineRun,
   runPipeline,
   pipelineStatus,
 };

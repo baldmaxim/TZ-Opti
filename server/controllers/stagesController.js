@@ -3,7 +3,7 @@
 const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
 const engine = require('../services/stageAnalysis/stageAnalysisEngine');
-const progressRegistry = require('../services/stageAnalysis/progressRegistry');
+const jobService = require('../services/jobs/jobService');
 
 exports.getState = async (req, res) => {
   const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', req.params.id);
@@ -16,7 +16,9 @@ exports.getState = async (req, res) => {
       status: state[`stage${n}_status`],
       summary: await engine.getStageRunSummary(req.params.id, n),
       // Прогресс по сегментам для круговой шкалы (только пока стадия считается).
-      progress: progressRegistry.get(req.params.id, n),
+      // Источник — строка задания в очереди, а не память процесса: прогресс
+      // виден из любого процесса и переживает рестарт сервера.
+      progress: await jobService.stageProgress(req.params.id, n),
     })),
   );
   res.json({ state, stages });
@@ -25,10 +27,12 @@ exports.getState = async (req, res) => {
 exports.run = async (req, res) => {
   const stage = Number(req.params.n);
   if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
-  // Фоновый запуск: быстрые проверки (гард/доступность) кидают 400 сразу,
-  // иначе анализ идёт в фоне, клиент опрашивает статус. Снимает таймаут/
-  // «Failed to fetch» на длинной Стадии 1.
-  const result = await engine.startStageBackground(req.params.id, stage);
+  // Фоновый запуск: быстрые проверки (гейт стадии) кидают 400 сразу, иначе
+  // задание уходит в устойчивую очередь и считается воркером. Клиент опрашивает
+  // статус. Повторный запрос с тем же Idempotency-Key дубля не создаёт.
+  const result = await engine.startStageBackground(req.params.id, stage, {
+    idempotencyKey: req.get('Idempotency-Key') || (req.body && req.body.idempotency_key) || null,
+  });
   res.status(202).json({ ok: true, ...result });
 };
 

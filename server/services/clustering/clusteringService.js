@@ -12,7 +12,7 @@
 //   2) близки по смыслу             — совпадает доминирующее измерение значимости
 //                                     (цена/срок/договор/ответственность) от critic;
 //   3) пересекается действие         — одинаковое семейство suggested_action
-//                                     (remove / edit / note).
+//                                     (remove / modify / note — analysis/actions).
 // Разные по смыслу проблемы в одном пункте (открытый объём ≠ риск оплаты) дают
 // РАЗНЫЕ кластеры: у каждого свои cluster_items, каждый сохраняет своё основание.
 //
@@ -23,6 +23,8 @@
 const crypto = require('crypto');
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
+const { actionFamily } = require('../analysis/actions');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 
 // Детерминированный id кластера от (tenderId + clusterKey). Этап 6: решения инженера
 // привязываются к cluster_id, а buildClusters пересобирает кластеры (DELETE+INSERT) —
@@ -70,19 +72,13 @@ function dominantDimension(review) {
   return best; // contract|responsibility|price|schedule|general
 }
 
-// Семейство действия: пересекающиеся действия считаются одним.
-function actionFamily(draft) {
-  const a = normalize(draft.suggested_action);
-  if (a === 'delete' || a === 'remove_from_scope') return 'remove';
-  if (a === 'edit') return 'edit';
-  return 'note'; // accept / comment / пусто
-}
-
-// Смысловой ключ: измерение значимости + семейство действия. Разделяет
-// «открытый объём» (price/responsibility + edit/remove) и «риск оплаты»
-// (contract + note/edit) даже в одном пункте ТЗ.
+// Смысловой ключ: измерение значимости + семейство действия (единый реестр
+// analysis/actions: remove | modify | note). Разделяет «открытый объём»
+// (price/responsibility + modify/remove) и «риск оплаты» (contract + note/modify)
+// даже в одном пункте ТЗ. actionFamily берёт suggested_action и, в частности,
+// НЕ роняет replace/limit_scope в note (легаси edit → replace → modify).
 function semanticBucket(draft, review) {
-  return `${dominantDimension(review)}|${actionFamily(draft)}`;
+  return `${dominantDimension(review)}|${actionFamily(draft.suggested_action)}`;
 }
 
 function clusterKey(draft, review) {
@@ -214,16 +210,16 @@ function safeParse(s, fallback) {
 
 // Грузит draft_issues тендера вместе с вердиктом critic (LEFT JOIN — кластеризуем
 // даже без прогона critic: тогда review пуст и сработает дефолтный bucket).
-async function loadPairs(tenderId) {
+async function loadPairs(tenderId, runId) {
   const rows = await db.queryAll(
     `SELECT d.*,
             r.display_priority, r.show_to_engineer, r.score,
             r.price_impact, r.schedule_impact, r.contract_impact, r.responsibility_impact
        FROM draft_issues d
        LEFT JOIN issue_reviews r ON r.draft_issue_id = d.id
-      WHERE d.tender_id = ?
+      WHERE d.tender_id = ? AND d.analysis_run_id = ?
       ORDER BY d.paragraph_index ASC NULLS LAST, d.created_at ASC`,
-    tenderId,
+    tenderId, runId,
   );
   return rows.map((r) => ({
     draft: {
@@ -252,21 +248,25 @@ async function loadPairs(tenderId) {
 
 // Главная функция: собрать кластеры тендера и сохранить (idempotent — перезапись
 // прежнего набора). Возвращает summary.
-async function buildClusters(tenderId) {
-  const pairs = await loadPairs(tenderId);
+async function buildClusters(tenderId, runId) {
+  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  const pairs = await loadPairs(tenderId, rid);
   const clusters = clusterPairs(pairs, tenderId);
 
   await db.transaction(async (tx) => {
-    await tx.queryRun(`DELETE FROM issue_clusters WHERE tender_id = ?`, tenderId);
+    await tx.queryRun(`DELETE FROM issue_clusters WHERE tender_id = ? AND analysis_run_id = ?`, tenderId, rid);
     const createdAt = nowIso();
     for (const c of clusters) {
+      // Run-scoped id кластера: стабилен внутри прогона, но НЕ совпадает между
+      // прогонами → решения не приклеиваются автоматически (перенос — явный).
+      const cid = analysisRuns.clusterRunId(tenderId, rid, c.cluster_key);
       await tx.queryRun(
         `INSERT INTO issue_clusters (
-           id, tender_id, tz_clause, cluster_title, merged_basis, merged_recommendation,
+           id, tender_id, analysis_run_id, tz_clause, cluster_title, merged_basis, merged_recommendation,
            overall_criticality, show_to_engineer, final_problem_type,
            semantic_bucket, cluster_key, item_count, paragraph_index, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        c.id, c.tender_id, c.tz_clause, c.cluster_title, c.merged_basis, c.merged_recommendation,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cid, c.tender_id, rid, c.tz_clause, c.cluster_title, c.merged_basis, c.merged_recommendation,
         c.overall_criticality, c.show_to_engineer ? 1 : 0, c.final_problem_type,
         c.semantic_bucket, c.cluster_key, c.item_count, c.paragraph_index, createdAt,
       );
@@ -274,7 +274,7 @@ async function buildClusters(tenderId) {
         await tx.queryRun(
           `INSERT INTO issue_cluster_items (id, cluster_id, draft_issue_id, item_role, created_at)
            VALUES (?, ?, ?, ?, ?)`,
-          newId(), c.id, it.draft_issue_id, it.item_role, createdAt,
+          newId(), cid, it.draft_issue_id, it.item_role, createdAt,
         );
       }
     }
@@ -305,14 +305,17 @@ const MODE_WHERE = {
   full: ``,
 };
 
-// Читает кластеры + их элементы (draft_issues) одним проходом.
-async function listClusters(tenderId, mode = 'working') {
+// Читает кластеры + их элементы (draft_issues) одним проходом. Только АКТУАЛЬНЫЙ
+// pipeline-прогон (runId по умолчанию — активный указатель); нет прогона → пусто.
+async function listClusters(tenderId, mode = 'working', runId) {
   const where = MODE_WHERE[mode] != null ? MODE_WHERE[mode] : MODE_WHERE.working;
+  const rid = runId || await analysisRuns.getActivePipelineRunId(tenderId);
+  if (!rid) return [];
   const clusters = await db.queryAll(
     `SELECT * FROM issue_clusters c
-      WHERE c.tender_id = ? ${where}
+      WHERE c.tender_id = ? AND c.analysis_run_id = ? ${where}
       ORDER BY c.paragraph_index ASC NULLS LAST, c.created_at ASC`,
-    tenderId,
+    tenderId, rid,
   );
   if (!clusters.length) return [];
 

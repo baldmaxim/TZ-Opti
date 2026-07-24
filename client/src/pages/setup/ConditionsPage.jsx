@@ -137,8 +137,8 @@ export default function ConditionsPage() {
     setBusy(false);
   };
 
-  if (loading) return <div className="text-center text-gray-500 py-8">Загрузка…</div>;
-  if (!params || !schema) return <div className="text-gray-500 text-sm">Нет данных.</div>;
+  if (loading) return <div className="text-center text-gray-500 dark:text-gray-400 py-8">Загрузка…</div>;
+  if (!params || !schema) return <div className="text-gray-500 dark:text-gray-400 text-sm">Нет данных.</div>;
 
   return (
     <div className="space-y-4">
@@ -171,7 +171,7 @@ export default function ConditionsPage() {
 
       {!locked && (
         <div>
-          <button className="btn btn-ghost text-gray-600" onClick={handleResetAll} disabled={busy}>
+          <button className="btn btn-ghost text-gray-600 dark:text-gray-400" onClick={handleResetAll} disabled={busy}>
             Сбросить все правки ↺
           </button>
         </div>

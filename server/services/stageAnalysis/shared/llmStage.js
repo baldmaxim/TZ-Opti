@@ -9,8 +9,10 @@
 // tzBudget, riskCategory, issueDefaults, analysisNote, logTag. ВОР/чек-лист/
 // Q&A-специфика остаётся в файле стадии.
 
+const crypto = require('crypto');
 const { findInParagraphs } = require('./fragmentMatcher');
 const { chatJson } = require('../llm/openaiClient');
+const { coerceAction, ACTIONS } = require('../../analysis/actions');
 
 const PER_BLOCK_OVERHEAD = 8; // заголовок-разметка + переводы строк
 
@@ -101,44 +103,41 @@ function normalizeCriticality(v, fallback = 'medium') {
   if (/^(низ|low|minor|незнач)/.test(s)) return 'low';
   return fallback;
 }
-const ACTION_SET = new Set([
-  'comment', 'replace', 'delete', 'remove_from_scope', 'clarify', 'limit_scope', 'assumption',
-]);
-function normalizeAction(v, fallback = 'clarify') {
-  const fb = ACTION_SET.has(fallback) ? fallback : 'clarify';
-  if (typeof v !== 'string') return fb;
-  const s = v.trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if (ACTION_SET.has(s)) return s;
-  if (/(вынес|out_of_scope|remove_from|изъ)/.test(s)) return 'remove_from_scope';
-  if (/(удал|delete|remove)/.test(s)) return 'delete';
-  if (/(замен|replace|edit|правк)/.test(s)) return 'replace';
-  if (/(коммент|comment|note|примеч)/.test(s)) return 'comment';
-  if (/(огранич|limit)/.test(s)) return 'limit_scope';
-  if (/(допущ|assum)/.test(s)) return 'assumption';
-  if (/(уточн|clarif|вопрос)/.test(s)) return 'clarify';
-  return fb;
+// Нормализация действия — единый реестр (analysis/actions): точное значение,
+// легаси-алиас (edit→replace) и фаззи-интерпретация свободного текста от LLM.
+// Дефолт стадии (issueDefaults.suggestedAction) идёт как fallback.
+function normalizeAction(v, fallback = ACTIONS.CLARIFY) {
+  return coerceAction(v, fallback);
 }
 
-// Generic buildIssue: короткая цитата модели нужна лишь чтобы НАЙТИ пункт;
-// в замечание кладём ВЕСЬ пункт (блок = пункт/абзац) + char-диапазон на
-// весь пункт (экспорт метит пункт целиком). riskCategory и дефолты —
-// параметры стадии. Поля risk_category/price_impact/schedule_impact модель
-// может задать в находке — тогда они приоритетнее дефолтов стадии (Стадии 4/5
-// проставляют категорию/влияние по типу находки; Стадия 1 их не шлёт →
-// прежнее поведение).
+// Generic buildIssue: короткая цитата модели нужна, чтобы НАЙТИ место в тексте.
+// ТОЧНЫЙ фрагмент (найденная цитата) + её char-диапазон В АБЗАЦЕ кладём в
+// source_fragment/char_start/char_end, а ВЕСЬ абзац — отдельно в context_text.
+// Раньше сюда клали весь абзац с диапазоном 0..len — и все находки одного абзаца
+// получали ОДИН И ТОТ ЖЕ диапазон, из-за чего ниже (unifiedIssueBuilder) сливались
+// в один draft_issue: несколько разных замечаний абзаца терялись. riskCategory и
+// дефолты — параметры стадии. Поля risk_category/price_impact/schedule_impact
+// модель может задать в находке — тогда они приоритетнее дефолтов стадии
+// (Стадии 4/5 проставляют категорию/влияние по типу находки; Стадия 1 их не шлёт).
 function buildIssue({ sourceDocumentId, finding, located, riskCategory, defaults = {} }) {
   const sectionPath =
     (finding.section_path || '').trim() ||
     (located?.block?.section_path?.join(' › ') || null);
-  const blockText = located?.block?.text || null;
+  const blockText = located?.block?.text || null; // полный абзац — контекст
   const crit = normalizeCriticality(finding.criticality, 'medium');
+  // Точная цитата: найденный в абзаце фрагмент (или сырая цитата модели, если
+  // локализовать не удалось — безъякорный Issue стадий 2/3).
+  const quote = located?.fragment || finding.fragment || null;
   return {
     source_document_id: sourceDocumentId || null,
     source_clause: located?.block ? `п. ${located.block.index + 1}` : null,
-    source_fragment: blockText || located?.fragment || finding.fragment || null,
+    source_fragment: quote || blockText || null,
+    // Полный абзац сохраняем отдельно: нужен для показа/локализации и как фолбэк,
+    // но НЕ как диапазон правки (иначе находки абзаца снова слипнутся).
+    context_text: blockText,
     paragraph_index: located?.block?.index ?? null,
-    char_start: blockText ? 0 : (located?.char_start ?? null),
-    char_end: blockText ? blockText.length : (located?.char_end ?? null),
+    char_start: located?.char_start ?? null,
+    char_end: located?.char_end ?? null,
     problem_type: finding.problem_type || null,
     risk_category: finding.risk_category || riskCategory || null,
     criticality: crit,
@@ -224,26 +223,46 @@ async function runLlmStage(ctx, cfg) {
     throw err;
   }
 
-  // Прогресс по сегментам для круговой шкалы (in-memory реестр, см. progressRegistry).
-  ctx.progress?.setTotal(segments.length);
+  // Прогресс по сегментам для круговой шкалы. Репортер пишет в строку задачи
+  // очереди (analysis_tasks) — прогресс переживает рестарт и виден из любого
+  // процесса. Без очереди (синхронный вызов) ctx.progress отсутствует.
+  await ctx.progress?.setTotal(segments.length);
+
+  // Мост к задаче очереди (опц.): чекпойнт по сегментам + кооперативная отмена.
+  // Повтор задачи не переспрашивает LLM про уже посчитанные сегменты — сверка
+  // по хэшу входа, поэтому изменившийся текст ТЗ чекпойнт не подхватит.
+  const control = ctx.jobControl || null;
+  const inputHash = (s) => crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 16);
 
   const startedAt = Date.now();
   const results = new Array(segments.length);
+  let reused = 0;
   for (let start = 0; start < segments.length; start += concurrency) {
+    control?.guard?.(); // отмена задания — прерываемся между волнами
     const wave = [];
     for (let i = start; i < Math.min(start + concurrency, segments.length); i += 1) {
       const idx = i;
       const userMsg = buildUserMessage(segments[idx], idx + 1, segments.length);
+      const h = control ? inputHash(userMsg) : null;
+      const cached = control?.getSegment?.(idx, h) || null;
+      if (cached) {
+        results[idx] = cached;
+        reused += 1;
+        wave.push(Promise.resolve(ctx.progress?.tick()));
+        continue;
+      }
       wave.push(
         chatJson({ system: systemMsg, user: userMsg, jsonSchema: schema, schemaName })
-          .then((json) => {
+          .then(async (json) => {
             const segFindings = Array.isArray(json?.findings) ? json.findings : [];
             // eslint-disable-next-line no-console
             console.log(
               `[${logTag}] часть ${idx + 1}/${segments.length}: findings=${segFindings.length}`,
             );
             results[idx] = segFindings;
-            ctx.progress?.tick(); // +1 сегмент готов → круговая шкала
+            // Сначала чекпойнт (чтобы повтор не потерял сегмент), потом прогресс.
+            await control?.saveSegment?.(idx, h, segFindings);
+            await ctx.progress?.tick(); // +1 сегмент готов → круговая шкала
           })
           .catch((e) => {
             const err = new Error(
@@ -257,6 +276,10 @@ async function runLlmStage(ctx, cfg) {
     }
     // eslint-disable-next-line no-await-in-loop
     await Promise.all(wave);
+  }
+  if (reused) {
+    // eslint-disable-next-line no-console
+    console.log(`[${logTag}] продолжение с чекпойнта: переиспользовано частей ${reused}/${segments.length}`);
   }
   const allFindings = [];
   for (const r of results) if (r) allFindings.push(...r);

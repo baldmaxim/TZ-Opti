@@ -32,17 +32,17 @@ test('1 кластер из 3 похожих замечаний одного п�
   const pairs = [
     pair(
       { id: 'a', tz_clause: 'п. 5.1 Состав работ', category: 'coverage', problem_type: 'не_учтено_в_кп',
-        basis: 'Демонтаж не учтён в КП', suggested_action: 'edit', paragraph_index: 5 },
+        basis: 'Демонтаж не учтён в КП', suggested_action: 'replace', paragraph_index: 5 },
       { display_priority: 'high', score: 7, price_impact: 'high' },
     ),
     pair(
       { id: 'b', tz_clause: 'п. 5.1 Состав работ', category: 'coverage', problem_type: 'не_учтено_в_вор',
-        basis: 'Демонтаж не учтён в ВОР', suggested_action: 'edit', paragraph_index: 5 },
+        basis: 'Демонтаж не учтён в ВОР', suggested_action: 'replace', paragraph_index: 5 },
       { display_priority: 'medium', score: 4, price_impact: 'high' },
     ),
     pair(
       { id: 'c', tz_clause: 'п. 5.1 Состав работ', category: 'risk', problem_type: 'не_подтверждён_пд',
-        basis: 'Объём не подтверждён ПД', suggested_action: 'edit', paragraph_index: 5 },
+        basis: 'Объём не подтверждён ПД', suggested_action: 'replace', paragraph_index: 5 },
       { display_priority: 'medium', score: 3, price_impact: 'medium' },
     ),
   ];
@@ -80,7 +80,7 @@ test('открытый объём ≠ риск оплаты в одном пун
     ),
     pair(
       { id: 'pay', tz_clause: 'п. 7.2', category: 'condition', problem_type: 'риск_оплаты',
-        basis: 'Оплата по факту приёмки без аванса', suggested_action: 'accept', paragraph_index: 7 },
+        basis: 'Оплата по факту приёмки без аванса', suggested_action: 'comment', paragraph_index: 7 },
       { display_priority: 'high', score: 7, contract_impact: 'high' },
     ),
   ];
@@ -100,16 +100,42 @@ test('dominantDimension и semanticBucket разделяют объём и оп�
   assert.equal(pay, 'contract');
   assert.notEqual(
     semanticBucket({ suggested_action: 'remove_from_scope' }, { responsibility_impact: 'high' }),
-    semanticBucket({ suggested_action: 'accept' }, { contract_impact: 'high' }),
+    semanticBucket({ suggested_action: 'comment' }, { contract_impact: 'high' }),
   );
+});
+
+// Регресс десинка: replace/limit_scope МЕНЯЮТ текст → семейство modify, поэтому
+// их bucket НЕ совпадает с bucket аннотации (comment/clarify → note) на одном
+// измерении. Раньше replace ошибочно падал в note и слипался с примечаниями.
+test('semanticBucket: replace/limit_scope (modify) не путаются с comment/clarify (note)', () => {
+  const review = { price_impact: 'high' };
+  const replaceBucket = semanticBucket({ suggested_action: 'replace' }, review);
+  const limitBucket = semanticBucket({ suggested_action: 'limit_scope' }, review);
+  const commentBucket = semanticBucket({ suggested_action: 'comment' }, review);
+  const clarifyBucket = semanticBucket({ suggested_action: 'clarify' }, review);
+
+  assert.equal(replaceBucket, 'price|modify');
+  assert.equal(limitBucket, 'price|modify', 'limit_scope тоже правит текст → modify');
+  assert.equal(commentBucket, 'price|note');
+  assert.equal(clarifyBucket, 'price|note');
+  assert.notEqual(replaceBucket, commentBucket, 'replace НЕ должен слипаться с примечанием');
+});
+
+test('semanticBucket: replace-замечание и comment-замечание одного пункта → разные кластеры', () => {
+  const pairs = [
+    pair({ id: 'r', tz_clause: 'п. 8', category: 'coverage', suggested_action: 'replace' }, { price_impact: 'high' }),
+    pair({ id: 'n', tz_clause: 'п. 8', category: 'coverage', suggested_action: 'comment' }, { price_impact: 'high' }),
+  ];
+  const clusters = clusterPairs(pairs, T);
+  assert.equal(clusters.length, 2, 'правка текста и примечание — разные действия → разные кластеры');
 });
 
 // --- Группировка по месту ---------------------------------------------------
 
 test('один смысл, но разные пункты ТЗ -> разные кластеры', () => {
   const pairs = [
-    pair({ id: 'x', tz_clause: 'п. 1', category: 'coverage', suggested_action: 'edit' }, { price_impact: 'high' }),
-    pair({ id: 'y', tz_clause: 'п. 2', category: 'coverage', suggested_action: 'edit' }, { price_impact: 'high' }),
+    pair({ id: 'x', tz_clause: 'п. 1', category: 'coverage', suggested_action: 'replace' }, { price_impact: 'high' }),
+    pair({ id: 'y', tz_clause: 'п. 2', category: 'coverage', suggested_action: 'replace' }, { price_impact: 'high' }),
   ];
   const clusters = clusterPairs(pairs, T);
   assert.equal(clusters.length, 2);
@@ -118,8 +144,8 @@ test('один смысл, но разные пункты ТЗ -> разные �
 test('место по фрагменту, когда нет tz_clause', () => {
   const frag = 'Подрядчик обеспечивает охрану объекта.';
   const pairs = [
-    pair({ id: 'f1', source_fragment: frag, tz_clause: null, paragraph_index: null, category: 'risk', suggested_action: 'edit' }, { contract_impact: 'high' }),
-    pair({ id: 'f2', source_fragment: '  Подрядчик   обеспечивает охрану объекта. ', tz_clause: null, paragraph_index: null, category: 'risk', suggested_action: 'edit' }, { contract_impact: 'high' }),
+    pair({ id: 'f1', source_fragment: frag, tz_clause: null, paragraph_index: null, category: 'risk', suggested_action: 'replace' }, { contract_impact: 'high' }),
+    pair({ id: 'f2', source_fragment: '  Подрядчик   обеспечивает охрану объекта. ', tz_clause: null, paragraph_index: null, category: 'risk', suggested_action: 'replace' }, { contract_impact: 'high' }),
   ];
   const clusters = clusterPairs(pairs, T);
   assert.equal(clusters.length, 1, 'один фрагмент (с точностью до пробелов) -> один кластер');
@@ -130,9 +156,9 @@ test('место по фрагменту, когда нет tz_clause', () => {
 
 test('кластер показывается, если значим хотя бы один элемент', () => {
   const pairs = [
-    pair({ id: 's1', tz_clause: 'п. 9', category: 'coverage', suggested_action: 'edit' },
+    pair({ id: 's1', tz_clause: 'п. 9', category: 'coverage', suggested_action: 'replace' },
       { display_priority: 'low', show_to_engineer: false, price_impact: 'high' }),
-    pair({ id: 's2', tz_clause: 'п. 9', category: 'coverage', suggested_action: 'edit' },
+    pair({ id: 's2', tz_clause: 'п. 9', category: 'coverage', suggested_action: 'replace' },
       { display_priority: 'high', show_to_engineer: true, price_impact: 'high' }),
   ];
   const clusters = clusterPairs(pairs, T);
@@ -143,7 +169,7 @@ test('кластер показывается, если значим хотя б
 
 test('кластер из одних малозначимых -> скрыт', () => {
   const pairs = [
-    pair({ id: 'w1', tz_clause: 'п. 12', category: 'decision', suggested_action: 'note' },
+    pair({ id: 'w1', tz_clause: 'п. 12', category: 'decision', suggested_action: 'comment' },
       { display_priority: 'low', show_to_engineer: false }),
   ];
   const clusters = clusterPairs(pairs, T);
@@ -153,11 +179,11 @@ test('кластер из одних малозначимых -> скрыт', ()
 
 test('без critic-вердикта (review=null) кластеризация не падает', () => {
   const pairs = [
-    pair({ id: 'n1', tz_clause: 'п. 3', category: 'coverage', suggested_action: 'edit', basis: 'b1' }, null),
-    pair({ id: 'n2', tz_clause: 'п. 3', category: 'coverage', suggested_action: 'edit', basis: 'b2' }, null),
+    pair({ id: 'n1', tz_clause: 'п. 3', category: 'coverage', suggested_action: 'replace', basis: 'b1' }, null),
+    pair({ id: 'n2', tz_clause: 'п. 3', category: 'coverage', suggested_action: 'replace', basis: 'b2' }, null),
   ];
   const clusters = clusterPairs(pairs, T);
-  assert.equal(clusters.length, 1, 'без review -> общий bucket general|edit, один кластер');
+  assert.equal(clusters.length, 1, 'без review -> общий bucket general|modify, один кластер');
   assert.equal(clusters[0].item_count, 2);
   assert.equal(clusters[0].overall_criticality, 'low');
 });

@@ -145,6 +145,11 @@ export const api = {
   decideCluster: (tenderId, clusterId, data) =>
     request(`/tenders/${tenderId}/review/clusters/${clusterId}/decision`, { method: 'POST', body: data }),
 
+  // Перенос решений между прогонами (после пересборки): предложения + подтверждение.
+  listCarryovers: (tenderId) => request(`/tenders/${tenderId}/review/carryovers`),
+  confirmCarryovers: (tenderId, selections) =>
+    request(`/tenders/${tenderId}/review/carryovers/confirm`, { method: 'POST', body: { selections } }),
+
   // Превью + экспорт
   reviewPreviewUrl: (tenderId) => `${BASE}/tenders/${tenderId}/review/preview`,
   // Legacy-fallback: сводный вид по issues (группы находок + конфликты + вердикты).

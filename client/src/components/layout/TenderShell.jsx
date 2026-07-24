@@ -12,7 +12,7 @@ export default function TenderShell() {
   useEffect(() => { setTender(id); }, [id, setTender]);
 
   if (!tender) {
-    return <div className="py-12 text-center text-gray-500">Загрузка…</div>;
+    return <div className="py-12 text-center text-gray-500 dark:text-gray-400">Загрузка…</div>;
   }
 
   const path = location.pathname.replace(/\/$/, '');

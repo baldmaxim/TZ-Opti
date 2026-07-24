@@ -7,6 +7,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
 import { useWizardState } from '../../hooks/useWizardState';
 import GateNotice from '../../components/wizard/GateNotice';
+import CarryoverPanel from '../../components/review/CarryoverPanel';
 
 // Что именно ляжет в Word по выбранному решению (зеркало server/review/decisionModel.js).
 const EXPORT_HINT = {
@@ -27,7 +28,7 @@ const FINDING_LABEL = {
 // Кнопки решений: по умолчанию нейтральные (btn-secondary), выбранное решение
 // подсвечивается заливкой + кольцом — чтобы было видно, что выбрал инженер.
 const DECISION_BUTTONS = [
-  { key: 'reject', label: 'Отклонить', active: 'bg-gray-700 text-white ring-2 ring-offset-1 ring-gray-400' },
+  { key: 'reject', label: 'Отклонить', active: 'bg-gray-700 text-white ring-2 ring-offset-1 ring-gray-400 dark:ring-gray-600' },
   { key: 'edit', label: 'Принять с правкой', active: 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-300' },
   { key: 'accept', label: 'Принять', active: 'bg-green-600 text-white ring-2 ring-offset-1 ring-green-300' },
   { key: 'remove_from_scope', label: 'Вынести из объёма', active: 'bg-amber-500 text-white ring-2 ring-offset-1 ring-amber-300' },
@@ -68,16 +69,16 @@ function ClusterCard({ index, cluster, onDecide }) {
     <div className="card p-4 space-y-3">
       {/* 1. Шапка: номер + критичность + краткая тема + статус решения. */}
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-base font-bold text-gray-900">№{index}</span>
+        <span className="text-base font-bold text-gray-900 dark:text-gray-100">№{index}</span>
         <span className={`tag ${criticalityClass(cluster.overall_criticality)}`}>
           {CRITICALITY[cluster.overall_criticality] || cluster.overall_criticality}
         </span>
         <span className="font-semibold text-sm">{clusterTopic(cluster)}</span>
         {!cluster.show_to_engineer && (
-          <span className="tag bg-gray-100 text-gray-500 text-xs">малозначимо</span>
+          <span className="tag bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 text-xs">малозначимо</span>
         )}
         {decided && (
-          <span className="tag bg-green-100 text-green-800 text-xs">
+          <span className="tag bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 text-xs">
             Решение: {DECISIONS[decided.decision] || decided.decision}
           </span>
         )}
@@ -86,9 +87,9 @@ function ClusterCard({ index, cluster, onDecide }) {
       {/* 2. Место в ТЗ: компактная локация + дословный отрывок (главный ориентир). */}
       <div>
         <div className="label">Место в ТЗ</div>
-        {clause && <div className="text-xs text-gray-500">{clause}</div>}
+        {clause && <div className="text-xs text-gray-500 dark:text-gray-400">{clause}</div>}
         {primary && primary.source_fragment && (
-          <div className="mt-1 p-3 bg-gray-50 border-l-2 border-gray-300 rounded text-sm text-gray-700 italic whitespace-pre-wrap">
+          <div className="mt-1 p-3 bg-gray-50 dark:bg-gray-800 border-l-2 dark:border-gray-700 border-gray-300 dark:border-gray-700 rounded text-sm text-gray-700 dark:text-gray-300 italic whitespace-pre-wrap">
             «{primary.source_fragment}»
           </div>
         )}
@@ -97,7 +98,7 @@ function ClusterCard({ index, cluster, onDecide }) {
       {/* 3. Краткое описание замечания. */}
       <div>
         <div className="label">Замечание</div>
-        <div className="text-sm text-gray-800 whitespace-pre-wrap">{shortDescription}</div>
+        <div className="text-sm text-gray-800 dark:text-gray-100 whitespace-pre-wrap">{shortDescription}</div>
       </div>
 
       {/* 4. Вариант от Агента ИИ (read-only) + кнопка «Взять в правку». */}
@@ -113,7 +114,7 @@ function ClusterCard({ index, cluster, onDecide }) {
             Взять в правку →
           </button>
         </div>
-        <div className="mt-1 p-3 bg-blue-50 border border-blue-100 rounded text-sm text-gray-800 whitespace-pre-wrap">
+        <div className="mt-1 p-3 bg-blue-50 dark:bg-blue-900/40 border dark:border-gray-700 border-blue-100 dark:border-blue-800 rounded text-sm text-gray-800 dark:text-gray-100 whitespace-pre-wrap">
           {aiVariant || 'ИИ не предложил конкретной правки.'}
         </div>
       </div>
@@ -141,7 +142,7 @@ function ClusterCard({ index, cluster, onDecide }) {
       </div>
 
       {/* 6. Решения: нейтральные по умолчанию, подсвечивается только выбранное. */}
-      <div className="flex flex-wrap items-center gap-2 justify-end pt-1 border-t">
+      <div className="flex flex-wrap items-center gap-2 justify-end pt-1 border-t dark:border-gray-700">
         {DECISION_BUTTONS.map((b) => {
           const selected = decided?.decision === b.key;
           return (
@@ -157,13 +158,13 @@ function ClusterCard({ index, cluster, onDecide }) {
         })}
       </div>
       {decided && (
-        <div className="text-xs text-gray-500 text-right">
+        <div className="text-xs text-gray-500 dark:text-gray-400 text-right">
           В экспорт: {EXPORT_HINT[decided.decision] || '—'}
         </div>
       )}
 
       {/* 7. Подробности (свёрнуто): основание, исходные сигналы, самоанализ. */}
-      <div className="border-t pt-2">
+      <div className="border-t dark:border-gray-700 pt-2">
         <button
           type="button"
           className="text-xs text-brand-600 hover:underline"
@@ -175,7 +176,7 @@ function ClusterCard({ index, cluster, onDecide }) {
           <div className="mt-2 space-y-3">
             <div>
               <div className="label">Объединённое основание</div>
-              <div className="p-3 bg-gray-50 border rounded text-sm whitespace-pre-wrap">
+              <div className="p-3 bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 rounded text-sm whitespace-pre-wrap">
                 {cluster.merged_basis || '—'}
               </div>
             </div>
@@ -184,17 +185,17 @@ function ClusterCard({ index, cluster, onDecide }) {
               <div className="label">Исходные замечания и сигналы ({items.length})</div>
               <div className="space-y-2">
                 {items.map((it) => (
-                  <div key={it.draft_issue_id} className="text-xs border rounded p-2 bg-white">
+                  <div key={it.draft_issue_id} className="text-xs border dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={`tag text-[10px] ${it.item_role === 'primary' ? 'bg-brand-100 text-brand-800' : 'bg-gray-100 text-gray-600'}`}>
+                      <span className={`tag text-[10px] ${it.item_role === 'primary' ? 'bg-brand-100 text-brand-800' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'}`}>
                         {it.item_role === 'primary' ? 'основной' : 'связанный'}
                       </span>
-                      {it.category && <span className="text-gray-500">[{it.category}]</span>}
-                      {it.problem_type && <span className="text-gray-600">{formatProblemType(it.problem_type)}</span>}
+                      {it.category && <span className="text-gray-500 dark:text-gray-400">[{it.category}]</span>}
+                      {it.problem_type && <span className="text-gray-600 dark:text-gray-400">{formatProblemType(it.problem_type)}</span>}
                     </div>
-                    {it.basis && <div className="text-gray-700">{it.basis}</div>}
+                    {it.basis && <div className="text-gray-700 dark:text-gray-300">{it.basis}</div>}
                     {it.source_fragment && (
-                      <div className="text-gray-500 mt-1 italic">«{it.source_fragment}»</div>
+                      <div className="text-gray-500 dark:text-gray-400 mt-1 italic">«{it.source_fragment}»</div>
                     )}
                   </div>
                 ))}
@@ -206,11 +207,11 @@ function ClusterCard({ index, cluster, onDecide }) {
                 <div className="label">Самоанализ (Стадия 5)</div>
                 <div className="space-y-1">
                   {notes.map((n) => (
-                    <div key={n.id} className="text-xs p-2 rounded bg-amber-50 border border-amber-100">
-                      <span className="font-medium text-amber-800">{FINDING_LABEL[n.finding_type] || n.finding_type}:</span>{' '}
-                      <span className="text-gray-700">{n.comment}</span>
+                    <div key={n.id} className="text-xs p-2 rounded bg-amber-50 dark:bg-amber-900/40 border dark:border-gray-700 border-amber-100 dark:border-amber-800">
+                      <span className="font-medium text-amber-800 dark:text-amber-300">{FINDING_LABEL[n.finding_type] || n.finding_type}:</span>{' '}
+                      <span className="text-gray-700 dark:text-gray-300">{n.comment}</span>
                       {n.suggested_improvement && (
-                        <div className="text-gray-600 mt-0.5">→ {n.suggested_improvement}</div>
+                        <div className="text-gray-600 dark:text-gray-400 mt-0.5">→ {n.suggested_improvement}</div>
                       )}
                     </div>
                   ))}
@@ -234,6 +235,8 @@ export default function ReviewPage() {
   const [loaded, setLoaded] = useState(false);
   const [building, setBuilding] = useState(false);
   const [mode, setMode] = useState('working');
+  // Меняется после пересборки/решения — перечитывает предложения переноса решений.
+  const [carryKey, setCarryKey] = useState(0);
 
   const load = async (m = mode) => {
     if (!tenderId) return;
@@ -255,6 +258,7 @@ export default function ReviewPage() {
     try {
       await api.buildReviewClusters(tenderId, true);
       await load();
+      setCarryKey((k) => k + 1); // новый прогон — обновить предложения переноса
       toastSuccess('Итог собран');
     } catch (err) { toastError(err.message); }
     setBuilding(false);
@@ -266,6 +270,7 @@ export default function ReviewPage() {
       setClusters((prev) =>
         prev.map((c) => (c.id === clusterId ? { ...c, decision: res?.decision || { decision: payload.decision, ...payload } } : c)),
       );
+      setCarryKey((k) => k + 1); // решённый кластер выбывает из предложений переноса
       toastSuccess('Решение сохранено');
     } catch (err) { toastError(err.message); }
   };
@@ -285,23 +290,30 @@ export default function ReviewPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm text-gray-600">
+          <div className="text-sm text-gray-600 dark:text-gray-400">
             Рецензия по сгруппированным замечаниям (кластерам). Одно решение на кластер — оно и попадёт в экспорт.
           </div>
           {clusters.length > 0 && (
-            <div className="text-xs text-gray-500 mt-1">Обработано: {decidedCount} из {clusters.length}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Обработано: {decidedCount} из {clusters.length}</div>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex rounded border overflow-hidden text-xs">
-            <button className={`px-2 py-1 ${mode === 'working' ? 'bg-brand-600 text-white' : 'bg-white text-gray-600'}`} onClick={() => switchMode('working')}>Значимые</button>
-            <button className={`px-2 py-1 ${mode === 'full' ? 'bg-brand-600 text-white' : 'bg-white text-gray-600'}`} onClick={() => switchMode('full')}>Все</button>
+          <div className="flex rounded border dark:border-gray-700 overflow-hidden text-xs">
+            <button className={`px-2 py-1 ${mode === 'working' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`} onClick={() => switchMode('working')}>Значимые</button>
+            <button className={`px-2 py-1 ${mode === 'full' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`} onClick={() => switchMode('full')}>Все</button>
           </div>
           <button className="btn btn-secondary text-xs" disabled={building} onClick={build}>
             {building ? 'Собираю…' : 'Пересобрать итог'}
           </button>
         </div>
       </div>
+
+      {/* Перенос решений из прошлого прогона (виден только при наличии предложений). */}
+      <CarryoverPanel
+        key={carryKey}
+        tenderId={tenderId}
+        onConfirmed={() => load()}
+      />
 
       {clusters.length === 0 ? (
         <EmptyState

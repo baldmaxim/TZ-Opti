@@ -265,7 +265,7 @@ export default function TenderOverview() {
           </svg>
           К дашборду
         </button>
-        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 truncate min-w-0 px-2" title={tender.title}>
+        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 dark:text-gray-100 truncate min-w-0 px-2" title={tender.title}>
           {tender.title}
         </h1>
         <button
@@ -276,7 +276,7 @@ export default function TenderOverview() {
           className={`inline-flex items-center gap-3 px-7 py-4 rounded-lg text-base font-medium transition ${
             hasTz
               ? 'bg-brand-600 text-white hover:bg-brand-700'
-              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
           }`}
         >
           Анализ ТЗ
@@ -299,10 +299,10 @@ export default function TenderOverview() {
               type="button"
               onClick={() => toggleTile(t.id)}
               aria-expanded={isActive}
-              className={`group bg-white border rounded-xl p-3 flex flex-col items-center text-center transition ${
+              className={`group bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-xl p-3 flex flex-col items-center text-center transition ${
                 isActive
                   ? 'border-gray-900 ring-2 ring-gray-900 ring-offset-2'
-                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-700 hover:shadow-sm'
               }`}
             >
               <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-2 transition-transform duration-300 ease-out ${
@@ -314,7 +314,7 @@ export default function TenderOverview() {
                   {t.icon}
                 </span>
               </div>
-              <div className="text-xs font-medium text-gray-800 leading-snug">{t.label}</div>
+              <div className="text-xs font-medium text-gray-800 dark:text-gray-100 leading-snug">{t.label}</div>
             </button>
           );
         })}
@@ -333,7 +333,7 @@ export default function TenderOverview() {
             >
               <div className="tile-panel-inner">
                 <div
-                  className="tile-card bg-white border border-gray-200 rounded-lg p-6"
+                  className="tile-card bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg p-6"
                   style={{ transformOrigin: origins[t.id] || 'center top' }}
                 >
                   {opened.has(t.id) ? <Panel /> : null}
@@ -344,26 +344,26 @@ export default function TenderOverview() {
         })}
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-5">
-        <h3 className="text-sm font-medium text-gray-500 mb-4">Сводка по замечаниям</h3>
+      <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg p-5">
+        <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4">Сводка по замечаниям</h3>
         <div className="grid grid-cols-3 gap-6">
           <div>
-            <div className="text-2xl font-semibold tracking-tight text-gray-900 tabular-nums">{total}</div>
-            <div className="text-xs text-gray-500 mt-1">Всего</div>
+            <div className="text-2xl font-semibold tracking-tight text-gray-900 dark:text-gray-100 tabular-nums">{total}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Всего</div>
           </div>
           <div>
-            <div className="text-2xl font-semibold tracking-tight text-gray-900 tabular-nums">
+            <div className="text-2xl font-semibold tracking-tight text-gray-900 dark:text-gray-100 tabular-nums">
               {pending}
               {pending > 0 && <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle" />}
             </div>
-            <div className="text-xs text-gray-500 mt-1">На рассмотрении</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">На рассмотрении</div>
           </div>
           <div>
-            <div className="text-2xl font-semibold tracking-tight text-gray-900 tabular-nums">
+            <div className="text-2xl font-semibold tracking-tight text-gray-900 dark:text-gray-100 tabular-nums">
               {accepted}
               {accepted > 0 && <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 align-middle" />}
             </div>
-            <div className="text-xs text-gray-500 mt-1">Обработано</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Обработано</div>
           </div>
         </div>
       </div>

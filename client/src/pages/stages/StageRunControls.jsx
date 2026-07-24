@@ -72,7 +72,7 @@ export default function StageRunControls({ stage, status, hasSummary }) {
           </button>
         )}
         {stage1Blocked && (
-          <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 self-center">
+          <span className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40 border dark:border-gray-700 border-amber-200 dark:border-amber-800 rounded px-2 py-1 self-center">
             Загрузите .md-копию ТЗ для запуска
           </span>
         )}
@@ -81,7 +81,7 @@ export default function StageRunControls({ stage, status, hasSummary }) {
         )}
         {!isReadOnly && !isLocked && hasSummary && !isRunning && (
           <button
-            className="btn btn-secondary text-red-600"
+            className="btn btn-secondary text-red-600 dark:text-red-300"
             onClick={() => setResetTo(stage)}
             disabled={busy}
             title="Удалить все замечания и решения этой стадии"

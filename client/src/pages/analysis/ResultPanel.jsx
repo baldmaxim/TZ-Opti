@@ -19,7 +19,7 @@ export default function ResultPanel() {
     <div className="space-y-4">
       <div>
         <h2 className="font-semibold text-lg">Результат анализа</h2>
-        <p className="text-sm text-gray-600 mt-1">
+        <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
           Все правки в ТЗ, собранные после анализа: рецензия и экспорт в Word.
         </p>
       </div>
@@ -27,18 +27,18 @@ export default function ResultPanel() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="card p-3">
           <div className="text-2xl font-semibold tracking-tight tabular-nums">{finishedStages}/5</div>
-          <div className="text-xs text-gray-500 mt-1">Стадий завершено</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Стадий завершено</div>
         </div>
         <div className="card p-3">
           <div className="text-2xl font-semibold tracking-tight tabular-nums">{total}</div>
-          <div className="text-xs text-gray-500 mt-1">Всего замечаний</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Всего замечаний</div>
         </div>
         <div className="card p-3">
           <div className="text-2xl font-semibold tracking-tight tabular-nums">
             {pending}
             {pending > 0 && <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-amber-500 align-middle" />}
           </div>
-          <div className="text-xs text-gray-500 mt-1">На рассмотрении</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">На рассмотрении</div>
         </div>
       </div>
 

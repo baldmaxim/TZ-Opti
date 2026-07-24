@@ -42,13 +42,13 @@ export default function EditableTable({
         </thead>
         <tbody>
           {loading ? (
-            <tr><td className="table-cell text-gray-500" colSpan={columns.length + 1}>Загрузка…</td></tr>
+            <tr><td className="table-cell text-gray-500 dark:text-gray-400" colSpan={columns.length + 1}>Загрузка…</td></tr>
           ) : rows.length === 0 && !onCreate ? (
-            <tr><td className="table-cell text-gray-500" colSpan={columns.length + 1}>{emptyTitle}</td></tr>
+            <tr><td className="table-cell text-gray-500 dark:text-gray-400" colSpan={columns.length + 1}>{emptyTitle}</td></tr>
           ) : null}
 
           {rows.map((row) => (
-            <tr key={row.id} className="border-t border-gray-100">
+            <tr key={row.id} className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700">
               {columns.map((c) => (
                 <td key={c.key} className="table-cell">
                   <Cell column={c} value={row[c.key]} onChange={(v) => onUpdate && onUpdate(row.id, { [c.key]: v })} />
@@ -57,7 +57,7 @@ export default function EditableTable({
               {(onDelete || onCreate) && (
                 <td className="table-cell text-right">
                   {onDelete && (
-                    <button className="btn btn-ghost text-red-600" onClick={() => { if (confirm('Удалить строку?')) onDelete(row.id); }}>Удалить</button>
+                    <button className="btn btn-ghost text-red-600 dark:text-red-300" onClick={() => { if (confirm('Удалить строку?')) onDelete(row.id); }}>Удалить</button>
                   )}
                 </td>
               )}
@@ -65,7 +65,7 @@ export default function EditableTable({
           ))}
 
           {onCreate && (
-            <tr className="border-t-2 border-gray-200 bg-gray-50">
+            <tr className="border-t-2 dark:border-gray-700 border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800">
               {columns.map((c) => (
                 <td key={c.key} className="table-cell">
                   <Cell

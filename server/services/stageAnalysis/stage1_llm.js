@@ -15,6 +15,7 @@ const {
   buildIssue,
   locateInBlocks,
 } = require('./shared/llmStage');
+const { ALL_ACTIONS } = require('../analysis/actions');
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -50,7 +51,7 @@ const RESPONSE_SCHEMA = {
           },
           suggested_action: {
             type: 'string',
-            enum: ['comment', 'replace', 'delete', 'remove_from_scope', 'clarify', 'limit_scope', 'assumption'],
+            enum: ALL_ACTIONS,
             description: 'Рекомендация агента; инженер может выбрать своё действие в UI.',
           },
           suggested_redaction: {

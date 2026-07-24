@@ -39,7 +39,9 @@ export default function AnalysisRunPage() {
 
   const onStart = async () => {
     const res = await runAnalysis({ withSelfAnalysis: true });
-    if (!res?.ok) return;
+    // Ошибка (error) — не идём дальше. Success и warning дают пригодный итог:
+    // при частичном результате замечания всё равно собраны — ведём к рецензии.
+    if (!res || res.severity === 'error') return;
     setRanOnce(true);
     const n = await loadCount();
     if (n > 0) goReview(); // сразу на «Рецензию» — там замечания редактируемы
@@ -64,7 +66,7 @@ export default function AnalysisRunPage() {
           </svg>
           К обзору
         </button>
-        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 truncate min-w-0 px-2" title={tender.title}>
+        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 dark:text-gray-100 truncate min-w-0 px-2" title={tender.title}>
           Анализ ТЗ — {tender.title}
         </h1>
         <span aria-hidden="true" className="invisible inline-flex items-center gap-3 px-7 py-4 text-base font-medium">
@@ -72,11 +74,11 @@ export default function AnalysisRunPage() {
         </span>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg p-10 flex flex-col items-center text-center">
+      <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg p-10 flex flex-col items-center text-center">
         {hasResults ? (
           <>
-            <h2 className="text-lg font-semibold text-gray-900">Анализ выполнен</h2>
-            <p className="text-sm text-gray-600 mt-2 max-w-xl">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Анализ выполнен</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-xl">
               Найдено замечаний (кластеров): <strong>{clusterCount}</strong>. Перейдите к рецензии,
               чтобы принять решения по каждому замечанию, или перезапустите анализ заново.
             </p>
@@ -96,8 +98,8 @@ export default function AnalysisRunPage() {
           </>
         ) : (
           <>
-            <h2 className="text-lg font-semibold text-gray-900">Анализ технического задания</h2>
-            <p className="text-sm text-gray-600 mt-2 max-w-xl">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Анализ технического задания</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-2 max-w-xl">
               Агент проверит ТЗ по всем направлениям (покрытие расчёта, Q&A и характеристики,
               существенные условия, типовые риски) и проведёт самоанализ итога. По завершении
               откроется «Рецензия» с найденными замечаниями.
@@ -111,12 +113,12 @@ export default function AnalysisRunPage() {
               {analysisRunning ? (analysisStep || 'Анализ выполняется…') : 'Начать анализ'}
             </button>
             {analysisRunning && (
-              <p className="text-xs text-gray-500 mt-3">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
                 Анализ идёт в фоне и может занять несколько минут. Не закрывайте вкладку.
               </p>
             )}
             {!analysisRunning && ranOnce && (
-              <p className="text-sm text-emerald-700 mt-4 inline-block bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+              <p className="text-sm text-emerald-700 dark:text-emerald-300 mt-4 inline-block bg-emerald-50 dark:bg-emerald-900/40 border dark:border-gray-700 border-emerald-200 dark:border-emerald-800 rounded px-3 py-2">
                 ✓ Анализ завершён — замечаний не найдено.
               </p>
             )}

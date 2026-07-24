@@ -17,10 +17,10 @@ export default function ParamsPanel({ schema, params, onChange, disabled, footer
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-2">
           {schema.map((field) => (
             <div key={field.key} className="min-w-0">
-              <div className="text-[11px] uppercase tracking-wide text-gray-500 truncate">
+              <div className="text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 truncate">
                 {field.label}
               </div>
-              <div className="text-base font-semibold text-gray-900 mt-0.5 truncate">
+              <div className="text-base font-semibold text-gray-900 dark:text-gray-100 mt-0.5 truncate">
                 {formatValue(field, params[field.key])}
               </div>
             </div>

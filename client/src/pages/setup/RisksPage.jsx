@@ -15,10 +15,10 @@ const CRIT_LABEL = {
 };
 
 const CRIT_CLASS = {
-  low: 'bg-blue-100 text-blue-800',
-  medium: 'bg-amber-100 text-amber-800',
-  high: 'bg-orange-100 text-orange-800',
-  critical: 'bg-red-100 text-red-800',
+  low: 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300',
+  medium: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300',
+  high: 'bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-300',
+  critical: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300',
 };
 
 function appliesValue(r) {
@@ -156,14 +156,14 @@ export default function RisksPage() {
     return { yes, no, auto, withMatches, customCount, total: items.length };
   }, [items, matches]);
 
-  if (loading) return <div className="text-center text-gray-500 py-8">Загрузка…</div>;
+  if (loading) return <div className="text-center text-gray-500 dark:text-gray-400 py-8">Загрузка…</div>;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold">База типовых рисков</h2>
-          <p className="text-sm text-gray-600 mt-0.5">
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
             {stats.total} рисков ({stats.total - stats.customCount} стандартных + {stats.customCount} своих).
             Используется в Стадии 3 анализа.
           </p>
@@ -180,19 +180,19 @@ export default function RisksPage() {
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="tag bg-green-100 text-green-800">Применять: <strong className="ml-1">{stats.yes}</strong></span>
-        <span className="tag bg-red-100 text-red-800">Не применять: <strong className="ml-1">{stats.no}</strong></span>
-        <span className="tag bg-gray-100 text-gray-700">Авто: <strong className="ml-1">{stats.auto}</strong></span>
+        <span className="tag bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300">Применять: <strong className="ml-1">{stats.yes}</strong></span>
+        <span className="tag bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300">Не применять: <strong className="ml-1">{stats.no}</strong></span>
+        <span className="tag bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300">Авто: <strong className="ml-1">{stats.auto}</strong></span>
         {stats.withMatches > 0 && (
           <span
-            className="tag bg-amber-100 text-amber-800"
+            className="tag bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300"
             title="Сколько рисков нашли совпадения в активном тексте ТЗ"
           >⚡ В ТЗ: <strong className="ml-1">{stats.withMatches}</strong></span>
         )}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs text-gray-500">Показать:</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">Показать:</span>
         <FilterButton active={filter === 'all'} onClick={() => setFilter('all')}>
           Все ({items.length})
         </FilterButton>
@@ -213,8 +213,8 @@ export default function RisksPage() {
       <div className="space-y-3">
         {sections.map(({ section, items: secItems }) => (
           <div key={section} className="card overflow-hidden">
-            <div className="bg-gray-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 border-b">
-              {section} <span className="text-gray-400 normal-case">({secItems.length})</span>
+            <div className="bg-gray-50 dark:bg-gray-800 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b dark:border-gray-700">
+              {section} <span className="text-gray-400 dark:text-gray-500 normal-case">({secItems.length})</span>
             </div>
             <table className="w-full table-fixed">
               <thead>
@@ -244,7 +244,7 @@ export default function RisksPage() {
 
       {!locked && (
         <div>
-          <button className="btn btn-ghost text-gray-600" onClick={handleReset} disabled={busy}>
+          <button className="btn btn-ghost text-gray-600 dark:text-gray-400" onClick={handleReset} disabled={busy}>
             Сбросить пометки ↺
           </button>
         </div>
@@ -266,10 +266,10 @@ function FilterButton({ active, onClick, children }) {
       type="button"
       onClick={onClick}
       className={clsx(
-        'px-2.5 py-1 rounded text-xs font-medium border transition',
+        'px-2.5 py-1 rounded text-xs font-medium border dark:border-gray-700 transition',
         active
           ? 'bg-brand-600 text-white border-brand-700'
-          : 'bg-white text-gray-700 border-gray-300 hover:border-brand-400'
+          : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:border-brand-400'
       )}
     >{children}</button>
   );
@@ -281,22 +281,22 @@ function RiskRow({ risk, match, locked, onApplies, onComment, onDeleteCustom }) 
   const matchCount = match ? match.count : 0;
 
   return (
-    <tr className={clsx('border-t border-gray-100 align-top', !risk.effective && 'opacity-60')}>
-      <td className={clsx('table-cell', risk.effective ? 'border-l-2 border-green-500' : 'border-l-2 border-gray-200')}>
+    <tr className={clsx('border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 align-top', !risk.effective && 'opacity-60')}>
+      <td className={clsx('table-cell', risk.effective ? 'border-l-2 dark:border-gray-700 border-green-500' : 'border-l-2 dark:border-gray-700 border-gray-200 dark:border-gray-700')}>
         <div className="flex items-start gap-2">
-          <span className={clsx('tag flex-shrink-0', CRIT_CLASS[risk.criticality] || 'bg-gray-100')}>
+          <span className={clsx('tag flex-shrink-0', CRIT_CLASS[risk.criticality] || 'bg-gray-100 dark:bg-gray-700')}>
             {CRIT_LABEL[risk.criticality] || risk.criticality}
           </span>
           {risk.is_custom && (
-            <span className="tag bg-purple-100 text-purple-800 flex-shrink-0" title="Свой риск (добавлен вручную)">★ Свой</span>
+            <span className="tag bg-purple-100 dark:bg-purple-900/40 text-purple-800 dark:text-purple-300 flex-shrink-0" title="Свой риск (добавлен вручную)">★ Свой</span>
           )}
           <div className="flex-1 min-w-0">
             <div className="font-medium text-sm whitespace-pre-wrap break-words">{risk.risk_text}</div>
             {(risk.triggers || []).length > 0 && (
-              <div className="text-xs text-gray-500 mt-1">
-                <span className="text-gray-400">триггеры:</span>{' '}
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                <span className="text-gray-400 dark:text-gray-500">триггеры:</span>{' '}
                 {risk.triggers.map((t, i) => (
-                  <span key={i} className="font-mono bg-gray-100 text-gray-700 rounded px-1 mr-1 mb-0.5 inline-block">
+                  <span key={i} className="font-mono bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded px-1 mr-1 mb-0.5 inline-block">
                     {t}
                   </span>
                 ))}
@@ -306,7 +306,7 @@ function RiskRow({ risk, match, locked, onApplies, onComment, onDeleteCustom }) 
           {risk.is_custom && !locked && (
             <button
               type="button"
-              className="text-red-600 hover:text-red-800 text-sm px-1"
+              className="text-red-600 dark:text-red-300 hover:text-red-800 dark:hover:text-red-300 text-sm px-1"
               title="Удалить свой риск"
               onClick={onDeleteCustom}
             >×</button>
@@ -318,14 +318,14 @@ function RiskRow({ risk, match, locked, onApplies, onComment, onDeleteCustom }) 
           <div>
             <button
               type="button"
-              className="tag bg-amber-100 text-amber-800 cursor-pointer hover:bg-amber-200"
+              className="tag bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 cursor-pointer hover:bg-amber-200 dark:hover:bg-amber-900/50"
               onClick={() => setShowSamples((s) => !s)}
               title="Показать цитаты"
             >⚡ {matchCount} совп.</button>
             {showSamples && match.samples && (
               <div className="mt-2 space-y-1">
                 {match.samples.map((s, i) => (
-                  <div key={i} className="text-[11px] bg-yellow-50 border-l-2 border-yellow-400 px-2 py-1">
+                  <div key={i} className="text-[11px] bg-yellow-50 dark:bg-yellow-900/40 border-l-2 dark:border-gray-700 border-yellow-400 px-2 py-1">
                     п. {s.paragraph_index + 1}: «{s.full_paragraph}»
                   </div>
                 ))}
@@ -333,7 +333,7 @@ function RiskRow({ risk, match, locked, onApplies, onComment, onDeleteCustom }) 
             )}
           </div>
         ) : (
-          <span className="text-xs text-gray-400">—</span>
+          <span className="text-xs text-gray-400 dark:text-gray-500">—</span>
         )}
       </td>
       <td className="table-cell">
@@ -348,7 +348,7 @@ function RiskRow({ risk, match, locked, onApplies, onComment, onDeleteCustom }) 
           />
         )}
         {locked && risk.comment && (
-          <div className="text-xs text-gray-700 mt-2">{risk.comment}</div>
+          <div className="text-xs text-gray-700 dark:text-gray-300 mt-2">{risk.comment}</div>
         )}
       </td>
     </tr>
@@ -357,13 +357,13 @@ function RiskRow({ risk, match, locked, onApplies, onComment, onDeleteCustom }) 
 
 function ApplyToggle({ value, autoSuggest, onChange, disabled }) {
   return (
-    <div className={clsx('inline-flex rounded-md border border-gray-300 overflow-hidden text-xs', disabled && 'opacity-70')}>
+    <div className={clsx('inline-flex rounded-md border dark:border-gray-700 border-gray-300 dark:border-gray-700 overflow-hidden text-xs', disabled && 'opacity-70')}>
       <button
         type="button"
         className={clsx(
           'px-2 py-1 font-medium transition',
-          value === 'yes' ? 'bg-green-600 text-white' : 'bg-white text-gray-700',
-          !disabled && 'hover:bg-green-50',
+          value === 'yes' ? 'bg-green-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300',
+          !disabled && 'hover:bg-green-50 dark:hover:bg-green-900/40',
           disabled && 'cursor-not-allowed'
         )}
         onClick={() => !disabled && onChange('yes')}
@@ -372,9 +372,9 @@ function ApplyToggle({ value, autoSuggest, onChange, disabled }) {
       <button
         type="button"
         className={clsx(
-          'px-2 py-1 font-medium border-l border-gray-300 transition',
-          value === 'no' ? 'bg-red-600 text-white' : 'bg-white text-gray-700',
-          !disabled && 'hover:bg-red-50',
+          'px-2 py-1 font-medium border-l dark:border-gray-700 border-gray-300 dark:border-gray-700 transition',
+          value === 'no' ? 'bg-red-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300',
+          !disabled && 'hover:bg-red-50 dark:hover:bg-red-900/40',
           disabled && 'cursor-not-allowed'
         )}
         onClick={() => !disabled && onChange('no')}
@@ -383,9 +383,9 @@ function ApplyToggle({ value, autoSuggest, onChange, disabled }) {
       <button
         type="button"
         className={clsx(
-          'px-2 py-1 font-medium border-l border-gray-300 transition',
-          value === 'auto' ? 'bg-gray-200 text-gray-800' : 'bg-white text-gray-500',
-          !disabled && 'hover:bg-gray-50',
+          'px-2 py-1 font-medium border-l dark:border-gray-700 border-gray-300 dark:border-gray-700 transition',
+          value === 'auto' ? 'bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-100' : 'bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400',
+          !disabled && 'hover:bg-gray-50 dark:hover:bg-gray-800',
           disabled && 'cursor-not-allowed'
         )}
         onClick={() => !disabled && onChange('auto')}
@@ -460,7 +460,7 @@ function AddCustomRiskModal({ open, existingCategories, onClose, onSubmit }) {
           <datalist id="categories-list">
             {existingCategories.map((c) => <option key={c} value={c} />)}
           </datalist>
-          <p className="text-xs text-gray-500 mt-1">Можно выбрать существующую или ввести свою.</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Можно выбрать существующую или ввести свою.</p>
         </div>
         <div>
           <label className="label">Формулировка риска *</label>
@@ -480,7 +480,7 @@ function AddCustomRiskModal({ open, existingCategories, onClose, onSubmit }) {
             onChange={(e) => setTriggers(e.target.value)}
             placeholder={'по одной фразе на строку\nили через запятую'}
           />
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             Stage 3 анализа будет искать эти фразы в активном тексте ТЗ.
           </p>
         </div>

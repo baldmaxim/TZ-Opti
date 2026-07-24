@@ -3,7 +3,7 @@ import clsx from 'clsx';
 
 export default function ConditionsList({ items, locked, onPatch, onResetOverride }) {
   if (!items || !items.length) {
-    return <div className="text-gray-500 text-sm">Нет условий.</div>;
+    return <div className="text-gray-500 dark:text-gray-400 text-sm">Нет условий.</div>;
   }
   return (
     <div className="card overflow-hidden">
@@ -56,13 +56,13 @@ function ConditionRow({ item, locked, onPatch, onResetOverride }) {
   };
 
   return (
-    <tr className="border-t border-gray-100 align-top">
-      <td className="table-cell text-center text-gray-500 font-mono">{item.idx}</td>
+    <tr className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 align-top">
+      <td className="table-cell text-center text-gray-500 dark:text-gray-400 font-mono">{item.idx}</td>
       <td className="table-cell">
         <div className="font-medium text-sm break-words">{item.name}</div>
         <div className="mt-1 flex flex-wrap gap-1">
           {item.isOverridden && (
-            <span className="tag bg-blue-100 text-blue-800 text-[10px]" title="Текст изменён вручную">
+            <span className="tag bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 text-[10px]" title="Текст изменён вручную">
               ✎ override
             </span>
           )}
@@ -91,19 +91,19 @@ function ConditionRow({ item, locked, onPatch, onResetOverride }) {
             <div
               className={clsx(
                 'text-sm whitespace-pre-wrap break-words',
-                !item.text && 'text-gray-400 italic',
-                item.isOverridden && 'border-l-2 border-blue-400 pl-2'
+                !item.text && 'text-gray-400 dark:text-gray-500 italic',
+                item.isOverridden && 'border-l-2 dark:border-gray-700 border-blue-400 pl-2'
               )}
             >
               {item.text || '— пусто —'}
             </div>
             {!locked && (
               <div className="mt-2 flex gap-2 flex-wrap">
-                <button className="btn btn-ghost text-xs text-blue-700" onClick={beginEdit}>
+                <button className="btn btn-ghost text-xs text-blue-700 dark:text-blue-300" onClick={beginEdit}>
                   ✎ Редактировать текст
                 </button>
                 {item.isOverridden && (
-                  <button className="btn btn-ghost text-xs text-amber-700" onClick={resetOverride}>
+                  <button className="btn btn-ghost text-xs text-amber-700 dark:text-amber-300" onClick={resetOverride}>
                     ↺ К шаблону
                   </button>
                 )}

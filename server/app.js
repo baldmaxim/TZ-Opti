@@ -31,6 +31,7 @@ const criticRouter = require('./routes/critic');
 const clusteringRouter = require('./routes/clustering');
 const selfAnalysisRouter = require('./routes/selfAnalysis');
 const pipelineRouter = require('./routes/pipeline');
+const jobsRouter = require('./routes/jobs');
 
 // Собирает приложение со всеми публичными маршрутами (набор не менялся).
 // opts.logger: 'dev' (по умолчанию) | false — отключает morgan в тестах.
@@ -65,6 +66,7 @@ function createApp({ logger = 'dev' } = {}) {
   app.use('/api', clusteringRouter);
   app.use('/api', selfAnalysisRouter);
   app.use('/api', pipelineRouter);
+  app.use('/api', jobsRouter);
 
   app.use((req, res, next) => {
     if (req.path.startsWith('/api')) {

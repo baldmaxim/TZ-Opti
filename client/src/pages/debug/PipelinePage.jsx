@@ -8,9 +8,9 @@ import { useTenderStore } from '../../store/useTenderStore';
 // /tenders/:id/debug/pipeline
 
 const STEP_STATUS_CLASS = {
-  done: 'bg-emerald-100 text-emerald-700',
-  failed: 'bg-red-100 text-red-800',
-  skipped: 'bg-gray-100 text-gray-500',
+  done: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300',
+  failed: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300',
+  skipped: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
 };
 
 const STEP_STATUS_LABEL = {
@@ -67,7 +67,7 @@ export default function PipelinePage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Конвейер анализа — оркестратор (debug)</h1>
         <div className="flex items-center gap-3">
-          <label className="text-sm text-gray-600 flex items-center gap-1.5">
+          <label className="text-sm text-gray-600 dark:text-gray-400 flex items-center gap-1.5">
             <input
               type="checkbox"
               checked={withSelfAnalysis}
@@ -75,7 +75,7 @@ export default function PipelinePage() {
             />
             включая self-analysis (LLM)
           </label>
-          <button onClick={load} className="text-sm px-3 py-1 rounded border hover:bg-gray-50">
+          <button onClick={load} className="text-sm px-3 py-1 rounded border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
             Обновить
           </button>
           <button
@@ -88,7 +88,7 @@ export default function PipelinePage() {
         </div>
       </div>
 
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
         Один вызов вместо четырёх POST: draft_issues → critic → clustering → self-analysis.
         Слои зависят друг от друга (каскадная чистка при пересборке родителя), поэтому порядок
         фиксирован, а после сбоя шага остальные пропускаются. Сигналы конвейер не пересоздаёт —
@@ -96,12 +96,12 @@ export default function PipelinePage() {
       </p>
 
       {/* Свежесть слоёв */}
-      {loading && <div className="text-gray-500">Загрузка…</div>}
+      {loading && <div className="text-gray-500 dark:text-gray-400">Загрузка…</div>}
 
       {!loading && status && (
-        <div className="border rounded overflow-hidden">
+        <div className="border dark:border-gray-700 rounded overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+            <thead className="bg-gray-50 dark:bg-gray-800 text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
               <tr>
                 <th className="px-4 py-2">Слой</th>
                 <th className="px-4 py-2">Записей</th>
@@ -111,19 +111,19 @@ export default function PipelinePage() {
             </thead>
             <tbody>
               {layers.map((l) => (
-                <tr key={l.key} className="border-t">
+                <tr key={l.key} className="border-t dark:border-gray-700">
                   <td className="px-4 py-2">{l.label}</td>
                   <td className="px-4 py-2">{l.count}</td>
-                  <td className="px-4 py-2 text-gray-500">{fmtBuiltAt(l.built_at)}</td>
+                  <td className="px-4 py-2 text-gray-500 dark:text-gray-400">{fmtBuiltAt(l.built_at)}</td>
                   <td className="px-4 py-2">
                     {l.stale ? (
-                      <span className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                      <span className="text-xs px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300">
                         требует пересборки
                       </span>
                     ) : l.empty ? (
-                      <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-500">пусто</span>
+                      <span className="text-xs px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">пусто</span>
                     ) : (
-                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">актуален</span>
+                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">актуален</span>
                     )}
                   </td>
                 </tr>
@@ -134,7 +134,7 @@ export default function PipelinePage() {
       )}
 
       {!loading && status && (
-        <div className="text-sm text-gray-600">
+        <div className="text-sm text-gray-600 dark:text-gray-400">
           {status.needs_rebuild
             ? 'Есть устаревшие слои — нажмите «Пересобрать конвейер».'
             : 'Все слои согласованы.'}
@@ -144,20 +144,20 @@ export default function PipelinePage() {
       {/* Отчёт последнего прогона */}
       {report && (
         <div className="space-y-2">
-          <h2 className="text-sm font-semibold text-gray-700">Отчёт прогона</h2>
+          <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Отчёт прогона</h2>
           {report.steps.map((s) => (
-            <div key={s.step} className="border rounded p-3 space-y-1">
+            <div key={s.step} className="border dark:border-gray-700 rounded p-3 space-y-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className={`text-xs px-2 py-0.5 rounded font-medium ${STEP_STATUS_CLASS[s.status] || ''}`}>
                   {STEP_STATUS_LABEL[s.status] || s.status}
                 </span>
-                <span className="text-sm text-gray-800">{s.label}</span>
-                {typeof s.ms === 'number' && <span className="text-xs text-gray-400">{s.ms} мс</span>}
+                <span className="text-sm text-gray-800 dark:text-gray-100">{s.label}</span>
+                {typeof s.ms === 'number' && <span className="text-xs text-gray-400 dark:text-gray-500">{s.ms} мс</span>}
               </div>
-              {s.error && <div className="text-sm text-red-700">{s.error}</div>}
-              {s.reason && <div className="text-sm text-gray-500">{s.reason}</div>}
+              {s.error && <div className="text-sm text-red-700 dark:text-red-300">{s.error}</div>}
+              {s.reason && <div className="text-sm text-gray-500 dark:text-gray-400">{s.reason}</div>}
               {s.summary && (
-                <div className="text-xs text-gray-500 font-mono whitespace-pre-wrap">
+                <div className="text-xs text-gray-500 dark:text-gray-400 font-mono whitespace-pre-wrap">
                   {Object.entries(s.summary)
                     .map(([k, v]) => `${k}: ${typeof v === 'object' && v !== null ? JSON.stringify(v) : v}`)
                     .join(' · ')}

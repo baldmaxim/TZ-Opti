@@ -1,7 +1,25 @@
 import { create } from 'zustand';
 import { api } from '../services/api';
-import { toastError, toastSuccess } from './useToastStore';
+import { toastError, toastSuccess, toastWarning } from './useToastStore';
 import { analysisStartKey } from '../components/stages/AnalysisProgressRing';
+import { ANALYSIS_STATUS, severityOf, stageOutcome, aggregateRun } from '../utils/analysisResult';
+
+// Финальный тост по единому контракту результата: success — только полный успех,
+// warning — частичный итог, error — сбой. Специфичные тосты (что именно упало)
+// уже показаны по ходу прогона; здесь — сводка.
+function reportAnalysisOutcome(status) {
+  const sev = severityOf(status);
+  if (sev === 'success') toastSuccess('Анализ ТЗ собран');
+  else if (sev === 'warning') {
+    toastWarning('Анализ ТЗ собран частично: часть замечаний не добыта — проверьте статусы стадий.');
+  } else if (status === ANALYSIS_STATUS.CANCELLED) {
+    toastError('Анализ ТЗ не завершён: не все шаги выполнены — устраните причину и повторите.');
+  } else if (status === ANALYSIS_STATUS.INTERRUPTED) {
+    toastError('Анализ ТЗ прерван и не завершён.');
+  } else {
+    toastError('Анализ ТЗ не выполнен — устраните ошибку и повторите.');
+  }
+}
 
 // Реестр активных опросов (вне store — реактивность не нужна), ключ
 // `${tenderId}:${stage}`. Стадия 1 считается в фоне на сервере; клиент
@@ -88,14 +106,16 @@ export const useTenderStore = create((set, get) => ({
         if (st !== 'running') {
           const info = (data.stages || []).find((s) => s.stage === n);
           const sm = info && info.summary;
-          if (sm && sm.status === 'failed') {
+          // Success только при завершённом прогоне (contract). Иначе — ошибка:
+          // не рапортуем «завершено» после сбоя/обрыва стадии.
+          if (severityOf(stageOutcome(sm)) === 'success') {
+            toastSuccess(`Стадия ${n}: анализ завершён`);
+          } else {
             toastError(
               `Стадия ${n}: анализ не удался — ${
-                (sm.summary && sm.summary.error) || 'см. логи'
+                (sm && sm.summary && sm.summary.error) || 'см. логи'
               }. Повторите запуск.`,
             );
-          } else {
-            toastSuccess(`Стадия ${n}: анализ завершён`);
           }
           return;
         }
@@ -172,34 +192,71 @@ export const useTenderStore = create((set, get) => ({
     const id = get().tenderId;
     if (!id) return null;
     set({ analysisRunning: true, analysisStep: 'Подготовка…' });
+    const stageStatuses = []; // исход добытчика каждой пройденной стадии
+    let aborted = null; // cancelled (гейт/уход) | interrupted (ушли с тендера)
     try {
       await get().refreshStages();
       for (let n = 1; n <= 4; n += 1) {
         const statusOf = () => get().stageState?.[`stage${n}_status`];
-        if (statusOf() === 'finished') continue;
+        if (statusOf() === 'finished') { stageStatuses.push(ANALYSIS_STATUS.COMPLETED); continue; }
         set({ analysisStep: `Добыча замечаний: шаг ${n} из 4` });
         if (statusOf() !== 'running') {
           try {
             try { localStorage.setItem(analysisStartKey(id, n), String(Date.now())); } catch { /* ignore */ }
             await api.runStage(id, n);
           } catch (err) {
-            // Гейт «стадия недоступна» / уже идёт — прекращаем добычу, идём к сборке.
+            // Гейт «стадия недоступна» / уже идёт — запуск отменён, добычу прекращаем.
             toastError(`Шаг ${n}: ${err.message}`);
+            aborted = ANALYSIS_STATUS.CANCELLED;
             break;
           }
         }
-        await get()._waitStage(n);
-        try { await api.finishStage(id, n); } catch { /* best-effort */ }
+        const data = await get()._waitStage(n);
+        if (!data) { aborted = ANALYSIS_STATUS.INTERRUPTED; break; } // ушли на другой тендер
+        // Классифицируем исход прогона по последнему analysis_run стадии.
+        const info = (data.stages || []).find((s) => s.stage === n);
+        const outcome = stageOutcome(info && info.summary);
+        stageStatuses.push(outcome);
+        if (outcome !== ANALYSIS_STATUS.COMPLETED) {
+          // Стадия не досчитана — НЕ завершаем её (сервер и так это запретит) и
+          // прекращаем добычу: следующие стадии залочены за незавершённой.
+          toastError(`Шаг ${n}: анализ не удался — стадия не завершена.`);
+          break;
+        }
+        try {
+          await api.finishStage(id, n);
+        } catch (err) {
+          // Не подавляем сбой finish: считаем стадию недосчитанной и прекращаем.
+          toastError(`Шаг ${n}: не удалось завершить — ${err.message}`);
+          stageStatuses[stageStatuses.length - 1] = ANALYSIS_STATUS.FAILED;
+          break;
+        }
         await get().refreshStages();
       }
+
+      // Сборка кластеров — из того, что успело добыться. Отчёт конвейера {ok}
+      // проверяем: {ok:false} = сборка не удалась (шаг конвейера упал).
       set({ analysisStep: 'Сборка кластеров…' });
-      await api.runPipeline(id, { withSelfAnalysis });
+      let pipelineStatus = ANALYSIS_STATUS.FAILED;
+      try {
+        const report = await api.runPipeline(id, { withSelfAnalysis });
+        if (report && report.ok) {
+          pipelineStatus = ANALYSIS_STATUS.COMPLETED;
+        } else {
+          const step = report && report.failed_step ? `: шаг «${report.failed_step}»` : '';
+          toastError(`Сборка кластеров не удалась${step}.`);
+        }
+      } catch (err) {
+        toastError(`Сборка кластеров не удалась — ${err.message}`);
+      }
       await Promise.all([get().refreshStages(), get().refreshTender()]);
-      toastSuccess('Анализ ТЗ собран');
-      return { ok: true };
+
+      const status = aggregateRun({ stageStatuses, pipelineStatus, aborted });
+      reportAnalysisOutcome(status);
+      return { status, severity: severityOf(status), ok: severityOf(status) === 'success' };
     } catch (err) {
       toastError(err.message);
-      return { ok: false, error: err.message };
+      return { status: ANALYSIS_STATUS.FAILED, severity: 'error', ok: false, error: err.message };
     } finally {
       set({ analysisRunning: false, analysisStep: null });
     }

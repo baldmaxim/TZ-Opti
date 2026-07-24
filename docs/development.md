@@ -30,7 +30,7 @@ npm --prefix client ci      # client
 
 | Файл | Назначение |
 |------|-----------|
-| `.env` (корень) | рабочее окружение: `DATABASE_URL`, LLM-ключи. Шаблон — `.env.example`. Не читается тестами |
+| `.env` (корень) | рабочее окружение: `DATABASE_URL`, LLM-ключи, настройки воркера очереди (`WORKER_*`). Шаблон — `.env.example`. Не читается тестами |
 | `.env.test` (корень, необязателен) | окружение integration-тестов: `TEST_DATABASE_URL`. Шаблон — `.env.test.example`. В git не коммитится |
 | `server/test/env/test.env` | `NODE_ENV=test` — включает fail-closed защиты тестового процесса (в git есть) |
 | `server/test/env/strict.env` | `TEST_DB_REQUIRED=1` — строгий режим integration (в git есть) |
@@ -117,6 +117,8 @@ Integration-тест применяет схему (`runMigration`) к указ�
 | `clock.js` | контролируемые часы (`installFakeClock`) и детерминированные ID |
 | `network.js` | блокировка исходящей сети (`blockNetwork`) |
 | `testDb.js` | доступ к тестовой БД + решение skip / strict-fail |
+| `fakeQueue.js` | офлайн-стор очереди задач (те же правила из `jobs/jobModel`) + фейковый advisory-lock |
+| `queueWorkerProc.js` | отдельный ПРОЦЕСС-воркер для integration-теста «два воркера» (`child_process.fork`) |
 
 ## Запуск приложения
 
@@ -125,15 +127,43 @@ npm run dev          # server :4000 + client :5173 + LLM-bridge :4010
 npm run dev:server   # только сервер (nodemon server/server.js)
 npm run dev:client   # только клиент
 npm run bridge       # только LLM-bridge
+npm run worker       # отдельный процесс-воркер очереди (см. ниже)
 ```
 
 Точка входа сервера — `server/server.js`: читает `.env`, применяет миграцию,
-сеет демо-данные при пустой БД, чинит «зомби»-статусы, слушает порт.
-`server/app.js` содержит только `createApp()` и при импорте **не** открывает
-порт, **не** мигрирует и **не** сеет БД — поэтому приложение можно собрать в
-тесте офлайн (`server/test/unit/appSmoke.test.js`).
+сеет демо-данные при пустой БД, чинит «зомби»-статусы, поднимает воркер очереди
+и слушает порт. `server/app.js` содержит только `createApp()` и при импорте
+**не** открывает порт, **не** мигрирует и **не** сеет БД — поэтому приложение
+можно собрать в тесте офлайн (`server/test/unit/appSmoke.test.js`).
 
 Публичные маршруты при этом не менялись.
+
+### Воркеры очереди
+
+Фоновые прогоны (анализ стадии, пересборка конвейера) идут через очередь в
+Postgres — `analysis_jobs` / `analysis_tasks` (см. раздел «Очередь фоновых
+задач» в [README](../README.md)). Кто её разбирает, задаёт `WORKER_MODE`:
+
+| Режим | Что запускать | Когда |
+|-------|---------------|-------|
+| `embedded` (дефолт) | `npm run dev` / `npm --prefix server start` | обычная разработка: сервер сам поднимает воркер внутри процесса |
+| `external` | `WORKER_MODE=external npm --prefix server start` + `npm run worker` | когда API и тяжёлый анализ нужно разнести по процессам/машинам |
+
+Воркеров можно запускать несколько — координация целиком в БД (`FOR UPDATE SKIP
+LOCKED` + аренда + advisory-lock), общего состояния в памяти нет. Тюнинг —
+`WORKER_CONCURRENCY`, `WORKER_LEASE_MS`, `WORKER_HEARTBEAT_MS`, `WORKER_POLL_MS`,
+`WORKER_REAP_MS` (значения и смысл — в `.env.example`).
+
+Остановка процесса (`Ctrl+C`, `SIGTERM`) возвращает незаконченные задачи в
+очередь, чтобы после перезапуска они продолжились сразу, не дожидаясь истечения
+аренды. Аварийная гибель процесса тоже не теряет работу — задачу подберёт
+reaper, когда истечёт аренда.
+
+> **Пулер соединений.** Замок на область берётся session-level
+> (`pg_try_advisory_lock` на выделенном соединении). С Supabase это порт **5432**
+> (session mode). Transaction-mode пулер (6543) session-level замки не
+> сохраняет — с ним гарантия «одна стадия одной ревизии» ослабнет до защиты
+> уровня очереди.
 
 ## Инварианты
 

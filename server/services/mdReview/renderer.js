@@ -3,6 +3,7 @@
 const db = require('../../db/connection');
 const { decisionVisual, resolveRedaction, resolveActionTarget } = require('../review/decisionModel');
 const clusterReview = require('../review/clusterReviewService');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 
 // Помечает только выбранную подчасть внутри фрагмента (delete/edit на части):
 // возвращает текст фрагмента, где `part` обёрнут wrapFn, остальное не тронуто.
@@ -66,8 +67,10 @@ async function loadClusterDecisionRows(tenderId) {
   }));
 }
 
-// Legacy: issue-level решения (внутристадийная рецензия).
+// Legacy: issue-level решения (внутристадийная рецензия). Только issues
+// АКТУАЛЬНЫХ stage-прогонов (снимок).
 async function loadDecisions(tenderId, stageFilter = null) {
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   if (stageFilter) {
     return db.queryAll(
       `
@@ -75,11 +78,12 @@ async function loadDecisions(tenderId, stageFilter = null) {
              d.decision, d.edited_redaction, d.final_comment, d.target_text
       FROM issues i
       INNER JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ? AND i.analysis_stage = ?
+      WHERE i.tender_id = ? AND i.analysis_stage = ?${rf.sql}
       ORDER BY i.paragraph_index ASC NULLS LAST, i.char_start ASC NULLS LAST
       `,
       tenderId,
       stageFilter,
+      ...rf.params,
     );
   }
   return db.queryAll(
@@ -88,10 +92,11 @@ async function loadDecisions(tenderId, stageFilter = null) {
            d.decision, d.edited_redaction, d.final_comment, d.target_text
     FROM issues i
     INNER JOIN review_decisions d ON d.issue_id = i.id
-    WHERE i.tender_id = ?
+    WHERE i.tender_id = ?${rf.sql}
     ORDER BY i.analysis_stage ASC, i.paragraph_index ASC NULLS LAST, i.char_start ASC NULLS LAST
     `,
     tenderId,
+    ...rf.params,
   );
 }
 

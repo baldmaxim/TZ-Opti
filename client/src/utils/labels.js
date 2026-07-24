@@ -179,18 +179,18 @@ export const formatRiskCategory = (raw) => {
 export const labelFor = (map, key, fallback = '—') => map[key] || fallback;
 
 export const criticalityClass = (c) => {
-  if (c === 'critical') return 'bg-red-100 text-red-800';
-  if (c === 'high') return 'bg-orange-100 text-orange-800';
-  if (c === 'medium') return 'bg-amber-100 text-amber-800';
-  if (c === 'low') return 'bg-blue-100 text-blue-800';
-  return 'bg-gray-100 text-gray-800';
+  if (c === 'critical') return 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300';
+  if (c === 'high') return 'bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-300';
+  if (c === 'medium') return 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300';
+  if (c === 'low') return 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300';
+  return 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-100';
 };
 
 export const statusClass = (s) => {
-  if (s === 'finished') return 'bg-green-100 text-green-800';
-  if (s === 'reviewing' || s === 'in_progress') return 'bg-blue-100 text-blue-800';
-  if (s === 'locked') return 'bg-gray-100 text-gray-500';
-  if (s === 'won') return 'bg-green-100 text-green-800';
-  if (s === 'lost') return 'bg-red-100 text-red-800';
-  return 'bg-amber-100 text-amber-800';
+  if (s === 'finished') return 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300';
+  if (s === 'reviewing' || s === 'in_progress') return 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300';
+  if (s === 'locked') return 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400';
+  if (s === 'won') return 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300';
+  if (s === 'lost') return 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300';
+  return 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300';
 };

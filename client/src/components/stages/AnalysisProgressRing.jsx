@@ -65,7 +65,7 @@ export default function AnalysisProgressRing({ tenderId, stage, size = 132, prog
   const c = 2 * Math.PI * r;
 
   return (
-    <div className="flex items-center gap-5 rounded-lg border border-blue-100 bg-blue-50/60 p-4">
+    <div className="flex items-center gap-5 rounded-lg border dark:border-gray-700 border-blue-100 dark:border-blue-800 bg-blue-50/60 p-4">
       <div className="relative shrink-0" style={{ width: size, height: size }}>
         {determinate ? (
           <svg width={size} height={size} className="-rotate-90">
@@ -77,7 +77,7 @@ export default function AnalysisProgressRing({ tenderId, stage, size = 132, prog
             <circle
               cx={size / 2} cy={size / 2} r={r}
               fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round"
-              className="text-blue-600"
+              className="text-blue-600 dark:text-blue-300"
               strokeDasharray={c}
               strokeDashoffset={c * (1 - frac)}
               style={{ transition: 'stroke-dashoffset 0.5s linear' }}
@@ -99,7 +99,7 @@ export default function AnalysisProgressRing({ tenderId, stage, size = 132, prog
             <circle
               cx={size / 2} cy={size / 2} r={r}
               fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round"
-              className="text-blue-600"
+              className="text-blue-600 dark:text-blue-300"
               strokeDasharray={`${c * 0.28} ${c * 0.72}`}
             />
           </svg>
@@ -107,29 +107,29 @@ export default function AnalysisProgressRing({ tenderId, stage, size = 132, prog
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           {determinate ? (
             <>
-              <span className="text-3xl font-semibold text-blue-700 tabular-nums leading-none">
+              <span className="text-3xl font-semibold text-blue-700 dark:text-blue-300 tabular-nums leading-none">
                 {display}%
               </span>
-              <span className="text-[11px] text-gray-500 tabular-nums mt-1">
+              <span className="text-[11px] text-gray-500 dark:text-gray-400 tabular-nums mt-1">
                 {done}/{total} · {timer}
               </span>
             </>
           ) : (
             <>
-              <span className="text-2xl font-semibold text-blue-700 tabular-nums leading-none">
+              <span className="text-2xl font-semibold text-blue-700 dark:text-blue-300 tabular-nums leading-none">
                 {timer}
               </span>
-              <span className="text-[11px] text-gray-400 mt-1">мин:сек</span>
+              <span className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">мин:сек</span>
             </>
           )}
         </div>
       </div>
       <div className="min-w-0">
-        <div className="font-medium text-blue-700 flex items-center gap-2">
+        <div className="font-medium text-blue-700 dark:text-blue-300 flex items-center gap-2">
           <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
           Идёт анализ…
         </div>
-        <div className="text-xs text-gray-500 mt-1.5 max-w-[280px]">
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-1.5 max-w-[280px]">
           {determinate
             ? `Обработка по частям: ${done} из ${total}. Анализ идёт в фоне — можно закрыть вкладку, результат появится сам.`
             : `Оценка ≈${Math.round(estimate / 60000)} мин (приблизительно). Анализ идёт в фоне — можно закрыть вкладку, результат появится сам.`}

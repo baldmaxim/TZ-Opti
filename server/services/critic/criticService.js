@@ -14,6 +14,7 @@
 
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 
 // --- Критерии значимости для генподрядчика ---------------------------------
 // Каждый критерий: вес (вклад в суммарный балл) + к каким impact-измерениям
@@ -200,27 +201,37 @@ function flattenSignal(row) {
 
 // Главная функция: оценить все draft_issues тендера и записать issue_reviews
 // (идемпотентно — перезапись прежнего набора для этого тендера).
-async function buildIssueReviews(tenderId) {
+async function buildIssueReviews(tenderId, runId) {
+  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  // draft_issues СНИМКА (этого прогона), не все по тендеру.
   const drafts = await db.queryAll(
-    `SELECT * FROM draft_issues WHERE tender_id = ? ORDER BY paragraph_index ASC NULLS LAST, created_at ASC`,
-    tenderId,
+    `SELECT * FROM draft_issues WHERE tender_id = ? AND analysis_run_id = ?
+      ORDER BY paragraph_index ASC NULLS LAST, created_at ASC`,
+    tenderId, rid,
   );
-  const sigRows = await db.queryAll('SELECT * FROM analysis_signals WHERE tender_id = ?', tenderId);
+  // Сигналы актуальных stage-прогонов (тот же согласованный набор, что и у draft_issues).
+  const stageRunIds = await analysisRuns.getActiveStageRunIds(tenderId);
+  const sigRows = stageRunIds.length
+    ? await db.queryAll(
+      `SELECT * FROM analysis_signals WHERE tender_id = ? AND analysis_run_id IN (${stageRunIds.map(() => '?').join(', ')})`,
+      tenderId, ...stageRunIds,
+    )
+    : [];
   const signalsById = new Map(sigRows.map((r) => [r.id, flattenSignal(r)]));
 
   const scored = reviewDrafts(drafts, signalsById);
 
   await db.transaction(async (tx) => {
-    await tx.queryRun(`DELETE FROM issue_reviews WHERE tender_id = ?`, tenderId);
+    await tx.queryRun(`DELETE FROM issue_reviews WHERE tender_id = ? AND analysis_run_id = ?`, tenderId, rid);
     const createdAt = nowIso();
     for (const { draft, review } of scored) {
       await tx.queryRun(
         `INSERT INTO issue_reviews (
-           id, tender_id, draft_issue_id, business_impact, price_impact, schedule_impact,
+           id, tender_id, analysis_run_id, draft_issue_id, business_impact, price_impact, schedule_impact,
            contract_impact, responsibility_impact, display_priority, show_to_engineer,
            critic_comment, criteria_json, score, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        newId(), tenderId, draft.id,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        newId(), tenderId, rid, draft.id,
         review.business_impact, review.price_impact, review.schedule_impact,
         review.contract_impact, review.responsibility_impact, review.display_priority,
         review.show_to_engineer ? 1 : 0,
@@ -258,14 +269,16 @@ const MODE_WHERE = {
 
 async function listIssueReviews(tenderId, mode = 'working') {
   const where = MODE_WHERE[mode] != null ? MODE_WHERE[mode] : MODE_WHERE.working;
+  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+  if (!rid) return [];
   const rows = await db.queryAll(
     `SELECT r.*, d.tz_clause, d.source_fragment, d.problem_type, d.category,
             d.basis, d.suggested_action, d.confidence, d.paragraph_index
        FROM issue_reviews r
        JOIN draft_issues d ON d.id = r.draft_issue_id
-      WHERE r.tender_id = ? ${where}
+      WHERE r.tender_id = ? AND r.analysis_run_id = ? ${where}
       ORDER BY d.paragraph_index ASC NULLS LAST, r.score DESC`,
-    tenderId,
+    tenderId, rid,
   );
   return rows.map((r) => ({
     ...r,

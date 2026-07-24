@@ -22,6 +22,7 @@ Postgres-обёртка в `server/db/connection.js` экспортирует **
 ```bash
 npm run install:all   # установить зависимости root/server/client
 npm run dev           # запустить server (:4000) и client (:5173) одновременно
+npm run worker        # ОТДЕЛЬНЫЙ процесс-воркер очереди (при WORKER_MODE=external)
 npm run seed          # пересеять Postgres-БД демо-данными (--force чтобы перезаписать)
 npm run build         # production-сборка клиента
 npm run test:unit     # серверные юнит-тесты (без БД, без сети, без LLM)
@@ -29,8 +30,9 @@ npm run verify        # unit → integration (доступные) → сборк
 npm run verify:integration  # integration строго: нужен TEST_DATABASE_URL, иначе падает
 ```
 
-Точка входа сервера — `server/server.js` (миграция, авто-сид, listen).
-`server/app.js` экспортирует только `createApp()` и при импорте ничего не
+Точка входа сервера — `server/server.js` (миграция, авто-сид, встроенный воркер
+очереди, listen). Точка входа воркера — `server/worker.js` (только очередь, без
+HTTP). `server/app.js` экспортирует только `createApp()` и при импорте ничего не
 делает — приложение можно собрать в тесте офлайн. Матрица команд и переменные
 тестовой БД — [docs/development.md](docs/development.md); инварианты —
 [docs/safety-invariants.md](docs/safety-invariants.md).
@@ -45,6 +47,20 @@ TZ-Opti/
 ```
 
 Бизнес-логика — в `server/services/`. UI на русском, код на английском.
+
+**Фоновые задачи — устойчивая очередь в Postgres, не память процесса.**
+`server/services/jobs/`: `analysis_jobs` (ЗАДАНИЕ — идемпотентность, отмена,
+прогресс) + `analysis_tasks` (ЗАДАЧА — claim, аренда, попытки, чекпойнт).
+Задачу забирает ровно один воркер (`UPDATE … FOR UPDATE SKIP LOCKED`), на время
+работы держится session-level `pg_try_advisory_lock` по (тендер + область +
+ревизия документов) — одновременный анализ одной стадии одной ревизии
+невозможен даже между процессами. Аренда продлевается heartbeat'ом; не
+продлена — задача осиротела: возвращается в очередь (продолжение с чекпойнта)
+либо получает `interrupted`. Воркер: встроенный в сервер (`WORKER_MODE=embedded`,
+дефолт) или отдельный процесс (`npm run worker`). Redis не используется.
+Чистые правила очереди — `jobs/jobModel.js` (офлайн-тесты), SQL — `jobs/jobQueue.js`.
+Прогресс стадии читается из БД (`jobs/jobService.stageProgress`), in-memory
+`progressRegistry` удалён.
 
 ## Конвенции
 

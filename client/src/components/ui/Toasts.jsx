@@ -11,10 +11,11 @@ export default function Toasts() {
           key={t.id}
           onClick={() => remove(t.id)}
           className={clsx(
-            'cursor-pointer rounded-md shadow-lg px-4 py-3 text-sm border',
-            t.type === 'success' && 'bg-green-50 border-green-200 text-green-900',
-            t.type === 'error' && 'bg-red-50 border-red-200 text-red-900',
-            t.type === 'info' && 'bg-white border-gray-200 text-gray-900'
+            'cursor-pointer rounded-md shadow-lg px-4 py-3 text-sm border dark:border-gray-700',
+            t.type === 'success' && 'bg-green-50 dark:bg-green-900/40 border-green-200 dark:border-green-800 text-green-900 dark:text-green-200',
+            t.type === 'warning' && 'bg-amber-50 dark:bg-amber-900/40 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200',
+            t.type === 'error' && 'bg-red-50 dark:bg-red-900/40 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200',
+            t.type === 'info' && 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-gray-100'
           )}
         >
           {t.message}

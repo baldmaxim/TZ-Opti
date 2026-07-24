@@ -28,7 +28,7 @@ function cluster(over = {}) {
     merged_recommendation: '• Ограничить объём ссылкой на раздел 5',
     overall_criticality: 'medium',
     final_problem_type: 'не_учтено_в_кп',
-    semantic_bucket: 'price|edit',
+    semantic_bucket: 'price|modify',
     item_count: 2,
     paragraph_index: 5,
     items: [{ category: 'coverage', confidence: 0.8 }],
@@ -119,9 +119,25 @@ test('detectContradictions: разные места ТЗ — не конфлик
 });
 
 test('detectContradictions: оба «оставить» — не конфликт', () => {
-  const a = cluster({ id: 'a', semantic_bucket: 'price|edit' });
+  const a = cluster({ id: 'a', semantic_bucket: 'price|modify' });
   const b = cluster({ id: 'b', semantic_bucket: 'contract|note' });
   assert.equal(detectContradictions([a, b]).length, 0);
+});
+
+test('detectContradictions: remove vs modify (замена) — тоже конфликт', () => {
+  const remove = cluster({ id: 'rm', semantic_bucket: 'responsibility|remove' });
+  const modify = cluster({ id: 'mod', semantic_bucket: 'price|modify' });
+  const res = detectContradictions([remove, modify]);
+  assert.equal(res.length, 1, 'убрать пункт vs поправить текст — взаимоисключающие');
+  assert.equal(res[0].related_cluster_id, 'mod');
+});
+
+// Back-compat: старые кластеры в БД могли хранить легаси-хвост '|edit' до
+// унификации семейств — actionFamilyOf нормализует его в modify (keeper).
+test('detectContradictions: легаси хвост |edit трактуется как modify (keeper)', () => {
+  const remove = cluster({ id: 'rm', semantic_bucket: 'responsibility|remove' });
+  const legacy = cluster({ id: 'lg', semantic_bucket: 'price|edit' });
+  assert.equal(detectContradictions([remove, legacy]).length, 1);
 });
 
 // --- normalizeLlmFinding: валидация типа / cluster_id / confidence --------------

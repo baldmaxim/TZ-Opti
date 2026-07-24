@@ -140,6 +140,24 @@ async function transaction(fn) {
   }
 }
 
+// Выдаёт ВЫДЕЛЕННОЕ соединение (одну сессию Postgres) — нужно там, где важна
+// сессия, а не отдельный запрос: session-scoped pg_advisory_lock у воркера
+// очереди. Вызывающий ОБЯЗАН вызвать release() (idempotent), иначе соединение
+// не вернётся в пул. release(true) уничтожает соединение (когда состояние
+// сессии могло остаться грязным — например не снялся advisory-lock).
+async function acquireSession() {
+  const client = await getPool().connect();
+  let released = false;
+  return {
+    ...makeRunner(client),
+    release(destroy = false) {
+      if (released) return;
+      released = true;
+      client.release(destroy === true ? new Error('session discarded') : undefined);
+    },
+  };
+}
+
 // Закрывает пул, если он вообще был создан (иначе — no-op, чтобы код
 // завершения не поднимал соединение только ради его закрытия).
 async function close() {
@@ -152,6 +170,7 @@ async function close() {
 const db = {
   ...makeRunner(lazyExecutor),
   transaction,
+  acquireSession,
   close,
 };
 

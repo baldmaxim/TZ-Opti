@@ -77,6 +77,16 @@ async function runMigration() {
   // (NULL = действие на весь фрагмент, как раньше).
   await ensureColumn('review_decisions', 'target_text', 'TEXT');
 
+  // Привязка исключений ТЗ к конкретной РЕВИЗИИ документа: исключения одной
+  // версии не должны применяться к другой. Плюс стабильный id узла + хэш
+  // исходного текста (для перепривязки/подтверждения) и флаги устаревания.
+  await ensureColumn('tz_excluded_ranges', 'document_revision_id', 'TEXT');
+  await ensureColumn('tz_excluded_ranges', 'node_id', 'TEXT');
+  await ensureColumn('tz_excluded_ranges', 'source_text_hash', 'TEXT');
+  await ensureColumn('tz_excluded_ranges', 'stale', 'INTEGER DEFAULT 0');
+  await ensureColumn('tz_excluded_ranges', 'needs_confirmation', 'INTEGER DEFAULT 0');
+  await ensureIndex('idx_excluded_revision', 'tz_excluded_ranges', 'tender_id, document_revision_id');
+
   // Этап 6: review/export переходят на issue_clusters как основной результат.
   //   review_decisions.cluster_id — новый primary-адресат решения (issue_id → legacy).
   //   issue_clusters.cluster_key  — стабильная сигнатура группы (основа детерминированного id).
@@ -85,6 +95,93 @@ async function runMigration() {
   await ensureIndex('idx_decisions_cluster', 'review_decisions', 'cluster_id');
   // issue_id больше не обязателен (решение может быть привязано к cluster_id).
   await dropNotNull('review_decisions', 'issue_id');
+
+  // Неизменяемые снимки анализа (analysis_run_id). Каждый анализ — снимок с
+  // прогоном; указатель analysis_active_runs хранит актуальный прогон на
+  // (тендер + scope + ревизия документов + версия конфигурации). Производные
+  // слои привязываются к pipeline-прогону; issues/signals — к stage-прогону
+  // (у них analysis_run_id уже был). См. services/analysisRuns/analysisRunsService.js.
+  await ensureColumn('analysis_runs', 'kind', "TEXT DEFAULT 'stage'");
+  await ensureColumn('analysis_runs', 'documents_revision_id', 'TEXT');
+  await ensureColumn('analysis_runs', 'config_version', 'TEXT');
+  await ensureColumn('analysis_runs', 'superseded_at', 'TEXT');
+  await dropNotNull('analysis_runs', 'stage'); // pipeline-прогон: stage=NULL
+  await ensureColumn('draft_issues', 'analysis_run_id', 'TEXT');
+  await ensureColumn('issue_reviews', 'analysis_run_id', 'TEXT');
+  await ensureColumn('issue_clusters', 'analysis_run_id', 'TEXT');
+  await ensureColumn('self_analysis_results', 'analysis_run_id', 'TEXT');
+  await ensureColumn('review_decisions', 'analysis_run_id', 'TEXT');
+  await ensureColumn('review_decisions', 'cluster_key', 'TEXT');
+  await ensureIndex('idx_runs_active', 'analysis_runs', 'tender_id, kind, superseded_at');
+  await ensureIndex('idx_draft_issues_run', 'draft_issues', 'tender_id, analysis_run_id');
+  await ensureIndex('idx_issue_reviews_run', 'issue_reviews', 'tender_id, analysis_run_id');
+  await ensureIndex('idx_issue_clusters_run', 'issue_clusters', 'tender_id, analysis_run_id');
+  await ensureIndex('idx_self_analysis_run', 'self_analysis_results', 'tender_id, analysis_run_id');
+  await ensureIndex('idx_decisions_run', 'review_decisions', 'analysis_run_id');
+
+  // Backfill — один раз: пока нет ни одного указателя. Идемпотентен и по guard'у
+  // (после первого реального activateRun указатели есть → пропуск), и по WHERE
+  // IS NULL / ON CONFLICT внутри. НЕ трогает уже размеченные строки.
+  const ptr = await db.queryOne('SELECT COUNT(*) AS c FROM analysis_active_runs');
+  if (Number(ptr && ptr.c) === 0) {
+    // ISO-строка «сейчас» на стороне БД (формат как у new Date().toISOString()).
+    const NOW = `to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+    // Указатели stage:N = последний completed прогон каждой стадии.
+    await db.exec(`
+      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
+      SELECT tender_id, 'stage:' || stage, NULL, NULL, id, COALESCE(finished_at, started_at)
+        FROM (
+          SELECT id, tender_id, stage, started_at, finished_at,
+                 ROW_NUMBER() OVER (PARTITION BY tender_id, stage ORDER BY started_at DESC) AS rn
+            FROM analysis_runs
+           WHERE kind = 'stage' AND stage IS NOT NULL AND status = 'completed'
+        ) t
+       WHERE rn = 1
+      ON CONFLICT (tender_id, scope) DO NOTHING;
+    `);
+    // Все прочие stage-прогоны архивируем (актуальные — из указателей выше).
+    await db.exec(`
+      UPDATE analysis_runs SET superseded_at = COALESCE(finished_at, started_at)
+       WHERE kind = 'stage' AND superseded_at IS NULL
+         AND id NOT IN (SELECT analysis_run_id FROM analysis_active_runs WHERE scope LIKE 'stage:%');
+    `);
+    // Синтетический pipeline-прогон на каждый тендер с производными строками.
+    await db.exec(`
+      INSERT INTO analysis_runs (id, tender_id, stage, kind, started_at, finished_at, status)
+      SELECT 'runbf_' || tender_id, tender_id, NULL, 'pipeline', ${NOW}, ${NOW}, 'completed'
+        FROM (
+          SELECT tender_id FROM draft_issues
+          UNION SELECT tender_id FROM issue_reviews
+          UNION SELECT tender_id FROM issue_clusters
+          UNION SELECT tender_id FROM self_analysis_results
+        ) t
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    // Разметка производных строк pipeline-прогоном.
+    await db.exec(`UPDATE draft_issues          SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
+    await db.exec(`UPDATE issue_reviews         SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
+    await db.exec(`UPDATE issue_clusters        SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
+    await db.exec(`UPDATE self_analysis_results SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
+    // Решения кластерного пути: run_id + cluster_key берём из кластера.
+    await db.exec(`
+      UPDATE review_decisions AS rd
+         SET analysis_run_id = c.analysis_run_id,
+             cluster_key = COALESCE(rd.cluster_key, c.cluster_key)
+        FROM issue_clusters AS c
+       WHERE rd.cluster_id = c.id AND rd.analysis_run_id IS NULL;
+    `);
+    // Указатель pipeline на синтетический прогон.
+    await db.exec(`
+      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
+      SELECT DISTINCT tender_id, 'pipeline', NULL, NULL, 'runbf_' || tender_id, ${NOW}
+        FROM (
+          SELECT tender_id FROM draft_issues
+          UNION SELECT tender_id FROM issue_clusters
+        ) t
+      ON CONFLICT (tender_id, scope) DO NOTHING;
+    `);
+    console.log('[migrate] analysis snapshots backfilled (runs/pointers/derived layers)');
+  }
 
   // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
   // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,

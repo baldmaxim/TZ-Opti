@@ -19,6 +19,7 @@ const { badRequest, notFound } = require('../../utils/errors');
 const clustering = require('../clustering/clusteringService');
 const critic = require('../critic/criticService');
 const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { humanizeNoteText } = require('./noteText');
 
 const ALLOWED_DECISIONS = ['accept', 'reject', 'edit', 'delete', 'remove_from_scope'];
@@ -79,18 +80,33 @@ function decisionKindFor(decision) {
 // Достроить конвейер до кластеров. force=true — пересобрать целиком (подхватить новые
 // сигналы стадий). Решения по cluster_id переживают пересборку: id детерминирован.
 async function ensureReviewPipeline(tenderId, { force = false } = {}) {
-  if (!force) {
-    const row = await db.queryOne('SELECT COUNT(*) AS c FROM issue_clusters WHERE tender_id = ?', tenderId);
+  const activeRunId = await analysisRuns.getActivePipelineRunId(tenderId);
+  if (!force && activeRunId) {
+    const row = await db.queryOne(
+      'SELECT COUNT(*) AS c FROM issue_clusters WHERE tender_id = ? AND analysis_run_id = ?',
+      tenderId, activeRunId,
+    );
     if (Number(row && row.c) > 0) return { built: false, clusters: Number(row.c) };
   }
-  await unified.buildDraftIssues(tenderId);
-  await critic.buildIssueReviews(tenderId);
-  const res = await clustering.buildClusters(tenderId);
+  // Новый неизменяемый снимок конвейера (self-analysis не входит — см. оркестратор).
+  const documentsRevisionId = await analysisRuns.currentDocumentsRevision(tenderId);
+  const configVersion = analysisRuns.currentConfigVersion();
+  const runId = await analysisRuns.beginRun(tenderId, analysisRuns.SCOPE_PIPELINE, { documentsRevisionId, configVersion });
+  await unified.buildDraftIssues(tenderId, runId);
+  await critic.buildIssueReviews(tenderId, runId);
+  const res = await clustering.buildClusters(tenderId, runId);
+  await analysisRuns.activateRun(tenderId, analysisRuns.SCOPE_PIPELINE, runId, { documentsRevisionId, configVersion });
   return { built: true, clusters: res.summary.clusters, summary: res.summary };
 }
 
 async function getCluster(tenderId, clusterId) {
-  return db.queryOne('SELECT * FROM issue_clusters WHERE id = ? AND tender_id = ?', clusterId, tenderId);
+  // Только кластер АКТУАЛЬНОГО прогона — по архивным кластерам не решаем/не смотрим.
+  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+  if (!rid) return undefined;
+  return db.queryOne(
+    'SELECT * FROM issue_clusters WHERE id = ? AND tender_id = ? AND analysis_run_id = ?',
+    clusterId, tenderId, rid,
+  );
 }
 
 // Решения по списку кластеров одним запросом → Map<cluster_id, decision-row>.
@@ -193,11 +209,13 @@ async function saveClusterDecision(tenderId, clusterId, body = {}) {
     await tx.queryRun('DELETE FROM review_decisions WHERE cluster_id = ?', clusterId);
     await tx.queryRun(
       `INSERT INTO review_decisions
-         (id, issue_id, cluster_id, decision, edited_redaction, final_comment, target_text, decided_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, issue_id, cluster_id, analysis_run_id, cluster_key, decision, edited_redaction, final_comment, target_text, decided_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       newId(),
       null,
       clusterId,
+      cluster.analysis_run_id || null, // решение привязано к прогону кластера
+      cluster.cluster_key || null,     // стабильная сигнатура — для явного переноса
       decision,
       edited_redaction || null,
       final_comment || null,
@@ -234,14 +252,16 @@ async function loadClusterReviewRows(tenderId, mode = 'full') {
 // данные решения. Формат строки совпадает с issue-путём (exportController.loadDecisions):
 //   { issue, decision_kind, final_comment, edited_redaction, target_text }
 async function loadClusterDecisions(tenderId) {
+  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+  if (!rid) return [];
   const rows = await db.queryAll(
     `SELECT c.*, rd.decision AS decision_kind, rd.edited_redaction AS dec_redaction,
             rd.final_comment AS final_comment, rd.target_text AS target_text
        FROM issue_clusters c
        JOIN review_decisions rd ON rd.cluster_id = c.id
-      WHERE c.tender_id = ? AND rd.decision <> 'reject'
+      WHERE c.tender_id = ? AND c.analysis_run_id = ? AND rd.decision <> 'reject'
       ORDER BY c.paragraph_index ASC NULLS LAST, c.created_at ASC`,
-    tenderId,
+    tenderId, rid,
   );
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);

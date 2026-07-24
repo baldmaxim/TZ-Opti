@@ -11,6 +11,7 @@
 const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage2Prompts');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
+const { ALL_ACTIONS } = require('../analysis/actions');
 
 const PROBLEM_TYPES = [
   'qa_противоречит_тз',
@@ -62,7 +63,7 @@ const RESPONSE_SCHEMA = {
           criticality: { type: 'string', enum: ['high', 'medium', 'low'] },
           suggested_action: {
             type: 'string',
-            enum: ['comment', 'replace', 'delete', 'remove_from_scope', 'clarify', 'limit_scope', 'assumption'],
+            enum: ALL_ACTIONS,
           },
           suggested_redaction: {
             type: 'string',

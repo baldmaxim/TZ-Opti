@@ -16,5 +16,6 @@ export const useToastStore = create((set, get) => ({
 }));
 
 export const toastSuccess = (m) => useToastStore.getState().push(m, 'success');
+export const toastWarning = (m) => useToastStore.getState().push(m, 'warning');
 export const toastError = (m) => useToastStore.getState().push(m, 'error');
 export const toastInfo = (m) => useToastStore.getState().push(m, 'info');

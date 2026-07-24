@@ -264,7 +264,7 @@ export default function AnalysisOverview() {
           </svg>
           К обзору
         </button>
-        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 truncate min-w-0 px-2" title={tender.title}>
+        <h1 className="flex-1 text-center text-lg font-semibold text-gray-900 dark:text-gray-100 truncate min-w-0 px-2" title={tender.title}>
           {tender.title}
         </h1>
         <span aria-hidden="true" className="invisible inline-flex items-center gap-3 px-7 py-4 text-base font-medium">
@@ -288,12 +288,12 @@ export default function AnalysisOverview() {
               onClick={() => toggleTile(t)}
               disabled={locked}
               aria-expanded={isActive}
-              className={`group bg-white border rounded-xl p-5 flex flex-col items-center text-center transition ${
+              className={`group bg-white dark:bg-gray-800 border dark:border-gray-700 rounded-xl p-5 flex flex-col items-center text-center transition ${
                 isActive
                   ? 'border-gray-900 ring-2 ring-gray-900 ring-offset-2'
                   : locked
-                    ? 'border-gray-200 opacity-50 cursor-not-allowed'
-                    : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+                    ? 'border-gray-200 dark:border-gray-700 opacity-50 cursor-not-allowed'
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-700 hover:shadow-sm'
               }`}
             >
               <div className={`w-full aspect-[4/3] rounded-lg bg-gradient-to-br ${t.accent} flex items-center justify-center mb-3 transition-transform duration-300 ease-out ${
@@ -305,13 +305,13 @@ export default function AnalysisOverview() {
                   {t.icon}
                 </span>
               </div>
-              <div className="text-[15px] font-medium text-gray-800 leading-snug">{t.label}</div>
-              <div className="text-[11px] text-gray-500 mt-0.5 leading-tight">{t.sublabel}</div>
+              <div className="text-[15px] font-medium text-gray-800 dark:text-gray-100 leading-snug">{t.label}</div>
+              <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-tight">{t.sublabel}</div>
               {status === 'finished' && (
-                <div className="text-[10px] mt-1 text-emerald-700 font-medium">✓ завершено</div>
+                <div className="text-[10px] mt-1 text-emerald-700 dark:text-emerald-300 font-medium">✓ завершено</div>
               )}
               {status === 'locked' && (
-                <div className="text-[10px] mt-1 text-gray-400">🔒 заблокировано</div>
+                <div className="text-[10px] mt-1 text-gray-400 dark:text-gray-500">🔒 заблокировано</div>
               )}
             </button>
           );
@@ -329,7 +329,7 @@ export default function AnalysisOverview() {
             >
               <div className="tile-panel-inner">
                 <div
-                  className="tile-card bg-white border border-gray-200 rounded-lg p-6"
+                  className="tile-card bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg p-6"
                   style={{ transformOrigin: origins[t.id] || 'center top' }}
                 >
                   {t.id === 'result' ? (
@@ -337,11 +337,11 @@ export default function AnalysisOverview() {
                   ) : t.placeholder ? (
                     <div className="text-center py-12">
                       <h2 className="font-semibold text-lg">{t.label}: {t.sublabel}</h2>
-                      <p className="text-sm text-gray-600 mt-2">
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
                         Анализ ТЗ против ваших существенных условий компании —
                         ищет в тексте противоречия и пропуски относительно 28 пунктов из вкладки «Условия компании».
                       </p>
-                      <p className="text-xs text-amber-700 mt-4 inline-block bg-amber-50 border border-amber-200 rounded px-3 py-1.5">
+                      <p className="text-xs text-amber-700 dark:text-amber-300 mt-4 inline-block bg-amber-50 dark:bg-amber-900/40 border dark:border-gray-700 border-amber-200 dark:border-amber-800 rounded px-3 py-1.5">
                         🚧 В разработке. Анализ скоро будет добавлен.
                       </p>
                     </div>

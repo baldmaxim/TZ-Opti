@@ -45,20 +45,20 @@ export default function DashboardPage() {
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[260px]">
           <svg
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500"
             width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
           >
             <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
           </svg>
           <input
-            className="w-full pl-9 pr-3 py-2 text-[15px] bg-white border border-gray-200 rounded-md focus:border-gray-400 focus:ring-0 outline-none transition placeholder:text-gray-400"
+            className="w-full pl-9 pr-3 py-2 text-[15px] bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-md focus:border-gray-400 dark:focus:border-gray-600 focus:ring-0 outline-none transition placeholder:text-gray-400 dark:placeholder:text-gray-500"
             placeholder="Поиск по названию, заказчику…"
             value={filters.search}
             onChange={(e) => setFilter('search', e.target.value)}
           />
         </div>
         <select
-          className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-md focus:border-gray-400 focus:ring-0 outline-none text-gray-700"
+          className="px-3 py-2 text-sm bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-md focus:border-gray-400 dark:focus:border-gray-600 focus:ring-0 outline-none text-gray-700 dark:text-gray-300"
           value={filters.type}
           onChange={(e) => setFilter('type', e.target.value)}
         >
@@ -68,7 +68,7 @@ export default function DashboardPage() {
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-gray-400 text-sm">Загрузка…</div>
+        <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">Загрузка…</div>
       ) : items.length === 0 ? (
         <EmptyState
           title="Нет тендеров"
@@ -83,14 +83,14 @@ export default function DashboardPage() {
           }
         />
       ) : (
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-gray-200">
-                <th className="pl-4 pr-2 py-3 text-xs font-medium text-gray-500 text-left w-10">№</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 text-left">Тендер</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 text-left">Заказчик</th>
-                <th className="px-4 py-3 text-xs font-medium text-gray-500 text-right">Замечания</th>
+              <tr className="border-b dark:border-gray-700 border-gray-200 dark:border-gray-700">
+                <th className="pl-4 pr-2 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 text-left w-10">№</th>
+                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 text-left">Тендер</th>
+                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 text-left">Заказчик</th>
+                <th className="px-4 py-3 text-xs font-medium text-gray-500 dark:text-gray-400 text-right">Замечания</th>
                 <th className="w-8"></th>
               </tr>
             </thead>
@@ -98,20 +98,20 @@ export default function DashboardPage() {
               {items.map((t, idx) => (
                 <tr
                   key={t.id}
-                  className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50/60 cursor-pointer transition"
+                  className="border-b dark:border-gray-700 border-gray-100 dark:border-gray-700 last:border-b-0 dark:last:border-gray-700 hover:bg-gray-50/60 cursor-pointer transition"
                   onClick={() => withViewTransition('forward', () => navigate(`/tenders/${t.id}`))}
                 >
-                  <td className="pl-4 pr-2 py-3 align-top text-sm text-gray-400 tabular-nums">{idx + 1}</td>
+                  <td className="pl-4 pr-2 py-3 align-top text-sm text-gray-400 dark:text-gray-500 tabular-nums">{idx + 1}</td>
                   <td className="px-4 py-3 align-top">
-                    <div className="text-[15px] text-gray-900 font-medium">{t.title}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{TENDER_TYPES[t.type] || t.type || '—'}</div>
+                    <div className="text-[15px] text-gray-900 dark:text-gray-100 font-medium">{t.title}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{TENDER_TYPES[t.type] || t.type || '—'}</div>
                   </td>
-                  <td className="px-4 py-3 align-top text-sm text-gray-600">{t.customer || '—'}</td>
+                  <td className="px-4 py-3 align-top text-sm text-gray-600 dark:text-gray-400">{t.customer || '—'}</td>
                   <td className="px-4 py-3 align-top text-right">
                     {t.counts?.issues_pending ? (
-                      <span className="text-sm text-amber-700">{t.counts.issues_pending} в работе</span>
+                      <span className="text-sm text-amber-700 dark:text-amber-300">{t.counts.issues_pending} в работе</span>
                     ) : t.counts?.issues_total ? (
-                      <span className="text-sm text-emerald-700">{t.counts.issues_total} готово</span>
+                      <span className="text-sm text-emerald-700 dark:text-emerald-300">{t.counts.issues_total} готово</span>
                     ) : (
                       <span className="text-gray-300 text-sm">—</span>
                     )}
@@ -119,7 +119,7 @@ export default function DashboardPage() {
                   <td className="px-2 py-3 align-top text-right">
                     <button
                       type="button"
-                      className="p-1 rounded text-gray-300 hover:text-red-600 hover:bg-red-50 transition"
+                      className="p-1 rounded text-gray-300 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/40 transition"
                       title="Удалить тендер"
                       onClick={(e) => {
                         e.stopPropagation();

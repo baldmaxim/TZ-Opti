@@ -47,7 +47,7 @@ function primary(extra = {}) {
     problem_type: 'открытый_объём',
     source_fragment: 'Подрядчик выполняет все работы, необходимые Заказчику.',
     basis: 'Формулировка «все работы» не ограничена.',
-    suggested_action: 'edit',
+    suggested_action: 'replace',
     suggested_redaction: 'Подрядчик выполняет работы согласно Приложению 1.',
     paragraph_index: 4,
     ...extra,

@@ -23,8 +23,10 @@ const clustering = require('../clustering/clusteringService');
 const critic = require('../critic/criticService');
 const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
 const { listSignals } = require('../signals/signalWriter');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { getActiveTzText } = require('../tzActiveTextService');
 const { runSelfAnalysisLlm, FINDING_TYPES } = require('../stageAnalysis/stage5_llm');
+const { FAMILY } = require('../analysis/actions');
 
 const CRIT_RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
 // Основание короче этого (без маркеров/пробелов) считаем слабым/общим.
@@ -60,8 +62,11 @@ function placeOf(cluster) {
 }
 
 // Семейство действия кластера (хвост semantic_bucket = `${dimension}|${actionFamily}`).
+// Единый реестр — remove | modify | note (analysis/actions). Легаси-хвост 'edit'
+// нормализуем в 'modify' (старые кластеры в БД до унификации семейств).
 function actionFamilyOf(cluster) {
-  return (cluster.semantic_bucket || '').split('|')[1] || 'note';
+  const tail = (cluster.semantic_bucket || '').split('|')[1] || FAMILY.NOTE;
+  return tail === 'edit' ? FAMILY.MODIFY : tail;
 }
 
 function isHot(cluster) {
@@ -109,7 +114,8 @@ function detectWeakClusters(clusters) {
 }
 
 // (3) Противоречия между кластерами одного места ТЗ: один предлагает убрать пункт
-// (remove), другой — оставить и прокомментировать/поправить (note/edit).
+// (remove), другой — оставить и поправить/прокомментировать (modify/note, т.е.
+// любое НЕ-remove семейство).
 function detectContradictions(clusters) {
   const byPlace = new Map();
   for (const c of clusters) {
@@ -120,8 +126,8 @@ function detectContradictions(clusters) {
   const out = [];
   for (const group of byPlace.values()) {
     if (group.length < 2) continue;
-    const remover = group.find((c) => actionFamilyOf(c) === 'remove');
-    const keeper = group.find((c) => actionFamilyOf(c) === 'note' || actionFamilyOf(c) === 'edit');
+    const remover = group.find((c) => actionFamilyOf(c) === FAMILY.REMOVE);
+    const keeper = group.find((c) => actionFamilyOf(c) !== FAMILY.REMOVE);
     if (!remover || !keeper || remover.id === keeper.id) continue;
     out.push(
       finding(
@@ -246,13 +252,16 @@ function assembleFindings(heuristic, llm) {
 // Если кластеров ещё нет — best-effort собрать конвейер из накопленных сигналов
 // (draft_issues → critic → clustering), чтобы QC было что проверять. Сбой не
 // фатален: вернём false и продолжим с тем, что есть.
-async function ensureClusters(tenderId) {
-  const row = await db.queryOne('SELECT COUNT(*) AS c FROM issue_clusters WHERE tender_id = ?', tenderId);
+async function ensureClusters(tenderId, runId) {
+  const row = await db.queryOne(
+    'SELECT COUNT(*) AS c FROM issue_clusters WHERE tender_id = ? AND analysis_run_id = ?',
+    tenderId, runId,
+  );
   if (Number(row && row.c) > 0) return false;
   try {
-    await unified.buildDraftIssues(tenderId);
-    await critic.buildIssueReviews(tenderId);
-    await clustering.buildClusters(tenderId);
+    await unified.buildDraftIssues(tenderId, runId);
+    await critic.buildIssueReviews(tenderId, runId);
+    await clustering.buildClusters(tenderId, runId);
     return true;
   } catch (e) {
     // eslint-disable-next-line no-console
@@ -261,12 +270,13 @@ async function ensureClusters(tenderId) {
   }
 }
 
-// Главная функция: собрать self_analysis_results и сохранить (idempotent —
-// перезапись прежнего набора). Возвращает summary + items.
-async function buildSelfAnalysis(tenderId) {
-  await ensureClusters(tenderId);
+// Главная функция: собрать self_analysis_results и сохранить (idempotent в
+// пределах прогона). Возвращает summary + items.
+async function buildSelfAnalysis(tenderId, runId) {
+  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  await ensureClusters(tenderId, rid);
 
-  const clusters = await clustering.listClusters(tenderId, 'full');
+  const clusters = await clustering.listClusters(tenderId, 'full', rid);
   const signals = await listSignals(tenderId, {});
   const signalStats = computeSignalStats(signals, clusters);
 
@@ -296,15 +306,15 @@ async function buildSelfAnalysis(tenderId) {
   const findings = assembleFindings(heuristic, llm).map((f) => ({ id: newId(), tender_id: tenderId, ...f }));
 
   await db.transaction(async (tx) => {
-    await tx.queryRun('DELETE FROM self_analysis_results WHERE tender_id = ?', tenderId);
+    await tx.queryRun('DELETE FROM self_analysis_results WHERE tender_id = ? AND analysis_run_id = ?', tenderId, rid);
     const createdAt = nowIso();
     for (const f of findings) {
       await tx.queryRun(
         `INSERT INTO self_analysis_results (
-           id, tender_id, cluster_id, finding_type, comment, suggested_improvement,
+           id, tender_id, analysis_run_id, cluster_id, finding_type, comment, suggested_improvement,
            confidence, source, related_cluster_id, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        f.id, f.tender_id, f.cluster_id, f.finding_type, f.comment, f.suggested_improvement,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        f.id, f.tender_id, rid, f.cluster_id, f.finding_type, f.comment, f.suggested_improvement,
         f.confidence, f.source, f.related_cluster_id, createdAt,
       );
     }
@@ -332,8 +342,10 @@ async function buildSelfAnalysis(tenderId) {
 // Читает находки + заголовок/критичность связанного кластера. Опциональный
 // фильтр по finding_type.
 async function listSelfAnalysis(tenderId, { findingType } = {}) {
-  const params = [tenderId];
-  let where = 's.tender_id = ?';
+  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+  if (!rid) return [];
+  const params = [tenderId, rid];
+  let where = 's.tender_id = ? AND s.analysis_run_id = ?';
   if (findingType) {
     where += ' AND s.finding_type = ?';
     params.push(findingType);

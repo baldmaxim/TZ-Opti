@@ -9,6 +9,7 @@ const exportSvc = require('../services/exportService');
 const { renderReviewMd } = require('../services/mdReview/renderer');
 const { dedupeExportDecisions } = require('../services/review/consolidation');
 const clusterReview = require('../services/review/clusterReviewService');
+const analysisRuns = require('../services/analysisRuns/analysisRunsService');
 
 async function getTzOriginal(tenderId) {
   // Для экспорта в .docx нужен именно .docx-файл (не .md и не .pdf).
@@ -25,14 +26,16 @@ async function getTzOriginal(tenderId) {
 // только когда кластерных решений нет или запрошен ?source=issues / фильтр стадии.
 // Основной путь docx-экспорта — clusterReview.loadClusterDecisions (cluster_id).
 async function loadDecisions(tenderId, stageFilter = null) {
+  // Только issues АКТУАЛЬНЫХ stage-прогонов (снимок) — архивные не экспортируем.
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   let sql = `
       SELECT i.*, d.decision as decision_kind, d.final_comment as final_comment, d.edited_redaction as edited_decision_redaction, d.target_text as target_text
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
       WHERE i.tender_id = ? AND i.selected_for_export = 1
-        AND i.review_status IN ('accepted', 'edited')
+        AND i.review_status IN ('accepted', 'edited')${rf.sql}
   `;
-  const params = [tenderId];
+  const params = [tenderId, ...rf.params];
   if (stageFilter) {
     sql += ' AND i.analysis_stage = ?';
     params.push(stageFilter);

@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "worker": "node worker.js",
+    "worker:dev": "nodemon worker.js",
     "migrate": "node db/migrate.js",
     "seed": "node db/seed.js",
     "test": "npm run test:unit && npm run test:integration",

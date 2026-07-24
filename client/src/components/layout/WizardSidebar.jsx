@@ -22,16 +22,16 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+    <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg shadow-sm overflow-hidden">
       <nav className="py-2">
         {sections.map((section, sIdx) => (
-          <div key={section.id} className={clsx(sIdx > 0 && 'border-t border-gray-100 mt-1 pt-2')}>
+          <div key={section.id} className={clsx(sIdx > 0 && 'border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 mt-1 pt-2')}>
             {!collapsed && (
               <div className="px-4 pb-1 flex items-center justify-between">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                   {section.order}. {section.label}
                 </span>
-                <span className="text-[10px] text-gray-400">{section.finished} / {section.total}</span>
+                <span className="text-[10px] text-gray-400 dark:text-gray-500">{section.finished} / {section.total}</span>
               </div>
             )}
             <ul>
@@ -51,7 +51,7 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
                         'w-full flex items-center gap-2 px-4 py-2 text-left text-sm transition',
                         collapsed && 'justify-center px-2',
                         isCurrent && 'bg-brand-50',
-                        !isCurrent && 'hover:bg-gray-50',
+                        !isCurrent && 'hover:bg-gray-50 dark:hover:bg-gray-800',
                         isLocked && 'opacity-60'
                       )}
                     >
@@ -61,7 +61,7 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
                           <span
                             className={clsx(
                               'flex-1 truncate',
-                              isCurrent ? 'font-semibold text-brand-800' : 'text-gray-700'
+                              isCurrent ? 'font-semibold text-brand-800' : 'text-gray-700 dark:text-gray-300'
                             )}
                           >
                             {step.shortLabel || step.label}
@@ -71,8 +71,8 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
                               className={clsx(
                                 'text-[10px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0',
                                 step.section === 'analysis' || step.id === 'review'
-                                  ? 'bg-amber-100 text-amber-800'
-                                  : 'bg-gray-100 text-gray-600'
+                                  ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300'
+                                  : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
                               )}
                             >
                               {step.badge}
@@ -89,7 +89,7 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
         ))}
       </nav>
 
-      <div className="border-t border-gray-100 p-2">
+      <div className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 p-2">
         <button
           type="button"
           onClick={downloadDocx}
@@ -100,7 +100,7 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
             collapsed && 'px-2',
             exportReady
               ? 'bg-brand-600 text-white hover:bg-brand-700'
-              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 cursor-not-allowed'
           )}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v8.5l3-3 1 1L8 12 4 7.5l1-1 3 3V1zM2 14h12v1H2z"/></svg>

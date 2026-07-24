@@ -58,7 +58,7 @@ export default function SelfAnalysisPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Самоанализ итога — QC (debug)</h1>
         <div className="flex gap-2">
-          <button onClick={() => load()} className="text-sm px-3 py-1 rounded border hover:bg-gray-50">
+          <button onClick={() => load()} className="text-sm px-3 py-1 rounded border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
             Обновить
           </button>
           <button
@@ -71,7 +71,7 @@ export default function SelfAnalysisPage() {
         </div>
       </div>
 
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
         Новая роль Стадии 5: не второй поток issues, а quality-control над итогом. Проверяет уже
         собранные кластеры + исходный ТЗ и отвечает на 4 вопроса: что могли пропустить, где кластеры
         слабые, где противоречие между кластерами, где усилить basis/review_comment/suggested_redaction.
@@ -85,8 +85,8 @@ export default function SelfAnalysisPage() {
           <button
             key={t.key || 'all'}
             onClick={() => setFindingType(t.key)}
-            className={`text-sm px-3 py-1.5 rounded border ${
-              findingType === t.key ? 'bg-gray-900 text-white border-gray-900' : 'bg-white hover:bg-gray-50'
+            className={`text-sm px-3 py-1.5 rounded border dark:border-gray-700 ${
+              findingType === t.key ? 'bg-gray-900 text-white border-gray-900' : 'bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800'
             }`}
             title={t.hint}
           >
@@ -95,19 +95,19 @@ export default function SelfAnalysisPage() {
         ))}
       </div>
 
-      <div className="text-sm text-gray-600">
+      <div className="text-sm text-gray-600 dark:text-gray-400">
         Замечаний QC: {items.length}
         {Object.keys(byType).length > 0 && (
-          <span className="ml-2 text-gray-400">
+          <span className="ml-2 text-gray-400 dark:text-gray-500">
             ({Object.entries(byType).map(([k, v]) => `${TYPE_LABEL[k] || k}: ${v}`).join(', ')})
           </span>
         )}
       </div>
 
-      {loading && <div className="text-gray-500">Загрузка…</div>}
+      {loading && <div className="text-gray-500 dark:text-gray-400">Загрузка…</div>}
 
       {!loading && !items.length && (
-        <div className="text-gray-500">
+        <div className="text-gray-500 dark:text-gray-400">
           Замечаний нет. Соберите кластеры (debug → clusters), затем нажмите «Запустить self-analysis»
           — слой сам дособерёт конвейер, если кластеров ещё нет.
         </div>

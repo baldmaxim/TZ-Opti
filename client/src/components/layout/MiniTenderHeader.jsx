@@ -8,11 +8,11 @@ export default function MiniTenderHeader() {
   if (!tender) return null;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg shadow-sm sticky top-[60px] z-20">
+    <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-lg shadow-sm sticky top-[60px] z-20">
       <div className="px-4 py-3 flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <h1 className="text-base font-semibold leading-tight truncate">{tender.title}</h1>
-          <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
             <span className="truncate">{tender.customer || '—'}</span>
             <span className="text-gray-300">•</span>
             <span>{TENDER_TYPES[tender.type] || tender.type || '—'}</span>

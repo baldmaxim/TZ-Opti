@@ -102,10 +102,10 @@ export default function StagePage() {
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>
             <h2 className="font-semibold text-lg">{config.label}</h2>
-            <p className="text-sm text-gray-600 mt-1">{config.description}</p>
-            <p className="text-xs text-gray-500 mt-2">Статус: {STAGE_STATUS[status] || status}</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{config.description}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">Статус: {STAGE_STATUS[status] || status}</p>
             {summary && (
-              <div className="text-xs text-gray-600 mt-2">
+              <div className="text-xs text-gray-600 dark:text-gray-400 mt-2">
                 Замечаний: <strong>{summary.issues_count}</strong>
                 {' '}{Object.entries(counts).map(([k, v]) => (
                   <span key={k} className={`tag ml-1 ${criticalityClass(k)}`}>{k}: {v}</span>
@@ -113,7 +113,7 @@ export default function StagePage() {
               </div>
             )}
             {summary?.notes && (
-              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-2">
+              <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/40 border dark:border-gray-700 border-amber-200 dark:border-amber-800 rounded px-2 py-1 mt-2">
                 ⚠ {summary.notes}
               </div>
             )}
@@ -132,7 +132,7 @@ export default function StagePage() {
 
       {summary && (
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="text-sm text-gray-600">Фильтры:</div>
+          <div className="text-sm text-gray-600 dark:text-gray-400">Фильтры:</div>
           <select
             className="input max-w-[200px]"
             value={filter.criticality}
@@ -165,7 +165,7 @@ export default function StagePage() {
       )}
 
       {loadingIssues ? (
-        <div className="text-center py-6 text-gray-500">Загрузка замечаний…</div>
+        <div className="text-center py-6 text-gray-500 dark:text-gray-400">Загрузка замечаний…</div>
       ) : (
         <StageDecisionTable
           issues={issues}

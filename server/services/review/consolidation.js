@@ -135,16 +135,18 @@ function buildGroup(members) {
 
 async function loadAllIssues(tenderId) {
   const db = require('../../db/connection');
+  const analysisRuns = require('../analysisRuns/analysisRunsService');
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   return db.queryAll(
     `
       SELECT i.*, d.decision AS decision_kind, d.final_comment AS final_comment,
              d.edited_redaction AS decision_redaction
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ?
+      WHERE i.tender_id = ?${rf.sql}
       ORDER BY i.paragraph_index ASC NULLS LAST, i.char_start ASC NULLS LAST, i.analysis_stage ASC
     `,
-    tenderId,
+    tenderId, ...rf.params,
   );
 }
 

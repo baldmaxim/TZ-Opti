@@ -4,8 +4,9 @@
 // Тонкий контроллер над services/review/clusterReviewService.js.
 
 const db = require('../db/connection');
-const { notFound } = require('../utils/errors');
+const { notFound, badRequest } = require('../utils/errors');
 const svc = require('../services/review/clusterReviewService');
+const analysisRuns = require('../services/analysisRuns/analysisRunsService');
 
 async function ensureTender(tenderId) {
   const t = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
@@ -42,5 +43,23 @@ exports.get = async (req, res) => {
 exports.decide = async (req, res) => {
   await ensureTender(req.params.id);
   const result = await svc.saveClusterDecision(req.params.id, req.params.clusterId, req.body || {});
+  res.json(result);
+};
+
+// GET /api/tenders/:id/review/carryovers — предложения переноса решений из
+// прошлого (архивного) прогона в актуальный. Ничего не применяет — только показывает.
+exports.carryovers = async (req, res) => {
+  await ensureTender(req.params.id);
+  const result = await analysisRuns.listCarryOverProposals(req.params.id);
+  res.json(result);
+};
+
+// POST /api/tenders/:id/review/carryovers/confirm — подтвердить выбранные переносы.
+// body: { selections: [{ decision_id, cluster_id }] }. Без выбора — ничего не переносится.
+exports.confirmCarryovers = async (req, res) => {
+  await ensureTender(req.params.id);
+  const selections = (req.body && req.body.selections) || [];
+  if (!Array.isArray(selections)) throw badRequest('selections должен быть массивом');
+  const result = await analysisRuns.confirmCarryOvers(req.params.id, selections);
   res.json(result);
 };

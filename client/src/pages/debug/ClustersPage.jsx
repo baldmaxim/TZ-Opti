@@ -53,7 +53,7 @@ export default function ClustersPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Кластеры замечаний (debug)</h1>
         <div className="flex gap-2">
-          <button onClick={() => load()} className="text-sm px-3 py-1 rounded border hover:bg-gray-50">
+          <button onClick={() => load()} className="text-sm px-3 py-1 rounded border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
             Обновить
           </button>
           <button
@@ -66,7 +66,7 @@ export default function ClustersPage() {
         </div>
       </div>
 
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-gray-500 dark:text-gray-400">
         Clustering сводит похожие замечания одного места ТЗ (общий пункт/фрагмент + близкий
         смысл + пересекающееся действие) в один кластер. Разные по смыслу проблемы в одном
         пункте (открытый объём ≠ риск оплаты) остаются разными кластерами — смысл не теряется.
@@ -79,8 +79,8 @@ export default function ClustersPage() {
           <button
             key={m.key}
             onClick={() => setMode(m.key)}
-            className={`text-sm px-3 py-1.5 rounded border ${
-              mode === m.key ? 'bg-gray-900 text-white border-gray-900' : 'bg-white hover:bg-gray-50'
+            className={`text-sm px-3 py-1.5 rounded border dark:border-gray-700 ${
+              mode === m.key ? 'bg-gray-900 text-white border-gray-900' : 'bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800'
             }`}
             title={m.hint}
           >
@@ -89,19 +89,19 @@ export default function ClustersPage() {
         ))}
       </div>
 
-      <div className="text-sm text-gray-600">
+      <div className="text-sm text-gray-600 dark:text-gray-400">
         Кластеров: {items.length}
         {Object.keys(byCriticality).length > 0 && (
-          <span className="ml-2 text-gray-400">
+          <span className="ml-2 text-gray-400 dark:text-gray-500">
             ({Object.entries(byCriticality).map(([k, v]) => `${k}: ${v}`).join(', ')})
           </span>
         )}
       </div>
 
-      {loading && <div className="text-gray-500">Загрузка…</div>}
+      {loading && <div className="text-gray-500 dark:text-gray-400">Загрузка…</div>}
 
       {!loading && !items.length && (
-        <div className="text-gray-500">
+        <div className="text-gray-500 dark:text-gray-400">
           Кластеров нет в этом режиме. Соберите draft issues и оцените critic, затем нажмите «Собрать кластеры».
         </div>
       )}

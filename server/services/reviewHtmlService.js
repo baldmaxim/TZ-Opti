@@ -12,6 +12,7 @@
 const db = require('../db/connection');
 const { getActiveTzText } = require('./tzActiveTextService');
 const { decisionVisual, resolveRedaction } = require('./review/decisionModel');
+const analysisRuns = require('./analysisRuns/analysisRunsService');
 const clusterReview = require('./review/clusterReviewService');
 
 function escapeHtml(s) {
@@ -128,15 +129,16 @@ async function loadClusterAnnotations(tenderId, blocks) {
 // Legacy-путь: issues + review_decisions(issue_id). Без paragraph_index — не рисуем
 // (прежнее поведение).
 async function loadIssueAnnotations(tenderId) {
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   const issues = await db.queryAll(
     `
       SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction, d.target_text as decision_target_text
       FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ? AND i.review_status IN ('accepted', 'edited', 'pending')
+      WHERE i.tender_id = ? AND i.review_status IN ('accepted', 'edited', 'pending')${rf.sql}
       ORDER BY i.paragraph_index ASC, i.char_start ASC
     `,
-    tenderId,
+    tenderId, ...rf.params,
   );
   return {
     annotations: issues.filter((i) => i.paragraph_index != null).map(issueToAnnotation),

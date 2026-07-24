@@ -30,6 +30,14 @@ const MODULES = [
   '../../services/pipeline/analysisPipeline',
   '../../services/stageAnalysis/stageAnalysisEngine',
   '../../services/stageAnalysis/llm/openaiClient',
+  // Очередь фоновых задач: воркер и его обработчики обязаны подключаться без
+  // БД — иначе отдельный процесс-воркер нельзя было бы даже загрузить в тесте.
+  '../../services/jobs/jobModel',
+  '../../services/jobs/jobQueue',
+  '../../services/jobs/advisoryLock',
+  '../../services/jobs/jobService',
+  '../../services/jobs/worker',
+  '../../services/jobs/handlers',
 ];
 
 test('ключевые модули грузятся без DATABASE_URL, без сети и без listen', (t) => {

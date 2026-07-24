@@ -25,7 +25,7 @@ const primary = {
   id: 'd-a',
   source_fragment: 'Демонтаж существующих конструкций',
   tz_clause: 'п. 5.1 Состав работ',
-  suggested_action: 'edit',
+  suggested_action: 'replace',
   suggested_redaction: 'Демонтаж включить в объём работ ГП',
   problem_type: 'не_учтено_в_кп',
   paragraph_index: 5,
@@ -39,7 +39,7 @@ test('clusterToExportIssue: переносит локализацию и пол�
   assert.equal(issue.source_fragment, 'Демонтаж существующих конструкций');
   assert.equal(issue.source_clause, 'п. 5.1 Состав работ');
   assert.equal(issue.paragraph_index, 5);
-  assert.equal(issue.suggested_action, 'edit');
+  assert.equal(issue.suggested_action, 'replace');
   assert.equal(issue.suggested_redaction, 'Демонтаж включить в объём работ ГП');
   assert.equal(issue.problem_type, 'не_учтено_в_кп');
   assert.equal(issue.criticality, 'high');
@@ -84,8 +84,8 @@ test('decisionKindFor + decisionVisual: вид экспорта по решен�
 });
 
 test('clusterId детерминирован и переживает пересборку (тот же tender+key → тот же id)', () => {
-  const a = clusterId('tender-1', 'clause:п. 5.1::price|edit');
-  const b = clusterId('tender-1', 'clause:п. 5.1::price|edit');
+  const a = clusterId('tender-1', 'clause:п. 5.1::price|modify');
+  const b = clusterId('tender-1', 'clause:п. 5.1::price|modify');
   const other = clusterId('tender-1', 'clause:п. 6.2::contract|note');
   assert.equal(a, b); // стабильность → решение по cluster_id не теряется при ре-ране конвейера
   assert.notEqual(a, other);

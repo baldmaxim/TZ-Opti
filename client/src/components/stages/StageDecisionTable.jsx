@@ -22,7 +22,7 @@ const BUTTONS = [
   },
   {
     kind: 'delete', label: 'Удалить', mode: 'delete',
-    idleClass: 'btn-secondary text-red-600',
+    idleClass: 'btn-secondary text-red-600 dark:text-red-300',
     activeClass: 'bg-red-600 text-white border-red-600 hover:bg-red-700',
   },
   {
@@ -63,7 +63,7 @@ export default function StageDecisionTable({ issues, readOnly, onChanged }) {
   };
 
   if (!issues.length) {
-    return <p className="text-sm text-gray-500">Замечаний не найдено. Запустите анализ или измените входные данные.</p>;
+    return <p className="text-sm text-gray-500 dark:text-gray-400">Замечаний не найдено. Запустите анализ или измените входные данные.</p>;
   }
 
   return (
@@ -193,16 +193,16 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
 
   return (
     <>
-      <tr className="border-t border-gray-100 hover:bg-gray-50">
+      <tr className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">
         <td
-          className="table-cell text-center align-middle cursor-pointer hover:bg-gray-100 select-none"
+          className="table-cell text-center align-middle cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 select-none"
           onClick={onToggle}
           role="button"
           aria-label="Развернуть"
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
         >
-          <span className="text-gray-500 text-base">{expanded ? '▾' : '▸'}</span>
+          <span className="text-gray-500 dark:text-gray-400 text-base">{expanded ? '▾' : '▸'}</span>
         </td>
         <td className="table-cell text-sm align-top pt-2 whitespace-nowrap">
           {issue.source_clause || '—'}
@@ -220,13 +220,13 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
         </td>
         <td className="table-cell align-top pt-2">
           {readOnly ? (
-            <span className="text-xs text-gray-500">{decisionBadge || '—'}</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">{decisionBadge || '—'}</span>
           ) : (
             <div className="flex flex-col gap-1.5">
               {decisionBadge && (
-                <span className="text-xs text-gray-600">
+                <span className="text-xs text-gray-600 dark:text-gray-400">
                   Текущее: <strong>{decisionBadge}</strong>
-                  {statusBadge && <span className="text-gray-400"> · {statusBadge}</span>}
+                  {statusBadge && <span className="text-gray-400 dark:text-gray-500"> · {statusBadge}</span>}
                 </span>
               )}
               <div className="flex flex-wrap gap-1">
@@ -247,21 +247,21 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
           )}
         </td>
       </tr>
-      <tr className="bg-gray-50" hidden={!expanded}>
+      <tr className="bg-gray-50 dark:bg-gray-800" hidden={!expanded}>
         <td></td>
         <td className="table-cell" colSpan={4}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
             <div>
               <div className="label">Полный фрагмент ТЗ</div>
-              <div className="p-2 bg-white border rounded text-sm whitespace-pre-wrap">
+              <div className="p-2 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded text-sm whitespace-pre-wrap">
                 {issue.source_fragment || '—'}
               </div>
               {issue.basis && (
-                <div className="mt-2 text-xs text-gray-600">
+                <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
                   <strong>Основание:</strong> {issue.basis}
                 </div>
               )}
-              <div className="mt-2 text-xs text-gray-500">
+              <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
                 Стадия: {issue.analysis_stage}
                 {typeof issue.confidence === 'number' && (
                   <> • Уверенность: {(issue.confidence * 100).toFixed(0)}%</>
@@ -283,9 +283,9 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                   В Word сам по себе не попадает; инженер может вставить его в поле
                   примечания кнопкой «Вставить», если согласен с формулировкой. */}
               {issue.review_comment && (
-                <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded">
+                <div className="mb-3 p-2 bg-amber-50 dark:bg-amber-900/40 border dark:border-gray-700 border-amber-200 dark:border-amber-800 rounded">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-amber-800">Комментарий анализатора</span>
+                    <span className="text-xs font-medium text-amber-800 dark:text-amber-300">Комментарий анализатора</span>
                     {!readOnly && (
                       <button
                         type="button"
@@ -296,7 +296,7 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                       </button>
                     )}
                   </div>
-                  <p className="text-xs text-gray-700 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">
+                  <p className="text-xs text-gray-700 dark:text-gray-300 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">
                     {issue.review_comment}
                   </p>
                 </div>
@@ -305,9 +305,9 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                   редакцию фрагмента. «Применить» открывает «Изменить» с подставленным
                   текстом — инженер принимает/правит/игнорирует. */}
               {['high', 'critical'].includes(issue.criticality) && issue.suggested_redaction && (
-                <div className={`mb-3 p-2 rounded border ${issue.criticality === 'critical' ? 'bg-red-50 border-red-200' : 'bg-orange-50 border-orange-200'}`}>
+                <div className={`mb-3 p-2 rounded border dark:border-gray-700 ${issue.criticality === 'critical' ? 'bg-red-50 dark:bg-red-900/40 border-red-200 dark:border-red-800' : 'bg-orange-50 dark:bg-orange-900/40 border-orange-200 dark:border-orange-800'}`}>
                   <div className="flex items-center justify-between gap-2">
-                    <span className={`text-xs font-medium ${issue.criticality === 'critical' ? 'text-red-800' : 'text-orange-800'}`}>
+                    <span className={`text-xs font-medium ${issue.criticality === 'critical' ? 'text-red-800 dark:text-red-300' : 'text-orange-800 dark:text-orange-300'}`}>
                       Агент предлагает редакцию
                       <span className={`tag ml-2 ${criticalityClass(issue.criticality)}`}>
                         {CRITICALITY[issue.criticality] || issue.criticality}
@@ -328,7 +328,7 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                       </button>
                     )}
                   </div>
-                  <p className="text-xs text-gray-700 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">
+                  <p className="text-xs text-gray-700 dark:text-gray-300 mt-1 whitespace-pre-wrap max-h-28 overflow-y-auto">
                     {issue.suggested_redaction}
                   </p>
                 </div>
@@ -409,26 +409,26 @@ function RowGroup({ issue, expanded, onToggle, onDecide, onPatch, readOnly }) {
                     {/* Сохранённое решение видно сразу при раскрытии (не нужно повторно
                         жать кнопку, чтобы прочитать своё примечание/правку). */}
                     <div className="label">Сохранённое решение</div>
-                    <div className="p-2 bg-white border rounded text-sm space-y-1">
+                    <div className="p-2 bg-white dark:bg-gray-800 border dark:border-gray-700 rounded text-sm space-y-1">
                       {decisionBadge && <div>Действие: <strong>{decisionBadge}</strong></div>}
                       {issue.decision_target_text && (
-                        <div className="text-xs text-gray-600">Часть пункта: «{issue.decision_target_text}»</div>
+                        <div className="text-xs text-gray-600 dark:text-gray-400">Часть пункта: «{issue.decision_target_text}»</div>
                       )}
                       {issue.decision_redaction && (
-                        <div className="text-xs"><span className="text-gray-500">Новый текст:</span> {issue.decision_redaction}</div>
+                        <div className="text-xs"><span className="text-gray-500 dark:text-gray-400">Новый текст:</span> {issue.decision_redaction}</div>
                       )}
                       {issue.decision_comment ? (
-                        <div className="text-xs whitespace-pre-wrap"><span className="text-gray-500">Примечание:</span> {issue.decision_comment}</div>
+                        <div className="text-xs whitespace-pre-wrap"><span className="text-gray-500 dark:text-gray-400">Примечание:</span> {issue.decision_comment}</div>
                       ) : (
-                        <div className="text-xs text-gray-400">Без примечания.</div>
+                        <div className="text-xs text-gray-400 dark:text-gray-500">Без примечания.</div>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 mt-2 italic">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 italic">
                       Нажмите «Изменить», «Удалить» или «Примечание», чтобы изменить решение.
                     </p>
                   </>
                 ) : (
-                  <p className="text-xs text-gray-500 italic">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 italic">
                     Выберите действие: «Изменить», «Удалить» или «Примечание».
                   </p>
                 )
@@ -456,8 +456,8 @@ function SaveRow({ label, danger, onSave, onCancel, justSaved }) {
       <button type="button" className="btn btn-ghost text-sm" onClick={onCancel}>
         Отмена
       </button>
-      {justSaved && <span className="text-xs text-emerald-700">✓ Сохранено</span>}
-      <span className="text-xs text-gray-400 ml-auto">Ctrl+Enter — сохранить · Esc — закрыть</span>
+      {justSaved && <span className="text-xs text-emerald-700 dark:text-emerald-300">✓ Сохранено</span>}
+      <span className="text-xs text-gray-400 dark:text-gray-500 ml-auto">Ctrl+Enter — сохранить · Esc — закрыть</span>
     </div>
   );
 }
@@ -480,7 +480,7 @@ function FragmentPicker({ fragment, value, onChange, label, verb = 'измени
       <textarea
         ref={ref}
         readOnly
-        className="input min-h-[80px] bg-gray-50"
+        className="input min-h-[80px] bg-gray-50 dark:bg-gray-800"
         value={fragment}
         onSelect={capture}
         onMouseUp={capture}
@@ -489,7 +489,7 @@ function FragmentPicker({ fragment, value, onChange, label, verb = 'измени
       <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
         {value ? (
           <>
-            <span className="text-gray-700">Будет {verb}: <strong>«{truncate(value, 90)}»</strong></span>
+            <span className="text-gray-700 dark:text-gray-300">Будет {verb}: <strong>«{truncate(value, 90)}»</strong></span>
             {!disabled && (
               <button type="button" className="btn btn-ghost text-xs" onClick={() => onChange('')}>
                 весь фрагмент
@@ -497,7 +497,7 @@ function FragmentPicker({ fragment, value, onChange, label, verb = 'измени
             )}
           </>
         ) : (
-          <span className="text-gray-500">Действие на весь фрагмент. Выделите часть, чтобы ограничить.</span>
+          <span className="text-gray-500 dark:text-gray-400">Действие на весь фрагмент. Выделите часть, чтобы ограничить.</span>
         )}
       </div>
     </div>

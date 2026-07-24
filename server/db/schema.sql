@@ -117,15 +117,36 @@ CREATE INDEX IF NOT EXISTS idx_characteristics_tender ON characteristics(tender_
 CREATE TABLE IF NOT EXISTS analysis_runs (
   id           TEXT PRIMARY KEY,
   tender_id    TEXT NOT NULL,
-  stage        INTEGER NOT NULL,        -- 1..4
+  stage        INTEGER,                 -- 1..5 для kind='stage'; NULL для 'pipeline'
+  kind         TEXT DEFAULT 'stage',    -- 'stage' (issues+signals) | 'pipeline' (draft/clusters/self)
+  documents_revision_id TEXT,           -- ревизия набора документов тендера на момент прогона
+  config_version        TEXT,           -- версия конфигурации анализа (варианты промтов + модель)
   started_at   TEXT NOT NULL,
   finished_at  TEXT,
-  status       TEXT DEFAULT 'completed',-- 'running' | 'completed' | 'failed'
+  status       TEXT DEFAULT 'completed',-- 'running' | 'completed' | 'failed' | 'interrupted' | 'cancelled'
   summary      TEXT,
+  superseded_at TEXT,                   -- NULL = актуальный; дата = архивный (неизменяемый) снимок
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_tender_stage ON analysis_runs(tender_id, stage);
+-- idx_runs_active (по kind/superseded_at) создаётся в migrate.js ПОСЛЕ ensureColumn:
+-- на существующих БД CREATE TABLE IF NOT EXISTS не добавляет новые столбцы, а
+-- schema.sql применяется РАНЬШЕ ensureColumn — индекс по новому столбцу упал бы.
+
+-- Указатель актуального прогона для комбинации (тендер + scope + ревизия
+-- документов + версия конфигурации). scope: 'stage:1'..'stage:5' | 'pipeline'.
+-- Одна строка на (tender_id, scope) — чтения берут analysis_run_id отсюда.
+CREATE TABLE IF NOT EXISTS analysis_active_runs (
+  tender_id             TEXT NOT NULL,
+  scope                 TEXT NOT NULL,   -- 'stage:1'..'stage:5' | 'pipeline'
+  documents_revision_id TEXT,
+  config_version        TEXT,
+  analysis_run_id       TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  PRIMARY KEY (tender_id, scope),
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS issues (
   id                   TEXT PRIMARY KEY,
@@ -189,6 +210,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_tender_type ON analysis_signals(tender_id
 CREATE TABLE IF NOT EXISTS draft_issues (
   id                      TEXT PRIMARY KEY,
   tender_id               TEXT NOT NULL,
+  analysis_run_id         TEXT,             -- pipeline-прогон (снимок), которому принадлежит строка
   tz_clause               TEXT,             -- пункт/путь заголовков ТЗ
   source_fragment         TEXT,             -- дословный фрагмент ТЗ
   problem_type            TEXT,
@@ -205,6 +227,7 @@ CREATE TABLE IF NOT EXISTS draft_issues (
 );
 
 CREATE INDEX IF NOT EXISTS idx_draft_issues_tender ON draft_issues(tender_id);
+-- idx_draft_issues_run (по analysis_run_id) создаётся в migrate.js после ensureColumn.
 
 -- Слой critic (третий шаг новой архитектуры, поверх draft_issues).
 -- Оценивает значимость каждого draft_issue ДЛЯ ГЕНПОДРЯДЧИКА и решает, показывать
@@ -215,6 +238,7 @@ CREATE INDEX IF NOT EXISTS idx_draft_issues_tender ON draft_issues(tender_id);
 CREATE TABLE IF NOT EXISTS issue_reviews (
   id                     TEXT PRIMARY KEY,
   tender_id              TEXT NOT NULL,      -- денормализация: выборки/идемпотентность по тендеру
+  analysis_run_id        TEXT,               -- pipeline-прогон (снимок), которому принадлежит строка
   draft_issue_id         TEXT NOT NULL,
   business_impact        TEXT,               -- общий уровень: none|low|medium|high
   price_impact           TEXT,               -- расчёт / КП / приёмка-оплата / объём
@@ -232,6 +256,7 @@ CREATE TABLE IF NOT EXISTS issue_reviews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_issue_reviews_tender ON issue_reviews(tender_id);
+-- idx_issue_reviews_run (по analysis_run_id) создаётся в migrate.js после ensureColumn.
 
 -- Слой clustering (четвёртый шаг новой архитектуры, поверх draft_issues + issue_reviews).
 -- Сводит похожие замечания по ОДНОМУ месту ТЗ (tz_clause/фрагмент) И близкие по смыслу
@@ -241,6 +266,7 @@ CREATE INDEX IF NOT EXISTS idx_issue_reviews_tender ON issue_reviews(tender_id);
 CREATE TABLE IF NOT EXISTS issue_clusters (
   id                     TEXT PRIMARY KEY,
   tender_id              TEXT NOT NULL,
+  analysis_run_id        TEXT,               -- pipeline-прогон (снимок), которому принадлежит кластер
   tz_clause              TEXT,               -- пункт/путь заголовков ТЗ (общий для кластера)
   cluster_title          TEXT,              -- краткий заголовок проблемы кластера
   merged_basis           TEXT,              -- объединённые основания разных стадий (по пунктам)
@@ -258,6 +284,7 @@ CREATE TABLE IF NOT EXISTS issue_clusters (
 );
 
 CREATE INDEX IF NOT EXISTS idx_issue_clusters_tender ON issue_clusters(tender_id);
+-- idx_issue_clusters_run (по analysis_run_id) создаётся в migrate.js после ensureColumn.
 
 CREATE TABLE IF NOT EXISTS issue_cluster_items (
   id                  TEXT PRIMARY KEY,
@@ -283,6 +310,7 @@ CREATE INDEX IF NOT EXISTS idx_cluster_items_cluster ON issue_cluster_items(clus
 CREATE TABLE IF NOT EXISTS self_analysis_results (
   id                     TEXT PRIMARY KEY,
   tender_id              TEXT NOT NULL,
+  analysis_run_id        TEXT,               -- pipeline-прогон (снимок), которому принадлежит замечание
   cluster_id             TEXT,               -- кластер-адресат замечания (NULL = про весь ТЗ / пропуск)
   finding_type           TEXT NOT NULL,      -- missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
   comment                TEXT,               -- что именно не так (человекочитаемо)
@@ -297,6 +325,7 @@ CREATE TABLE IF NOT EXISTS self_analysis_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_self_analysis_tender ON self_analysis_results(tender_id);
+-- idx_self_analysis_run (по analysis_run_id) создаётся в migrate.js после ensureColumn.
 
 -- Решение инженера по находке. Этап 6: основным адресатом стало issue_clusters
 -- (cluster_id), issue_id оставлен как legacy/back-compat и больше НЕ NOT NULL.
@@ -306,7 +335,9 @@ CREATE INDEX IF NOT EXISTS idx_self_analysis_tender ON self_analysis_results(ten
 CREATE TABLE IF NOT EXISTS review_decisions (
   id                  TEXT PRIMARY KEY,
   issue_id            TEXT,            -- legacy: находка стадии (nullable с этапа 6)
-  cluster_id          TEXT,            -- new primary: issue_clusters.id (стабильный, без FK)
+  cluster_id          TEXT,            -- new primary: issue_clusters.id (run-scoped, без FK)
+  analysis_run_id     TEXT,            -- pipeline-прогон, к кластерам которого относится решение
+  cluster_key         TEXT,            -- стабильная сигнатура кластера (для явного переноса между прогонами)
   decision            TEXT NOT NULL,   -- 'accept' | 'reject' | 'edit' | 'delete' | 'remove_from_scope'
   edited_redaction    TEXT,
   final_comment       TEXT,
@@ -316,6 +347,7 @@ CREATE TABLE IF NOT EXISTS review_decisions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_decisions_issue ON review_decisions(issue_id);
+-- idx_decisions_run (по analysis_run_id) создаётся в migrate.js после ensureColumn.
 -- idx_decisions_cluster создаётся в migrate.js (ensureIndex) ПОСЛЕ ensureColumn(cluster_id),
 -- т.к. на существующих БД CREATE TABLE IF NOT EXISTS не добавляет новый столбец.
 
@@ -323,11 +355,16 @@ CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
   id                   TEXT PRIMARY KEY,
   tender_id            TEXT NOT NULL,
   source_document_id   TEXT,
+  document_revision_id TEXT,             -- ревизия ТЗ, против которой посчитано исключение
+  node_id              TEXT,             -- стабильный идентификатор узла (абзаца) в ТЗ
+  source_text_hash     TEXT,             -- хэш исходного текста исключаемого фрагмента
   paragraph_index      INTEGER,
   char_start           INTEGER,
   char_end             INTEGER,
   after_stage          INTEGER NOT NULL,
   source_issue_id      TEXT,
+  stale                INTEGER DEFAULT 0, -- 1 = исключение из другой ревизии, автоматически НЕ применяется
+  needs_confirmation   INTEGER DEFAULT 0, -- 1 = требует подтверждения инженером после смены версии ТЗ
   created_at           TEXT NOT NULL,
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE,
   FOREIGN KEY (source_document_id) REFERENCES documents(id) ON DELETE SET NULL,
@@ -388,3 +425,82 @@ CREATE TABLE IF NOT EXISTS tender_stage_state (
   finished_at    TEXT,
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );
+
+-- ─── Устойчивая очередь фоновых задач (analysis_jobs / analysis_tasks) ────────
+-- Заменяет прежнее хранение фоновых прогонов в памяти процесса (Set/Map):
+-- прогресс, отмена, повторы и восстановление после рестарта живут в БД, поэтому
+-- переживают падение сервера и работают на нескольких процессах-воркерах.
+--
+-- analysis_jobs — ЗАДАНИЕ (запрос инженера: «прогнать стадию N», «пересобрать
+-- конвейер»). Единица идемпотентности, отмены и отображения в UI.
+CREATE TABLE IF NOT EXISTS analysis_jobs (
+  id                    TEXT PRIMARY KEY,
+  tender_id             TEXT NOT NULL,
+  job_type              TEXT NOT NULL,             -- 'stage_analysis' | 'pipeline'
+  scope_key             TEXT NOT NULL,             -- 'stage:1'..'stage:5' | 'pipeline'
+  idempotency_key       TEXT NOT NULL,             -- повторный запуск того же прогона не создаёт дубль
+  lock_key              TEXT NOT NULL,             -- ключ pg advisory-lock (bigint строкой)
+  documents_revision_id TEXT,
+  config_version        TEXT,
+  analysis_run_id       TEXT,                      -- снимок анализа, который собирает задание
+  status                TEXT NOT NULL DEFAULT 'queued', -- queued|running|completed|failed|cancelled|interrupted
+  cancel_requested      INTEGER DEFAULT 0,
+  payload_json          TEXT,
+  result_json           TEXT,
+  error                 TEXT,
+  progress_total        INTEGER DEFAULT 0,
+  progress_done         INTEGER DEFAULT 0,
+  created_by            TEXT,
+  created_at            TEXT NOT NULL,
+  started_at            TEXT,
+  finished_at           TEXT,
+  updated_at            TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_tender ON analysis_jobs(tender_id, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_scope ON analysis_jobs(tender_id, scope_key, status);
+-- Ключевой инвариант «без дублей»: на один ключ идемпотентности не может быть
+-- двух ЖИВЫХ заданий. Гонку двух одновременных POST разрешает БД, а не приложение.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idem_active
+  ON analysis_jobs(idempotency_key) WHERE status IN ('queued', 'running');
+
+-- analysis_tasks — ЗАДАЧА (единица работы воркера: одна стадия / один шаг
+-- конвейера). Здесь живут аренда (lease) + heartbeat, попытки, checkpoint.
+-- Задачи задания упорядочены по seq: следующая стартует после завершения
+-- предыдущих (always_run=1 — финализатор, стартует и после сбоя шага).
+CREATE TABLE IF NOT EXISTS analysis_tasks (
+  id               TEXT PRIMARY KEY,
+  job_id           TEXT NOT NULL,
+  tender_id        TEXT NOT NULL,
+  task_key         TEXT NOT NULL,            -- уникален внутри задания
+  task_type        TEXT NOT NULL,            -- обработчик: 'stage_analysis' | 'pipeline_begin' | ...
+  seq              INTEGER NOT NULL DEFAULT 0,
+  always_run       INTEGER DEFAULT 0,        -- 1 = выполнить даже после сбоя предыдущих
+  status           TEXT NOT NULL DEFAULT 'queued', -- queued|running|completed|failed|cancelled|interrupted|skipped
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  max_attempts     INTEGER NOT NULL DEFAULT 3,
+  priority         INTEGER NOT NULL DEFAULT 100,
+  run_after        TEXT NOT NULL,            -- отложенный старт (backoff повторов)
+  locked_by        TEXT,                     -- id воркера, взявшего задачу
+  locked_at        TEXT,
+  heartbeat_at     TEXT,
+  lease_expires_at TEXT,                     -- аренда: истекла → воркер считается мёртвым
+  progress_total   INTEGER DEFAULT 0,
+  progress_done    INTEGER DEFAULT 0,
+  checkpoint_json  TEXT,                     -- частичный результат: повтор продолжает с него
+  payload_json     TEXT,
+  result_json      TEXT,
+  error            TEXT,
+  created_at       TEXT NOT NULL,
+  started_at       TEXT,
+  finished_at      TEXT,
+  updated_at       TEXT NOT NULL,
+  UNIQUE (job_id, task_key),
+  FOREIGN KEY (job_id) REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_claim ON analysis_tasks(status, run_after, priority, seq);
+CREATE INDEX IF NOT EXISTS idx_tasks_job ON analysis_tasks(job_id, seq);
+CREATE INDEX IF NOT EXISTS idx_tasks_lease ON analysis_tasks(status, lease_expires_at);

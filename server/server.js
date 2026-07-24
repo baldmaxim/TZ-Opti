@@ -14,15 +14,31 @@ const { createApp } = require('./app');
 const { runMigration } = require('./db/migrate');
 const { runSeedIfEmpty } = require('./db/seed');
 const stageEngine = require('./services/stageAnalysis/stageAnalysisEngine');
+const { createWorker, workerOptionsFromEnv } = require('./services/jobs/worker');
 
 const PORT = Number(process.env.PORT) || 4000;
 
-async function start({ port = PORT, migrate = true, seed = true } = {}) {
+// Воркер очереди по умолчанию поднимается ВНУТРИ API-процесса: «запустил сервер
+// — анализ работает», как было до очереди. WORKER_MODE=external выключает его,
+// когда воркеры вынесены в отдельные процессы (npm --prefix server run worker).
+const workerEnabled = (env = process.env) =>
+  String(env.WORKER_MODE || 'embedded').trim().toLowerCase() !== 'external';
+
+async function start({ port = PORT, migrate = true, seed = true, worker = workerEnabled() } = {}) {
   if (migrate) await runMigration();
   if (seed) await runSeedIfEmpty();
-  // Сброс «зомби»-статусов 'running' от прогонов, погибших при прошлом
-  // рестарте/падении сервера (иначе клиент вечно крутит кольцо прогресса).
+  // Задачи, осиротевшие при прошлом падении/рестарте: их подберёт reaper воркера
+  // (продолжит с чекпойнта либо пометит interrupted). Здесь — только «зомби»
+  // статусы стадий, за которыми не стоит ни одного живого задания.
   await stageEngine.recoverOrphanedRunningStages();
+
+  let queueWorker = null;
+  if (worker) {
+    queueWorker = createWorker(workerOptionsFromEnv());
+    await queueWorker.start();
+  } else {
+    console.log('[tz-opti-server] WORKER_MODE=external — очередь разбирают отдельные процессы');
+  }
 
   const app = createApp();
   const server = app.listen(port, () => {
@@ -40,14 +56,28 @@ async function start({ port = PORT, migrate = true, seed = true } = {}) {
   server.keepAliveTimeout = 1145000;
   server.headersTimeout = 1150000;
   server.timeout = 0;
+  server.queueWorker = queueWorker;
   return server;
 }
 
 if (require.main === module) {
-  start().catch((err) => {
-    console.error('[tz-opti-server] startup failed:', err);
-    process.exit(1);
-  });
+  start()
+    .then((server) => {
+      // Остановка процесса возвращает недоделанные задачи в очередь — после
+      // перезапуска они продолжатся сразу, не дожидаясь истечения аренды.
+      const shutdown = async (signal) => {
+        console.log(`[tz-opti-server] ${signal}: останавливаюсь…`);
+        if (server.queueWorker) await server.queueWorker.stop().catch(() => {});
+        server.close(() => process.exit(0));
+        setTimeout(() => process.exit(0), 5000).unref();
+      };
+      process.on('SIGINT', () => shutdown('SIGINT'));
+      process.on('SIGTERM', () => shutdown('SIGTERM'));
+    })
+    .catch((err) => {
+      console.error('[tz-opti-server] startup failed:', err);
+      process.exit(1);
+    });
 }
 
-module.exports = { start };
+module.exports = { start, workerEnabled };

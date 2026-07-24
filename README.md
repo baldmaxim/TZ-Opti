@@ -114,7 +114,8 @@ TZ-Opti/
 │       ├── services/api.js
 │       └── utils/         labels, format
 └── server/    Express + pg (Postgres) + Multer
-    ├── server.js                                     — entrypoint: .env, миграция, авто-сид, listen
+    ├── server.js                                     — entrypoint: .env, миграция, авто-сид, встроенный воркер, listen
+    ├── worker.js                                     — entrypoint ОТДЕЛЬНОГО воркера очереди (npm run worker)
     ├── app.js                                        — createApp(): маршруты и middleware, без side-effect'ов
     ├── routes/            tenders, documents, checklist, conditions, risks, qa,
     │                      stages, decisions, review, export, setupLocks, setupParams
@@ -123,6 +124,13 @@ TZ-Opti/
     │   ├── claudeBridge.js                           — локальный OpenAI-совместимый прокси к Claude (dev)
     │   └── README.md                                 — настройка bridge и тюнинг стадий
     ├── services/
+    │   ├── jobs/                                       — устойчивая очередь фоновых задач (Postgres, без Redis)
+    │   │   ├── jobModel.js                             — чистое ядро: ключи, retry/recovery, свод статуса задания
+    │   │   ├── jobQueue.js                             — SQL: enqueue, claim (FOR UPDATE SKIP LOCKED), heartbeat, reaper
+    │   │   ├── advisoryLock.js                         — session-level pg_advisory_lock на (тендер+область+ревизия)
+    │   │   ├── worker.js                               — цикл воркера (аренда, повторы, чекпойнт, отмена)
+    │   │   ├── jobService.js                           — раскладка «стадия»/«конвейер» в задание + задачи
+    │   │   └── handlers/                               — обработчики задач (stage_analysis, шаги конвейера)
     │   ├── textExtractionService.js
     │   ├── tzActiveTextService.js                     — ТЗ за вычетом исключённых фрагментов (.md)
     │   ├── stageAnalysis/
@@ -218,6 +226,7 @@ TZ-Opti/
 | Конвейер анализа: signals → draft_issues → critic → clustering → self-analysis (Стадия 5 = QC над итогом, issues не порождает) | ✅ Реализовано |
 | Оркестратор конвейера: пересборка слоёв одним вызовом + статус свежести слоёв (`pipeline/run`, `pipeline/status`) | ✅ Реализовано |
 | Фоновый прогон стадии + опрос статуса (снимает таймауты на долгих ТЗ) | ✅ Реализовано |
+| Устойчивая очередь фоновых задач в Postgres (`analysis_jobs`/`analysis_tasks`): отдельный воркер, `FOR UPDATE SKIP LOCKED`, idempotency-key, heartbeat + аренда, retry, checkpoint, cancel, прогресс в БД, advisory-lock на (стадия+ревизия), продолжение или `interrupted` после рестарта | ✅ Реализовано |
 | 3 режима системного промта на стадию (`structural`/`strict`/`full`) через env | ✅ Реализовано |
 | Реестр Issue + рецензия по стадиям + сквозной reviewer | ✅ Реализовано |
 | Зоны ответственности агентов (реестр `problem_type` на стадию) + гард домена | ✅ Реализовано |
@@ -303,6 +312,47 @@ QC-шага, единственного с LLM). Порядок шагов фи�
 
 ---
 
+## Очередь фоновых задач (analysis_jobs → analysis_tasks)
+
+Долгие прогоны (анализ стадии — до ~15 минут, пересборка конвейера) выполняются **не
+внутри HTTP-запроса и не в памяти процесса**, а через устойчивую очередь в Postgres.
+Redis не нужен: всё состояние — две таблицы и `FOR UPDATE SKIP LOCKED`.
+
+```
+POST …/stages/:n/run ──▶ analysis_jobs (ЗАДАНИЕ: идемпотентность, отмена, прогресс)
+                             └── analysis_tasks (ЗАДАЧА: claim, аренда, попытки, чекпойнт)
+                                        ▲
+                       claim (SKIP LOCKED) │        ┌── worker #1 (в процессе сервера)
+                                        └──────────┤── worker #2 (npm run worker)
+                                                    └── worker #3 (другая машина)
+```
+
+| Свойство | Как обеспечено |
+|----------|----------------|
+| **Без дублей** | Задачу забирает ровно один воркер: `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)`. Параллельные воркеры не ждут друг друга и никогда не получают одну строку. |
+| **Повторный запуск** | Ключ идемпотентности = тендер + область + ревизия документов + версия конфигурации. Пока задание живо, повторный POST возвращает то же задание. Гонку одновременных запросов разрешает частичный `UNIQUE`-индекс в БД, а не приложение. Клиент может прислать свой `Idempotency-Key`. |
+| **Одна стадия — один прогон** | На время работы воркер держит session-level `pg_try_advisory_lock` по (тендер + область + ревизия). Занято — задача возвращается в очередь, попытка не расходуется. Работает между процессами и машинами; умер процесс — Postgres освободит замок сам. |
+| **Heartbeat + аренда** | Воркер продлевает `lease_expires_at`; не продлил (упал/убит/потерял сеть) — задача считается осиротевшей. Воркер, потерявший аренду, не может закоммитить результат: все переходы условны по `locked_by`. |
+| **Retry** | Временные сбои (5xx, обрыв LLM) — повтор с экспоненциальной задержкой. 4xx (гейт стадии, нет Q&A) не повторяются: результат тот же. |
+| **Checkpoint** | Стадия сохраняет каждый посчитанный сегмент ТЗ в `analysis_tasks.checkpoint_json` (сверка по хэшу входа). Повтор после падения **не переспрашивает LLM** про уже сделанное. Конвейер чекпойнтится шагами: успешный шаг не пересобирается. |
+| **Cancel** | `POST /api/jobs/:jobId/cancel` — задачи в очереди снимаются сразу, бегущая прерывается кооперативно на ближайшем heartbeat. |
+| **Прогресс** | `progress_total/progress_done` пишутся в БД (кольцо прогресса в портале переживает рестарт и видно из любого процесса). |
+| **После рестарта** | Осиротевшие задачи либо **продолжаются** (возврат в очередь + чекпойнт), либо получают статус **`interrupted`**, когда попытки исчерпаны, — и задание, и стадия чинятся: `stageN_status` возвращается в `open`, в `analysis_runs` пишется терминальный прогон. |
+
+Воркер по умолчанию поднимается **внутри** процесса сервера (`WORKER_MODE=embedded`) — как
+и раньше, «запустил `npm run dev` — анализ работает». Для разнесения по процессам:
+
+```bash
+WORKER_MODE=external npm --prefix server start   # только API
+npm run worker                                   # воркер (можно несколько)
+```
+
+Тесты: `server/test/unit/jobsModel.test.js` (правила), `jobsWorker.test.js` (цикл воркера
+на фейковом сторе, офлайн) и `server/test/integration/jobs.integration.test.js` (живой
+Postgres: два процесса-воркера, SKIP LOCKED, advisory-lock, рестарт, отсутствие дублей).
+
+---
+
 ## Принятые инженерные решения
 
 1. **LLM-агенты, не rule-based**: каждая стадия — отдельный системный промт (роль ГП) + общий каркас `shared/llmStage.js`. Три режима промта (`structural`/`strict`/`full`) переключаются env без правок кода.
@@ -351,7 +401,8 @@ GET    /api/tenders/:id/characteristics
 PATCH  /api/characteristics/:charId
 
 GET    /api/tenders/:id/stages
-POST   /api/tenders/:id/stages/:n/run                фоновый: сразу {status:'running'}, статус через GET /stages
+POST   /api/tenders/:id/stages/:n/run                в очередь: сразу {status:'running', job_id}, статус через GET /stages
+                                                     (заголовок Idempotency-Key — повторный запрос не создаёт дубль)
 POST   /api/tenders/:id/stages/:n/finish
 POST   /api/tenders/:id/stages/:n/reset
 GET    /api/tenders/:id/stages/:n/issues             ?criticality=&review_status=&problem_type=
@@ -385,8 +436,16 @@ POST   /api/tenders/:id/clustering/build             сгруппировать 
 GET    /api/tenders/:id/issue-clusters               ?mode=important|working|full
 POST   /api/tenders/:id/self-analysis/build          QC/полнота над кластерами (Стадия 5)
 GET    /api/tenders/:id/self-analysis                ?finding_type=missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
-POST   /api/tenders/:id/pipeline/run                  пересобрать слои 2–5 одним вызовом ({with_self_analysis:false} — без QC-шага)
+POST   /api/tenders/:id/pipeline/run                  пересобрать слои 2–5 одним вызовом ({with_self_analysis:false} — без QC-шага;
+                                                      {async:true} — не ждать, задание уходит в очередь → 202 {job})
 GET    /api/tenders/:id/pipeline/status               свежесть слоёв (count/built_at/stale на слой, сводный needs_rebuild)
+
+# Очередь фоновых задач (analysis_jobs / analysis_tasks)
+GET    /api/tenders/:id/jobs                          задания тендера (?status=&limit=) с задачами и прогрессом
+POST   /api/tenders/:id/jobs                          поставить задание вручную ({type:'stage_analysis'|'pipeline', ...})
+GET    /api/jobs/:jobId                               задание + задачи (статус, попытки, аренда, прогресс, чекпойнт)
+POST   /api/jobs/:jobId/cancel                        отменить (очередь — сразу, бегущая задача — на heartbeat)
+GET    /api/jobs/queue/stats                          сводка очереди по статусам задач
 ```
 
 > `:n` — номер стадии 1..5. Прогон стадии асинхронный: `POST …/run` возвращает `{status:'running'}` и анализ идёт в фоне; клиент опрашивает `GET …/stages` (поле `stageN_status`: `open`/`running`/`reviewing`/`finished`).

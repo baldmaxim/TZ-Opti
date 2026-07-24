@@ -7,6 +7,7 @@ const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
 const { extractFromFile } = require('../services/textExtractionService');
 const { importQaXlsx } = require('../services/qaImportService');
+const { markStaleExclusionsOnNewRevision } = require('../services/tzActiveTextService');
 
 const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
 
@@ -70,6 +71,13 @@ exports.upload = async (req, res) => {
           text, status, id,
         );
         if (reason) console.warn(`[extract] doc ${id}: ${reason}`);
+        // Загрузка новой версии ТЗ (.md): исключения прошлых ревизий больше не
+        // валидны по координатам — помечаем stale + needs_confirmation, но НЕ
+        // применяем автоматически (инженер подтвердит перенос).
+        if (docType === 'tz' && /\.md$/i.test(req.file.originalname || '')) {
+          const res = await markStaleExclusionsOnNewRevision(tenderId);
+          if (res.marked) console.log(`[extract] doc ${id}: ${res.marked} исключений помечено stale (новая ревизия ТЗ)`);
+        }
       }
     } catch (err) {
       console.error(`[extract] doc ${id} failed:`, err);

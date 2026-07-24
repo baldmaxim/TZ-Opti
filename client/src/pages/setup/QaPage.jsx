@@ -138,7 +138,7 @@ export default function QaPage() {
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="min-w-0">
             <h3 className="font-semibold text-sm">Форма «Вопрос-ответ» (.xlsx)</h3>
-            <p className="text-xs text-gray-600 mt-1">
+            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
               Импорт формата «Форма ВОПРОС-ОТВЕТ»: «№ / Дата / Дата получения ответа / Раздел / Вопрос / Ответ / Принятые решения». Шапка распознаётся автоматически. Каждая загрузка <strong>полностью заменяет</strong> ранее загруженные строки. Экспорт выгружает текущую таблицу (с разметкой анализа) обратно в .xlsx.
             </p>
           </div>
@@ -160,9 +160,9 @@ export default function QaPage() {
             accept=".xlsx,.xls"
             onChange={(e) => handleUpload(e.target.files?.[0])}
             disabled={busy}
-            className="block text-sm file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-brand-600 file:text-white file:cursor-pointer"
+            className="block text-sm file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 dark:file:border-gray-700 file:bg-brand-600 file:text-white file:cursor-pointer"
           />
-          {busy && <span className="text-xs text-gray-500">Загрузка и парсинг…</span>}
+          {busy && <span className="text-xs text-gray-500 dark:text-gray-400">Загрузка и парсинг…</span>}
         </div>
       </div>
 
@@ -175,11 +175,11 @@ export default function QaPage() {
             <Stat label="Влияют на КП/расчёт/договор/график" value={stats.anyImpact} hint={`Р${stats.calc} К${stats.kp} Д${stats.contract} Г${stats.schedule}`} />
           </div>
           <div className="card p-3 flex items-center justify-between flex-wrap gap-3">
-            <div className="text-xs text-gray-600">
+            <div className="text-xs text-gray-600 dark:text-gray-400">
               <strong>Авто-привязка к ТЗ</strong> — анализатор сопоставляет вопрос/решение с текстом ТЗ и предлагает пункт. Привязки можно править вручную в таблице.
-              <span className="block text-gray-500 mt-0.5">
+              <span className="block text-gray-500 dark:text-gray-400 mt-0.5">
                 Привязано: <strong>{stats.linked}</strong> из {qaEntries.length} (
-                <span className="text-gray-400">{qaEntries.length - stats.linked} без пункта</span>)
+                <span className="text-gray-400 dark:text-gray-500">{qaEntries.length - stats.linked} без пункта</span>)
               </span>
             </div>
             <div className="flex gap-2">
@@ -235,14 +235,14 @@ export default function QaPage() {
           )}
         </div>
         {loading ? (
-          <div className="text-center py-6 text-gray-500">Загрузка…</div>
+          <div className="text-center py-6 text-gray-500 dark:text-gray-400">Загрузка…</div>
         ) : qaEntries.length === 0 ? (
           <EmptyState
             title="Q&A не загружена"
             description="Загрузите xlsx с формой вопрос-ответ — ниже появится таблица переписки."
           />
         ) : filtered.length === 0 ? (
-          <div className="card p-6 text-center text-gray-500 text-sm">Под фильтры не попало ни одной строки.</div>
+          <div className="card p-6 text-center text-gray-500 dark:text-gray-400 text-sm">Под фильтры не попало ни одной строки.</div>
         ) : (
           <div className="card overflow-x-auto">
             <table className="w-full text-xs">
@@ -260,11 +260,11 @@ export default function QaPage() {
               </thead>
               <tbody>
                 {filtered.map((q, i) => (
-                  <tr key={q.id} className="border-t border-gray-100 align-top">
-                    <td className="table-cell text-gray-400">{i + 1}</td>
-                    <td className="table-cell text-gray-700 whitespace-nowrap">{q.section || '—'}</td>
+                  <tr key={q.id} className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 align-top">
+                    <td className="table-cell text-gray-400 dark:text-gray-500">{i + 1}</td>
+                    <td className="table-cell text-gray-700 dark:text-gray-300 whitespace-nowrap">{q.section || '—'}</td>
                     <td className="table-cell whitespace-pre-wrap">{q.question || '—'}</td>
-                    <td className="table-cell whitespace-pre-wrap text-gray-700">{q.answer || '—'}</td>
+                    <td className="table-cell whitespace-pre-wrap text-gray-700 dark:text-gray-300">{q.answer || '—'}</td>
                     <td className="table-cell">
                       <textarea
                         className="input min-h-[60px] text-xs leading-snug"
@@ -318,7 +318,7 @@ export default function QaPage() {
                       </div>
                     </td>
                     {rounds.length > 1 && (
-                      <td className="table-cell text-gray-500 whitespace-nowrap">{q.round_label || '—'}</td>
+                      <td className="table-cell text-gray-500 dark:text-gray-400 whitespace-nowrap">{q.round_label || '—'}</td>
                     )}
                   </tr>
                 ))}
@@ -336,16 +336,16 @@ function Stat({ label, value, hint }) {
   return (
     <div className="card p-3">
       <div className="text-2xl font-semibold">{value}</div>
-      <div className="text-xs text-gray-500">{label}</div>
-      {hint && <div className="text-[10px] text-gray-400 mt-0.5">{hint}</div>}
+      <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
+      {hint && <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{hint}</div>}
     </div>
   );
 }
 
 const PILL_COLORS = {
-  green: { on: 'bg-green-100 text-green-800 border-green-300', off: 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100' },
-  red:   { on: 'bg-red-100 text-red-800 border-red-300',       off: 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100' },
-  blue:  { on: 'bg-blue-100 text-blue-800 border-blue-300',    off: 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100' },
+  green: { on: 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 border-green-300 dark:border-green-800', off: 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700' },
+  red:   { on: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 border-red-300 dark:border-red-800',       off: 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700' },
+  blue:  { on: 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-800',    off: 'bg-gray-50 dark:bg-gray-800 text-gray-400 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700' },
 };
 
 function Pill({ on, onClick, color, title, children }) {
@@ -355,7 +355,7 @@ function Pill({ on, onClick, color, title, children }) {
       type="button"
       onClick={onClick}
       title={title}
-      className={`px-1.5 py-0.5 rounded border text-[10px] font-medium leading-tight transition-colors ${on ? c.on : c.off}`}
+      className={`px-1.5 py-0.5 rounded border dark:border-gray-700 text-[10px] font-medium leading-tight transition-colors ${on ? c.on : c.off}`}
     >
       {children}
     </button>

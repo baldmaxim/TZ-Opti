@@ -3,7 +3,16 @@
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { badRequest } = require('../../utils/errors');
-const { getActiveTzText, getDocumentByType } = require('../tzActiveTextService');
+const {
+  getActiveTzText,
+  getDocumentByType,
+  getTzMdDocument,
+  computeRevisionId,
+  nodeIdFor,
+  hashText,
+} = require('../tzActiveTextService');
+const { parseMdToBlocks } = require('../mdParser');
+const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { runStage1Llm } = require('./stage1_llm');
 const { runStage2Llm } = require('./stage2_llm');
 const { runStage3Llm } = require('./stage3_llm');
@@ -13,7 +22,10 @@ const { importQaXlsx } = require('../qaImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 const { isOwnedBy, stageResultType } = require('../review/stageDomains');
 const { writeSignalsForStage } = require('../signals/signalWriter');
-const progressRegistry = require('./progressRegistry');
+const jobService = require('../jobs/jobService');
+const jobQueue = require('../jobs/jobQueue');
+const { stageScopeKey } = require('../jobs/jobModel');
+const { STATUS } = require('../analysis/resultStatus');
 
 // Единый серверный источник названий стадий (идёт в summary.label).
 // Тексты должны совпадать с STAGE_META на клиенте (client/src/utils/labels.js).
@@ -24,6 +36,30 @@ const STAGE_LABELS = {
   4: 'Типовые риски',
   5: 'Самоанализ ТЗ',
 };
+
+// --- Единый контракт результата стадии (чистые функции, офлайн-тестируемы) ----
+
+// Исход прогона стадии по строке analysis_runs → статус контракта (resultStatus).
+// null-строка = прогона не было (стадия не досчитана) → interrupted; 'running'
+// без живого процесса — тоже осиротевший прогон. Задание очереди может
+// закончиться обрывом (рестарт/потеря воркера) или отменой инженера — такие
+// прогоны пишутся своим статусом. Неизвестный статус — fail-closed.
+function classifyStageRun(run) {
+  if (!run) return STATUS.INTERRUPTED;
+  if (run.status === 'completed') return STATUS.COMPLETED;
+  if (run.status === 'failed') return STATUS.FAILED;
+  if (run.status === 'running') return STATUS.INTERRUPTED;
+  if (run.status === STATUS.INTERRUPTED) return STATUS.INTERRUPTED;
+  if (run.status === STATUS.CANCELLED) return STATUS.CANCELLED;
+  return STATUS.FAILED;
+}
+
+// Завершать (finish) стадию можно ТОЛЬКО из 'reviewing' — этот статус выставляет
+// лишь успешный runStageInner. Сбойный прогон возвращает статус в 'open'
+// (recordFailedRun), поэтому провалившуюся стадию завершить нельзя.
+function canFinishStage(status) {
+  return status === 'reviewing';
+}
 
 async function getStageState(tenderId) {
   let state = await db.queryOne('SELECT * FROM tender_stage_state WHERE tender_id = ?', tenderId);
@@ -129,86 +165,93 @@ function runStageOrchestrator(stage, ctx) {
 
 // Подписка Claude Code НЕ держит параллель: одновременные прогоны Стадии 1
 // душат друг друга и ловят таймаут (см. project_stage1_context_limit).
-// Гард: один прогон на (tender,stage) за раз — второй клик/запрос получает
-// понятную ошибку, а не сабботирует идущий анализ.
-const RUNNING_STAGES = new Set();
-
+// Гард «один прогон на (tender,stage)» больше НЕ живёт в памяти процесса: его
+// держит очередь (живое задание на область + advisory-lock на время работы),
+// поэтому он действует и между процессами, и после рестарта.
 async function runStage(tenderId, stage) {
-  const key = `${tenderId}:${stage}`;
-  if (RUNNING_STAGES.has(key)) {
+  const scope = stageScopeKey(stage);
+  const busy = await jobQueue.getActiveJobForScope(tenderId, scope);
+  if (busy) {
     throw badRequest(
       `Анализ стадии ${stage} уже выполняется. Дождитесь завершения ` +
         `(Стадия 1 — до ~15 минут) и не запускайте повторно: параллельные ` +
         `прогоны мешают друг другу и приводят к таймауту.`,
     );
   }
-  RUNNING_STAGES.add(key);
-  try {
-    return await runStageInner(tenderId, stage);
-  } finally {
-    RUNNING_STAGES.delete(key);
-  }
+  return runStageInner(tenderId, stage);
 }
 
-// Падение фонового прогона: фиксируем failed-run (его увидит опрос статуса
-// клиентом) и возвращаем статус стадии в исходное (re-runnable). Никогда не
-// бросаем — это финализатор фоновой задачи.
-async function recordFailedRun(tenderId, stage, prevStatus, err) {
+// Неуспешный прогон стадии: фиксируем терминальный analysis_run (его увидит
+// опрос статуса клиентом) и возвращаем статус стадии в исходное (re-runnable).
+// Никогда не бросаем — это финализатор фоновой задачи.
+// status: STATUS.FAILED (упал) | INTERRUPTED (оборван рестартом) | CANCELLED.
+async function recordFailedRun(tenderId, stage, prevStatus, err, status = STATUS.FAILED) {
   const msg = (err && err.message) || 'неизвестная ошибка анализа';
   try {
     await db.queryRun(
       `INSERT INTO analysis_runs (id, tender_id, stage, started_at, finished_at, status, summary)
-       VALUES (?, ?, ?, ?, ?, 'failed', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       newId(),
       tenderId,
       stage,
       nowIso(),
       nowIso(),
-      JSON.stringify({ stage, label: STAGE_LABELS[stage], failed: true, error: msg }),
+      status === STATUS.FAILED ? 'failed' : status,
+      JSON.stringify({ stage, label: STAGE_LABELS[stage], status, failed: true, error: msg }),
     );
-    await setStageStatus(tenderId, stage, prevStatus);
+    await releaseRunningStage(tenderId, stage, prevStatus);
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error(`[stageEngine] recordFailedRun сбой: ${e.message}`);
   }
 }
 
+// Вернуть стадию из 'running' в исходный статус. Условно: если стадия уже ушла
+// в 'reviewing' (успех) или 'finished', трогать её нельзя.
+async function releaseRunningStage(tenderId, stage, prevStatus = 'open') {
+  const res = await db.queryRun(
+    `UPDATE tender_stage_state SET stage${stage}_status = ?, current_stage = ?
+      WHERE tender_id = ? AND stage${stage}_status = 'running'`,
+    prevStatus === 'running' ? 'open' : prevStatus,
+    stage,
+    tenderId,
+  );
+  return (res && (res.changes ?? res.rowCount)) || 0;
+}
+
 // Фоновый запуск: быстрые проверки синхронно (гард/доступность → понятная
-// 400 сразу), затем стадия считается В ФОНЕ сколько нужно. Клиент опрашивает
-// статус (state.stageN_status) и узнаёт исход по последнему analysis_run.
-// Это снимает «Failed to fetch»/таймаут: нет висящего HTTP-запроса.
-async function startStageBackground(tenderId, stage) {
-  const key = `${tenderId}:${stage}`;
-  if (RUNNING_STAGES.has(key)) {
-    throw badRequest(
-      `Анализ стадии ${stage} уже выполняется. Дождитесь завершения — ` +
-        `портал сам покажет результат (вкладку можно закрыть).`,
-    );
-  }
+// ошибка сразу), затем стадия ставится в устойчивую очередь и считается
+// воркером сколько нужно. Клиент опрашивает статус (state.stageN_status +
+// прогресс задания) и узнаёт исход по последнему analysis_run.
+// Ни прогресс, ни факт «идёт прогон» больше не живут в памяти процесса:
+// рестарт сервера не теряет задание, а повторный клик не создаёт дубль.
+async function startStageBackground(tenderId, stage, opts = {}) {
   const state = await getStageState(tenderId);
   if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
   if (!isStageRunnable(state, stage)) {
     throw badRequest(`Стадия ${stage} недоступна. Сначала завершите стадию ${stage - 1}.`);
   }
   const prevStatus = state[`stage${stage}_status`];
-  RUNNING_STAGES.add(key);
-  await setStageStatus(tenderId, stage, 'running');
-  progressRegistry.init(tenderId, stage); // прогресс по сегментам для круговой шкалы
-  // Не ждём: ответ уходит сразу, анализ идёт в фоне.
-  (async () => {
-    try {
-      await runStageInner(tenderId, stage);
-    } catch (e) {
-      await recordFailedRun(tenderId, stage, prevStatus, e);
-    } finally {
-      RUNNING_STAGES.delete(key);
-      progressRegistry.clear(tenderId, stage);
-    }
-  })();
-  return { status: 'running' };
+  const { job, deduped } = await jobService.enqueueStageAnalysis(tenderId, stage, {
+    prevStatus: prevStatus === 'running' ? 'open' : prevStatus,
+    idempotencyKey: opts.idempotencyKey || null,
+    createdBy: opts.createdBy || null,
+  });
+  // Условно: воркер мог подхватить задание и увести стадию дальше ('reviewing')
+  // раньше, чем сюда дойдёт управление, — тогда перетирать статус нельзя.
+  if (!deduped) {
+    await db.queryRun(
+      `UPDATE tender_stage_state SET stage${stage}_status = 'running', current_stage = ?
+        WHERE tender_id = ? AND stage${stage}_status = ?`,
+      stage, tenderId, prevStatus,
+    );
+  }
+  return { status: 'running', job_id: job.id, deduped: deduped || null };
 }
 
-async function runStageInner(tenderId, stage) {
+// control (опц.) — мост к задаче очереди: прогресс по сегментам, чекпойнт
+// (повтор продолжает с последнего готового сегмента) и кооперативная отмена.
+async function runStageInner(tenderId, stage, control = null) {
   const state = await getStageState(tenderId);
   if (stage < 1 || stage > 5) throw badRequest('Допустимы стадии 1..5');
   if (!isStageRunnable(state, stage)) {
@@ -250,11 +293,13 @@ async function runStageInner(tenderId, stage) {
   }
 
   const ctx = await buildContextForStage(tenderId, stage);
-  // Репортер прогресса по сегментам — runLlmStage зовёт setTotal/tick (см. llmStage).
-  ctx.progress = {
-    setTotal: (n) => progressRegistry.setTotal(tenderId, stage, n),
-    tick: () => progressRegistry.tick(tenderId, stage),
-  };
+  // Репортер прогресса по сегментам — runLlmStage зовёт setTotal/tick.
+  // Пишется в строку задачи (analysis_tasks), а не в память процесса.
+  ctx.progress = control
+    ? { setTotal: (n) => control.setTotal(n), tick: () => control.tick() }
+    : null;
+  // Чекпойнт по сегментам + кооперативная отмена (см. jobs/handlers/stageAnalysisJob).
+  ctx.jobControl = control;
   const issues = await runStageOrchestrator(stage, ctx);
 
   // Гард зоны ответственности: стадия должна писать только в свой домен
@@ -268,11 +313,18 @@ async function runStageInner(tenderId, stage) {
     );
   }
 
-  const runId = newId();
-  const startedAt = nowIso();
+  // Неизменяемый снимок стадии: создаём НОВЫЙ stage-прогон (status='running').
+  // Указатель переведём только по успеху (activateRun ниже) — провал не архивирует
+  // прежний актуальный прогон стадии.
+  const documentsRevisionId = await analysisRuns.currentDocumentsRevision(tenderId);
+  const configVersion = analysisRuns.currentConfigVersion();
+  const runId = await analysisRuns.beginRun(tenderId, analysisRuns.stageScope(stage), {
+    stage, documentsRevisionId, configVersion,
+  });
   const summary = {
     stage,
     label: STAGE_LABELS[stage],
+    status: STATUS.COMPLETED, // единый контракт результата (см. resultStatus)
     result_type: stageResultType(stage),
     issues_count: issues.length,
     off_domain: offDomain.length,
@@ -287,26 +339,9 @@ async function runStageInner(tenderId, stage) {
   const issueRecords = [];
 
   await db.transaction(async (tx) => {
-    // Удаляем существующие незавершённые Issue этой стадии (повторный запуск)
-    await tx.queryRun(
-      `DELETE FROM issues WHERE tender_id = ? AND analysis_stage = ? AND review_status = 'pending'`,
-      tenderId,
-      stage,
-    );
-
-    await tx.queryRun(
-      `
-      INSERT INTO analysis_runs (id, tender_id, stage, started_at, finished_at, status, summary)
-      VALUES (?, ?, ?, ?, ?, 'completed', ?)
-    `,
-      runId,
-      tenderId,
-      stage,
-      startedAt,
-      nowIso(),
-      JSON.stringify(summary),
-    );
-
+    // Неизменяемый снимок: pending прежнего прогона НЕ удаляем — прежний прогон
+    // архивируется (activateRun ниже), новый несёт свои свежие issues. Строку
+    // analysis_runs создал beginRun; здесь — только issues снимка.
     for (const issue of issues) {
       const issueId = newId();
       await tx.queryRun(
@@ -352,7 +387,15 @@ async function runStageInner(tenderId, stage) {
   // Параллельная запись слоя signals (новая архитектура анализа ТЗ).
   // Изолирована: best-effort writer со своей транзакцией и перехватом ошибок —
   // сбой signals НЕ влияет на уже закоммиченные issues и статус стадии.
+  // Пишется ДО активации — снимок стадии материализуется целиком.
   await writeSignalsForStage({ tenderId, runId, stage, records: issueRecords });
+
+  // Активируем снимок стадии: указатель переводится на новый прогон, прежний
+  // актуальный прогон этой стадии архивируется (superseded_at). Чтения берут
+  // только issues/signals актуальных stage-прогонов.
+  await analysisRuns.activateRun(tenderId, analysisRuns.stageScope(stage), runId, {
+    documentsRevisionId, configVersion, summary: JSON.stringify(summary),
+  });
 
   return { runId, summary };
 }
@@ -362,16 +405,36 @@ async function finishStage(tenderId, stage) {
   const cur = state[`stage${stage}_status`];
   if (cur === 'locked') throw badRequest('Стадия залочена');
   if (cur === 'finished') throw badRequest('Стадия уже завершена');
-  // Применяем tz_excluded_ranges для решений delete / remove_from_scope
-  const closeIssues = await db.queryAll(
+  if (cur === 'running') throw badRequest(`Стадия ${stage} ещё считается — дождитесь завершения.`);
+  // Завершить стадию можно только после УСПЕШНОГО прогона (статус 'reviewing').
+  // Провалившийся анализ возвращает статус в 'open' — такую стадию завершать
+  // нельзя, иначе следующий гейт откроется по сбою (портал «отрапортует успех»).
+  if (!canFinishStage(cur)) {
+    throw badRequest(
+      `Стадию ${stage} нельзя завершить: успешного анализа не было (статус «${cur}»). Запустите анализ заново.`,
+    );
+  }
+  // Применяем tz_excluded_ranges для решений delete / remove_from_scope.
+  // Только issues АКТУАЛЬНОГО stage-прогона (архивные прогоны не влияют).
+  const stageRunId = await analysisRuns.getActiveStageRunId(tenderId, stage);
+  const closeIssues = stageRunId ? await db.queryAll(
     `
       SELECT i.*, d.decision, d.target_text FROM issues i
       LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ? AND i.analysis_stage = ?
+      WHERE i.tender_id = ? AND i.analysis_stage = ? AND i.analysis_run_id = ?
     `,
     tenderId,
     stage,
-  );
+    stageRunId,
+  ) : [];
+
+  // Привязка исключений к КОНКРЕТНОЙ ревизии ТЗ: считаем revisionId текущего
+  // документа и стабильные node_id / хэш текста по абзацу. Так исключения этой
+  // версии не применятся к следующей загруженной версии ТЗ (см. getActiveTzText).
+  const tzDoc = await getTzMdDocument(tenderId);
+  const revisionId = tzDoc ? computeRevisionId(tzDoc) : null;
+  const tzBlocks = tzDoc ? await parseMdToBlocks(tzDoc.extracted_text || '') : [];
+  const blockByIndex = new Map(tzBlocks.map((b) => [b.index, b]));
 
   await db.transaction(async (tx) => {
     for (const issue of closeIssues) {
@@ -387,14 +450,27 @@ async function finishStage(tenderId, stage) {
           const i = issue.source_fragment.indexOf(part);
           if (i !== -1) { cStart = issue.char_start + i; cEnd = cStart + part.length; }
         }
+        // Стабильный id узла + хэш исходного (исключаемого) текста этой ревизии.
+        const block = blockByIndex.get(issue.paragraph_index) || null;
+        const nodeId = block ? nodeIdFor(block) : null;
+        const fragText = block
+          ? block.text.slice(Math.max(0, cStart), Math.max(0, cEnd))
+          : (issue.source_fragment || '');
+        const srcHash = hashText(fragText);
         await tx.queryRun(
           `
-          INSERT INTO tz_excluded_ranges (id, tender_id, source_document_id, paragraph_index, char_start, char_end, after_stage, source_issue_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO tz_excluded_ranges (
+            id, tender_id, source_document_id, document_revision_id, node_id, source_text_hash,
+            paragraph_index, char_start, char_end, after_stage, source_issue_id, stale, needs_confirmation, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
         `,
           newId(),
           tenderId,
           issue.source_document_id || null,
+          revisionId,
+          nodeId,
+          srcHash,
           issue.paragraph_index,
           cStart,
           cEnd,
@@ -427,6 +503,9 @@ async function resetStage(tenderId, stage) {
     }
     await tx.queryRun('DELETE FROM analysis_runs WHERE tender_id = ? AND stage >= ?', tenderId, stage);
     await tx.queryRun('DELETE FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage >= ?', tenderId, stage);
+    // Снимаем указатели актуальных stage-прогонов для сброшенных стадий (>= N),
+    // иначе указатель ссылался бы на удалённый прогон.
+    await analysisRuns.clearStagePointers(tenderId, stage, tx);
 
     // Возвращаем статусы
     for (let s = stage; s <= 5; s += 1) {
@@ -439,13 +518,16 @@ async function resetStage(tenderId, stage) {
 }
 
 async function listStageIssues(tenderId, stage, filters = {}) {
+  // Только issues АКТУАЛЬНОГО stage-прогона (снимок); архивные не показываем.
+  const stageRunId = await analysisRuns.getActiveStageRunId(tenderId, stage);
+  if (!stageRunId) return [];
   let sql = `
     SELECT i.*, d.decision as decision_kind, d.final_comment as decision_comment, d.edited_redaction as decision_redaction, d.target_text as decision_target_text
     FROM issues i
     LEFT JOIN review_decisions d ON d.issue_id = i.id
-    WHERE i.tender_id = ? AND i.analysis_stage = ?
+    WHERE i.tender_id = ? AND i.analysis_stage = ? AND i.analysis_run_id = ?
   `;
-  const params = [tenderId, stage];
+  const params = [tenderId, stage, stageRunId];
   if (filters.criticality) { sql += ' AND i.criticality = ?'; params.push(filters.criticality); }
   if (filters.review_status) { sql += ' AND i.review_status = ?'; params.push(filters.review_status); }
   if (filters.problem_type) { sql += ' AND i.problem_type = ?'; params.push(filters.problem_type); }
@@ -474,18 +556,27 @@ function countBy(arr, key) {
   return out;
 }
 
-// Авто-починка «зомби»-статусов на старте сервера. Фоновый прогон живёт в памяти
-// процесса (RUNNING_STAGES + progressRegistry); при рестарте/падении сервера он
-// гибнет, но в БД stageN_status мог остаться 'running' — тогда клиент бесконечно
-// крутит кольцо прогресса. На старте живых прогонов ещё нет, поэтому любой
-// 'running' — осиротевший: сбрасываем в 'open' (предыдущая стадия была завершена,
-// иначе запуск был бы невозможен). Issue не трогаем: успешный прогон пишет их
-// только в финальной транзакции, а следующий запуск всё равно чистит pending.
+// Авто-починка «зомби»-статусов на старте сервера. Раньше фоновый прогон жил в
+// памяти процесса, поэтому на старте ЛЮБОЙ 'running' считался осиротевшим и
+// сбрасывался. Теперь прогоны в очереди, и это правило стало неверным: чужой
+// живой воркер продолжает считать стадию, пока API-процесс перезапускается.
+// Сбрасываем только те стадии, у которых НЕТ живого задания в очереди —
+// остальные доведёт воркер (или reaper пометит их задачи interrupted).
+// Issues не трогаем: успешный прогон пишет их только в финальной транзакции.
 async function recoverOrphanedRunningStages() {
   let recovered = 0;
   for (let s = 1; s <= 5; s += 1) {
+    // eslint-disable-next-line no-await-in-loop
     const res = await db.queryRun(
-      `UPDATE tender_stage_state SET stage${s}_status = 'open' WHERE stage${s}_status = 'running'`,
+      `UPDATE tender_stage_state st
+          SET stage${s}_status = 'open'
+        WHERE st.stage${s}_status = 'running'
+          AND NOT EXISTS (
+            SELECT 1 FROM analysis_jobs j
+             WHERE j.tender_id = st.tender_id
+               AND j.scope_key = ?
+               AND j.status IN ('queued', 'running'))`,
+      stageScopeKey(s),
     );
     recovered += (res && (res.changes ?? res.rowCount)) || 0;
   }
@@ -498,8 +589,16 @@ async function recoverOrphanedRunningStages() {
 
 module.exports = {
   STAGE_LABELS,
+  // чистые функции контракта результата (офлайн-тесты)
+  classifyStageRun,
+  canFinishStage,
   getStageState,
+  setStageStatus,
+  isStageRunnable,
   runStage,
+  runStageInner,
+  recordFailedRun,
+  releaseRunningStage,
   startStageBackground,
   finishStage,
   resetStage,

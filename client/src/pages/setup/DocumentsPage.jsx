@@ -31,10 +31,10 @@ const SLOTS = [
 // участвует в анализе ТЗ; форма «Вопрос-ответ» вынесена в отдельный основной раздел.
 
 const COLOR_CLASSES = {
-  blue: { bg: 'bg-blue-50', border: 'border-blue-200', badge: 'bg-blue-600 text-white' },
-  green: { bg: 'bg-green-50', border: 'border-green-200', badge: 'bg-green-600 text-white' },
-  amber: { bg: 'bg-amber-50', border: 'border-amber-200', badge: 'bg-amber-500 text-white' },
-  purple: { bg: 'bg-purple-50', border: 'border-purple-200', badge: 'bg-purple-600 text-white' },
+  blue: { bg: 'bg-blue-50 dark:bg-blue-900/40', border: 'border-blue-200 dark:border-blue-800', badge: 'bg-blue-600 text-white' },
+  green: { bg: 'bg-green-50 dark:bg-green-900/40', border: 'border-green-200 dark:border-green-800', badge: 'bg-green-600 text-white' },
+  amber: { bg: 'bg-amber-50 dark:bg-amber-900/40', border: 'border-amber-200 dark:border-amber-800', badge: 'bg-amber-500 text-white' },
+  purple: { bg: 'bg-purple-50 dark:bg-purple-900/40', border: 'border-purple-200 dark:border-purple-800', badge: 'bg-purple-600 text-white' },
 };
 
 export default function DocumentsPage() {
@@ -126,7 +126,7 @@ export default function DocumentsPage() {
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-semibold">Документы тендера</h2>
-        <p className="text-sm text-gray-600 mt-0.5">
+        <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
           Входные документы для анализа ТЗ. ТЗ — отдельные подслоты для Word/PDF и
           Markdown-копии (для AI). ВОР — один файл (повторная загрузка заменяет предыдущий).
         </p>
@@ -148,7 +148,7 @@ export default function DocumentsPage() {
       </div>
 
       {loading && items.length === 0 && (
-        <div className="text-center text-gray-500 text-sm py-2">Загрузка…</div>
+        <div className="text-center text-gray-500 dark:text-gray-400 text-sm py-2">Загрузка…</div>
       )}
     </div>
   );
@@ -199,12 +199,12 @@ function SlotHeader({ slot, c, count }) {
         <div className="font-semibold leading-tight flex items-center gap-2">
           {slot.label}
           {typeof count === 'number' && count > 0 && (
-            <span className="text-xs bg-white border border-gray-300 text-gray-700 px-1.5 py-0.5 rounded-full font-normal">
+            <span className="text-xs bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-0.5 rounded-full font-normal">
               {count}
             </span>
           )}
         </div>
-        <div className="text-xs text-gray-500 mt-0.5">{slot.hint}</div>
+        <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{slot.hint}</div>
       </div>
     </div>
   );
@@ -225,21 +225,21 @@ function SubSlotRow({ sub, doc, busy, disabled, onUpload, onDelete }) {
     status === 'failed' ? 'ошибка' :
     status === 'pending' ? 'обработка' : status;
   const statusClass =
-    status === 'extracted' ? 'text-green-700' :
-    status === 'failed' ? 'text-red-700' : 'text-amber-700';
+    status === 'extracted' ? 'text-green-700 dark:text-green-300' :
+    status === 'failed' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300';
 
   return (
-    <div className="bg-white border border-gray-200 rounded-md p-2.5 flex flex-col gap-1.5">
+    <div className="bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded-md p-2.5 flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold text-gray-700">{sub.label}</span>
+        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{sub.label}</span>
         {!empty && (
-          <span className="text-[11px] text-gray-500 truncate">
+          <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
             {formatDateTime(doc.uploaded_at)} · <span className={statusClass}>{statusLabel}</span>
           </span>
         )}
       </div>
       {empty ? (
-        <div className="text-xs text-gray-400 italic">Не загружено</div>
+        <div className="text-xs text-gray-400 dark:text-gray-500 italic">Не загружено</div>
       ) : (
         <div className="text-sm font-medium break-all" title={doc.name}>{doc.name}</div>
       )}
@@ -262,7 +262,7 @@ function SubSlotRow({ sub, doc, busy, disabled, onUpload, onDelete }) {
         {!empty && (
           <button
             type="button"
-            className="btn btn-secondary text-red-600"
+            className="btn btn-secondary text-red-600 dark:text-red-300"
             onClick={() => onDelete(doc)}
             disabled={busy || disabled}
             title="Удалить"
@@ -292,7 +292,7 @@ function RegularSlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDel
 
       <div className="flex-1 min-h-[64px]">
         {empty ? (
-          <p className="text-sm text-gray-500 italic">Не загружено</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 italic">Не загружено</p>
         ) : multi ? (
           <DocList docs={docs} onDelete={onDelete} disabled={busy || disabled} />
         ) : (
@@ -321,7 +321,7 @@ function RegularSlotCard({ slot, docs, busy, disabled, tenderId, onUpload, onDel
         {!multi && !empty && (
           <button
             type="button"
-            className="btn btn-secondary text-red-600"
+            className="btn btn-secondary text-red-600 dark:text-red-300"
             onClick={() => onDelete(docs[0])}
             disabled={busy || disabled}
             title="Удалить"
@@ -349,12 +349,12 @@ function DocSingle({ doc }) {
     status === 'failed' ? 'ошибка обработки' :
     status === 'pending' ? 'обработка…' : status;
   const statusClass =
-    status === 'extracted' ? 'text-green-700' :
-    status === 'failed' ? 'text-red-700' : 'text-amber-700';
+    status === 'extracted' ? 'text-green-700 dark:text-green-300' :
+    status === 'failed' ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300';
   return (
     <div className="text-sm">
       <div className="font-medium break-all" title={doc.name}>{doc.name}</div>
-      <div className="text-xs text-gray-500 mt-1">
+      <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
         <span>{formatDateTime(doc.uploaded_at)}</span>
         <span className="mx-1.5">•</span>
         <span className={statusClass}>{statusLabel}</span>
@@ -370,20 +370,20 @@ function DocList({ docs, onDelete, disabled }) {
         const ok = d.processing_status === 'extracted';
         const failed = d.processing_status === 'failed';
         return (
-          <li key={d.id} className="flex items-center gap-2 bg-white border border-gray-200 rounded px-2 py-1.5">
+          <li key={d.id} className="flex items-center gap-2 bg-white dark:bg-gray-800 border dark:border-gray-700 border-gray-200 dark:border-gray-700 rounded px-2 py-1.5">
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium break-all" title={d.name}>{d.name}</div>
-              <div className="text-[11px] text-gray-500">
+              <div className="text-[11px] text-gray-500 dark:text-gray-400">
                 {formatDateTime(d.uploaded_at)}
                 <span className="mx-1">•</span>
-                <span className={ok ? 'text-green-700' : failed ? 'text-red-700' : 'text-amber-700'}>
+                <span className={ok ? 'text-green-700 dark:text-green-300' : failed ? 'text-red-700 dark:text-red-300' : 'text-amber-700 dark:text-amber-300'}>
                   {ok ? 'извлечён' : failed ? 'ошибка' : 'обработка'}
                 </span>
               </div>
             </div>
             <button
               type="button"
-              className="text-red-600 hover:text-red-800 text-sm px-1.5"
+              className="text-red-600 dark:text-red-300 hover:text-red-800 dark:hover:text-red-300 text-sm px-1.5"
               onClick={() => onDelete(d)}
               disabled={disabled}
               title="Удалить"

@@ -13,6 +13,7 @@ const { buildSystemPrompt, resolveVariant } = require('./stage4Prompts');
 const { listForTender } = require('../risksService');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
 const { scoreStage4Finding } = require('./stage4Scoring');
+const { ALL_ACTIONS } = require('../analysis/actions');
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -55,7 +56,7 @@ const RESPONSE_SCHEMA = {
           criticality: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
           suggested_action: {
             type: 'string',
-            enum: ['comment', 'replace', 'delete', 'remove_from_scope', 'clarify', 'limit_scope', 'assumption'],
+            enum: ALL_ACTIONS,
           },
           suggested_redaction: {
             type: 'string',

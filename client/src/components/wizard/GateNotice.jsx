@@ -13,14 +13,14 @@ export default function GateNotice({ stepId }) {
   const ctaStep = gate.cta?.stepId ? findStep(gate.cta.stepId) : null;
 
   return (
-    <div className="card p-6 bg-amber-50 border-amber-200">
+    <div className="card p-6 bg-amber-50 dark:bg-amber-900/40 border-amber-200 dark:border-amber-800">
       <div className="flex items-start gap-3">
         <div className="text-2xl">🔒</div>
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-amber-900">
+          <h3 className="font-semibold text-amber-900 dark:text-amber-200">
             Шаг закрыт: {step.label}
           </h3>
-          <p className="text-sm text-amber-800 mt-1">{gate.reason}</p>
+          <p className="text-sm text-amber-800 dark:text-amber-300 mt-1">{gate.reason}</p>
           {ctaStep && (
             <Link
               to={stepRoute(ctaStep, tenderId)}

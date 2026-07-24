@@ -73,10 +73,10 @@ export default function StagePanel({ stage }) {
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h2 className="font-semibold text-lg">{config.label}</h2>
-          <p className="text-sm text-gray-600 mt-1">{config.description}</p>
-          <p className="text-xs text-gray-500 mt-2">Статус: {STAGE_STATUS[status] || status || '—'}</p>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{config.description}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">Статус: {STAGE_STATUS[status] || status || '—'}</p>
           {summary && (
-            <div className="text-xs text-gray-600 mt-2">
+            <div className="text-xs text-gray-600 dark:text-gray-400 mt-2">
               Замечаний: <strong>{summary.issues_count}</strong>
               {' '}{Object.entries(counts).map(([k, v]) => (
                 <span key={k} className={`tag ml-1 ${criticalityClass(k)}`}>{k}: {v}</span>
@@ -117,7 +117,7 @@ export default function StagePanel({ stage }) {
 
       {summary && (
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="text-sm text-gray-600">Фильтры:</div>
+          <div className="text-sm text-gray-600 dark:text-gray-400">Фильтры:</div>
           <select
             className="input max-w-[200px]"
             value={filter.criticality}
@@ -150,7 +150,7 @@ export default function StagePanel({ stage }) {
       )}
 
       {loadingIssues ? (
-        <div className="text-center py-6 text-gray-500">Загрузка замечаний…</div>
+        <div className="text-center py-6 text-gray-500 dark:text-gray-400">Загрузка замечаний…</div>
       ) : (
         <StageDecisionTable
           issues={issues}

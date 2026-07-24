@@ -36,6 +36,10 @@ function buildSignal({ tenderId, runId, stage, issueId, issue }) {
     paragraph_index: issue.paragraph_index ?? null,
     char_start: issue.char_start ?? null,
     char_end: issue.char_end ?? null,
+    // Полный абзац ТЗ (context_text из llmStage.buildIssue) — сохраняем в
+    // payload, чтобы не потерять контекст цитаты (source_fragment теперь = точная
+    // цитата, а не весь абзац). Backfill из issues его не несёт (нет колонки).
+    context_text: issue.context_text || null,
     section_path: issue.section_path || null,
     source_clause: issue.source_clause || null,
   };
@@ -65,12 +69,16 @@ async function writeSignalsForStage({ tenderId, runId, stage, records }) {
     .filter(Boolean);
   try {
     await db.transaction(async (tx) => {
-      // Идемпотентность повторного прогона стадии: чистим прежние сигналы этой стадии.
-      await tx.queryRun(
-        `DELETE FROM analysis_signals WHERE tender_id = ? AND analysis_stage = ?`,
-        tenderId,
-        stage,
-      );
+      // Неизменяемый снимок: сигналы пишутся с analysis_run_id нового stage-прогона,
+      // прежние прогоны НЕ удаляются (архив). Идемпотентность — в пределах ПРОГОНА:
+      // чистим только сигналы этого runId (повторная запись того же прогона), чтения
+      // берут лишь сигналы актуальных stage-прогонов (getActiveStageRunIds).
+      if (runId) {
+        await tx.queryRun(
+          `DELETE FROM analysis_signals WHERE tender_id = ? AND analysis_run_id = ?`,
+          tenderId, runId,
+        );
+      }
       for (const s of signals) {
         await tx.queryRun(
           `INSERT INTO analysis_signals (
@@ -101,26 +109,36 @@ async function writeSignalsForStage({ tenderId, runId, stage, records }) {
 // draft_issues/clusters пустые. Берём те же поля и тот же маппинг, что и живой
 // прогон (writeSignalsForStage) — без повторного прогона LLM. Возвращает счётчики.
 async function backfillSignalsFromIssues(tenderId) {
+  // Лениво, чтобы не жёстко связывать слой signals с реестром прогонов.
+  const { getActiveStageRunId } = require('../analysisRuns/analysisRunsService');
   const perStage = {};
   let total = 0;
   for (const stage of [1, 2, 3, 4]) {
+    // Сигналы восстанавливаем из issues АКТУАЛЬНОГО stage-прогона и привязываем к нему.
+    const runId = await getActiveStageRunId(tenderId, stage);
+    if (!runId) { perStage[stage] = 0; continue; }
     const issues = await db.queryAll(
-      `SELECT * FROM issues WHERE tender_id = ? AND analysis_stage = ?`,
+      `SELECT * FROM issues WHERE tender_id = ? AND analysis_stage = ? AND analysis_run_id = ?`,
       tenderId,
       stage,
+      runId,
     );
     const records = issues.map((i) => ({ issueId: i.id, issue: i }));
-    const res = await writeSignalsForStage({ tenderId, runId: null, stage, records });
+    const res = await writeSignalsForStage({ tenderId, runId, stage, records });
     perStage[stage] = res.written || 0;
     total += res.written || 0;
   }
   return { written: total, by_stage: perStage };
 }
 
-// Чтение сигналов по тендеру (+ опциональный фильтр по типу) для API/дебага.
+// Чтение сигналов АКТУАЛЬНЫХ stage-прогонов (+ опц. фильтр по типу) для API/дебага.
 async function listSignals(tenderId, { signalType } = {}) {
-  const params = [tenderId];
-  let sql = `SELECT * FROM analysis_signals WHERE tender_id = ?`;
+  const { getActiveStageRunIds } = require('../analysisRuns/analysisRunsService');
+  const stageRunIds = await getActiveStageRunIds(tenderId);
+  if (!stageRunIds.length) return [];
+  const params = [tenderId, ...stageRunIds];
+  let sql = `SELECT * FROM analysis_signals
+    WHERE tender_id = ? AND analysis_run_id IN (${stageRunIds.map(() => '?').join(', ')})`;
   if (signalType) {
     sql += ` AND signal_type = ?`;
     params.push(signalType);

@@ -69,6 +69,10 @@ async function runMigration() {
   await ensureColumn('qa_entries', 'affects_contract', 'INTEGER DEFAULT 0');
   await ensureColumn('qa_entries', 'affects_schedule', 'INTEGER DEFAULT 0');
 
+  // Отчёт структурного импорта документа (сейчас — ВОР, services/vor):
+  // сколько позиций, по каким листам, где найдена шапка, предупреждения.
+  await ensureColumn('documents', 'import_report', 'TEXT');
+
   // section_path — для Стадии 1 (LLM-агент GPT-4o): путь заголовков из .md ТЗ.
   // Сохраняется как «1. Введение › 1.2 Объём работ», NULL для старых rule-based записей.
   await ensureColumn('issues', 'section_path', 'TEXT');

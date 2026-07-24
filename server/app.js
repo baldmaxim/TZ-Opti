@@ -18,6 +18,7 @@ const checklistRouter = require('./routes/checklist');
 const conditionsRouter = require('./routes/conditions');
 const risksRouter = require('./routes/risks');
 const qaRouter = require('./routes/qa');
+const vorRouter = require('./routes/vor');
 const stagesRouter = require('./routes/stages');
 const decisionsRouter = require('./routes/decisions');
 const reviewRouter = require('./routes/review');
@@ -53,6 +54,7 @@ function createApp({ logger = 'dev' } = {}) {
   app.use('/api', conditionsRouter);
   app.use('/api', risksRouter);
   app.use('/api', qaRouter);
+  app.use('/api', vorRouter);
   app.use('/api', stagesRouter);
   app.use('/api', decisionsRouter);
   app.use('/api', reviewRouter);

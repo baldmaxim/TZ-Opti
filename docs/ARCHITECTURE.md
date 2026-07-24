@@ -54,7 +54,8 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 
 | # | Этап | Таблица | Пишет (сервис · функция) | Вход | Идемпотентность |
 |---|------|---------|--------------------------|------|------------------|
-| — | Стадии 1–4 (добыча) | `issues`, `analysis_runs` | `stageAnalysis/stageAnalysisEngine.js` · `runStageInner` → `stageN_llm.js` | ТЗ.md + справочники стадии (чек-лист/ВОР, Q&A/характеристики, условия, риски) | при ре-ране удаляются `pending`-issues стадии |
+| — | Импорт ВОР | `vor_items` | `vor/vorImportService.js` · `importVorFile` | xls/xlsx в слоте `vor` (при загрузке документа) | позиции тендера заменяются целиком в одной транзакции |
+| — | Стадии 1–4 (добыча) | `issues`, `analysis_runs` | `stageAnalysis/stageAnalysisEngine.js` · `runStageInner` → `stageN_llm.js` | ТЗ.md + справочники стадии (чек-лист/**`vor_items`**, Q&A/характеристики, условия, риски) | при ре-ране удаляются `pending`-issues стадии |
 | 1 | signals | `analysis_signals` | `signals/signalWriter.js` · `writeSignalsForStage` | `issueRecords` стадии (авто, после коммита issues) | удаляет старые сигналы `(tender, stage)` перед записью |
 | 2 | draft_issues | `draft_issues` | `unifiedAnalysis/unifiedIssueBuilder.js` · `buildDraftIssues` | `analysis_signals` | пересобирает все draft_issues тендера |
 | 3 | critic | `issue_reviews` | `critic/criticService.js` · `buildIssueReviews` | `draft_issues` + `analysis_signals` | пересобирает все reviews тендера |
@@ -62,6 +63,8 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 | 5 | self-analysis (Стадия 5) | `self_analysis_results` | `selfAnalysis/selfAnalysisService.js` · `buildSelfAnalysis` | `issue_clusters` + `issue_reviews` + `analysis_signals` + ТЗ.md | пересобирает все QC-замечания тендера |
 
 **Что несёт каждая сущность (ключевые поля):**
+
+- **`vor_items`** — позиция ведомости: `position_no`, `code`, `section`, `name` (+ `name_key` для сопоставления), `unit`/`unit_raw`/`unit_known`, `quantity` (число) / `quantity_raw` (как в файле), `note`, `sheet_name`, `row_index` (строка Excel), `cells` и `merged_cells` (адреса ячеек — «где именно в ВОР»). Стадия 1 читает **их**, а не `extracted_text`.
 
 - **`issues`** — `analysis_stage`, локализация (`paragraph_index`/`char_start`/`char_end` или `source_fragment`), `problem_type`, `criticality`, `basis`, `suggested_action`, `suggested_redaction`, `review_status` (`pending|accepted|rejected|edited`), `selected_for_export`. Это **редактируемая** запись.
 - **`review_decisions`** — решение инженера по issue: `decision` (`accept|reject|edit|delete|remove_from_scope`), `edited_redaction`, `final_comment`, `target_text` (выбранная подчасть фрагмента).
@@ -78,6 +81,7 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 | Вопрос | Source of truth | Не здесь |
 |--------|-----------------|----------|
 | Сырые находки стадий 1–4 | `issues` | — |
+| Содержимое ВОР (позиции, объёмы, единицы, координаты) | `vor_items` (структурный импорт `vor/vorImportService.js`) | `documents.extracted_text` — только просмотр и фолбэк для ВОР не таблицей |
 | **Решение инженера** по находке (этап 6) | `review_decisions.cluster_id` → `issue_clusters` (финальная рецензия). Legacy `review_decisions.issue_id` — пер-стадийная рецензия внутри стадий 1–4 | — |
 | Что попадёт в `.docx` (Track Changes) | **primary:** `issue_clusters` + `review_decisions.cluster_id` (`clusterReviewService.loadClusterDecisions`). **fallback:** `issues` + `review_decisions.issue_id` (когда кластерных решений нет или `?source=issues`) | — |
 | HTML-preview / review.md / CSV / JSON / summary.md (этап 7) | **primary:** те же кластерные решения (`loadClusterReviewRows` / `loadClusterDecisions`); фактический источник — в `X-Export-Source` и шапке файла. **fallback:** issue-level, когда кластеров нет или `?source=issues` | — |
@@ -108,6 +112,16 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 **A. Подготовка (инженер).** Создать тендер → загрузить ТЗ (`.docx`/`.pdf`) и **`.md`-копию ТЗ**
 (анализ идёт только по `.md`), ВОР.xlsx, заполнить чек-лист / условия / риски / характеристики /
 Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, `setupParams`.
+
+> **ВОР загружается СТРУКТУРНО.** При загрузке документа с `doc_type='vor'` таблица
+> разбирается в `vor_items` (`services/vor/`): номер позиции, шифр, раздел, наименование,
+> единица (сырая и нормализованная), количество (сырое и числом), примечание, лист,
+> строка Excel и адреса ячеек. Объединённые ячейки раскрываются, шапка ищется в т.ч.
+> двух-трёхэтажная, разделы/итоги/пустые строки позициями не становятся. Ошибка разбора
+> не роняет загрузку: остаётся `extracted_text`, причина пишется в `documents.import_report`.
+> API: `GET /api/tenders/:id/vor` (позиции), `…/vor/summary`, `…/vor/matching`
+> (вход сопоставления ТЗ ↔ ВОР ↔ чек-лист), `…/vor/preview` (каталог глазами модели),
+> `POST …/vor/reimport`.
 
 **B. Стадии 1–4 (добыча находок).** Для каждой стадии:
 1. `POST /api/tenders/:id/stages/:n/run` — движок (`startStageBackground`) проверяет доступность

@@ -165,10 +165,16 @@ const inputHashOf = (s) => crypto.createHash('sha1').update(String(s)).digest('h
 // ── Общий раннер LLM-стадии ──────────────────────────────────────────────────
 // cfg = {
 //   sourceDocumentId, systemMsg, schema, schemaName, tzBudget, concurrency,
-//   buildUserMessage(segment, partIdx, partTotal) -> string,
+//   buildUserMessage(segment, partIdx, partTotal) -> string | [{label, user}],
 //   riskCategory, issueDefaults, analysisNote, logTag, locateBlocks?,
-//   keepUnlocated?, mapFinding?, segmentTokens?, crossSegmentReview?
+//   keepUnlocated?, mapFinding?, segmentTokens?, crossSegmentReview?,
+//   combinePasses?
 // }
+// buildUserMessage может вернуть НЕСКОЛЬКО проходов на одну часть ТЗ (пакеты
+//   справочника, который не влезает целиком, — большой ВОР у Стадии 1).
+// combinePasses(lists, {segmentIndex, segment, passes}) (опц.) — как свести
+//   находки проходов одной части; по умолчанию — объединение. Стадия 1 берёт
+//   ПЕРЕСЕЧЕНИЕ: «нет в ВОР» верно, только если работы нет ни в одном пакете.
 // locateBlocks (опц.) — по чему искать фрагмент (по умолчанию ctx.blocks).
 // keepUnlocated (опц.) — не выбрасывать находки без фрагмента в ТЗ, эмитить
 //   безъякорным Issue (Стадии 2/3: «не отражено», «нет ответа»).
@@ -211,9 +217,21 @@ async function runLlmStage(ctx, cfg) {
   // Сообщения строим заранее: их хэш — ключ кэша сегмента (и в хранилище, и в
   // чекпойнте задачи). Изменился текст ТЗ или справочник — хэш другой, часть
   // считается заново.
+  //
+  // buildUserMessage может вернуть НЕСКОЛЬКО сообщений (проходов) на одну часть
+  // ТЗ — так стадия 1 показывает большой ВОР ПАКЕТАМИ вместо того, чтобы
+  // выбросить его по лимиту. Проходы одной части идут последовательно, их
+  // результаты сводит combinePasses; кэш части покрывает все её проходы разом.
   const prepared = segments.map((seg, idx) => {
-    const userMsg = buildUserMessage(seg, idx + 1, segments.length);
-    return { seg, idx, userMsg, hash: inputHashOf(userMsg) };
+    const built = buildUserMessage(seg, idx + 1, segments.length);
+    const passes = (Array.isArray(built) ? built : [{ label: null, user: built }])
+      .filter((p) => p && p.user);
+    return {
+      seg,
+      idx,
+      passes,
+      hash: inputHashOf(passes.map((p) => p.user).join('\n---pass---\n')),
+    };
   });
 
   // План нарезки в analysis_segments: статус каждой части виден снаружи и
@@ -240,6 +258,27 @@ async function runLlmStage(ctx, cfg) {
   // Мост к задаче очереди (опц.): чекпойнт по сегментам + кооперативная отмена.
   const control = ctx.jobControl || null;
 
+  // Проходы одной части ТЗ (пакеты справочника) — последовательно, результат
+  // сводит combinePasses (по умолчанию — простое объединение).
+  const combinePasses = cfg.combinePasses || ((lists) => lists.flat());
+  async function runPasses(item) {
+    const lists = [];
+    for (const pass of item.passes) {
+      // eslint-disable-next-line no-await-in-loop
+      const json = await chatJson({ system: systemMsg, user: pass.user, jsonSchema: schema, schemaName });
+      const list = Array.isArray(json?.findings) ? json.findings : [];
+      if (item.passes.length > 1) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[${logTag}] часть ${item.idx + 1}/${segments.length}, проход ` +
+            `${pass.label || `${lists.length + 1}/${item.passes.length}`}: findings=${list.length}`,
+        );
+      }
+      lists.push(list);
+    }
+    return combinePasses(lists, { segmentIndex: item.idx, segment: item.seg, passes: item.passes });
+  }
+
   const startedAt = Date.now();
   const results = new Array(segments.length);
   let reused = 0;
@@ -247,7 +286,7 @@ async function runLlmStage(ctx, cfg) {
     control?.guard?.(); // отмена задания — прерываемся между волнами
     const wave = [];
     for (let i = start; i < Math.min(start + concurrency, prepared.length); i += 1) {
-      const { idx, userMsg, hash } = prepared[i];
+      const { idx, hash } = prepared[i];
       // Кэш части: сначала долговременное хранилище, затем чекпойнт задачи.
       // eslint-disable-next-line no-await-in-loop
       const cached = (store ? await store.getCompleted(idx, hash) : null)
@@ -261,9 +300,8 @@ async function runLlmStage(ctx, cfg) {
       }
       wave.push(
         Promise.resolve(store?.markRunning(idx))
-          .then(() => chatJson({ system: systemMsg, user: userMsg, jsonSchema: schema, schemaName }))
-          .then(async (json) => {
-            const segFindings = Array.isArray(json?.findings) ? json.findings : [];
+          .then(() => runPasses(prepared[i]))
+          .then(async (segFindings) => {
             // eslint-disable-next-line no-console
             console.log(
               `[${logTag}] часть ${idx + 1}/${segments.length} ` +

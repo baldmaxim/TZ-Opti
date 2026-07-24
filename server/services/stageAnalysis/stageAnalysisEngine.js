@@ -19,6 +19,7 @@ const { runStage3Llm } = require('./stage3_llm');
 const { runStage4Llm } = require('./stage4_llm');
 const selfAnalysis = require('../selfAnalysis/selfAnalysisService');
 const { importQaXlsx } = require('../qaImportService');
+const { ensureVorItems } = require('../vor/vorImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 const { isOwnedBy, stageResultType } = require('../review/stageDomains');
 const { writeSignalsForStage } = require('../signals/signalWriter');
@@ -77,6 +78,12 @@ async function buildContextForStage(tenderId, stage) {
   };
   if (stage === 1) {
     const vorDoc = await getDocumentByType(tenderId, 'vor');
+    // Основной путь — СТРУКТУРНЫЕ позиции ВОР (vor_items): номер, шифр, раздел,
+    // наименование, единица, количество, координаты. ensureVorItems ленивo
+    // импортирует таблицу, если её загрузили до появления структурного импорта.
+    // vorText остаётся фолбэком для ВОР не таблицей (pdf/docx).
+    const { items } = await ensureVorItems(tenderId, vorDoc);
+    ctx.vorItems = items;
     ctx.vorText = vorDoc ? (vorDoc.extracted_text || '') : '';
     ctx.checklist = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ?', tenderId);
   }

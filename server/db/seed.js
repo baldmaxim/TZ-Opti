@@ -16,6 +16,7 @@ const { runMigration } = require('./migrate');
 const { newId, nowIso } = require('../utils/ids');
 const { buildMinimalDocx } = require('./fixtures/buildMinimalDocx');
 const { buildXlsxBuffer } = require('./fixtures/buildMinimalXlsx');
+const { importVorFile } = require('../services/vor/vorImportService');
 const { STANDARD_CHECKLIST } = require('./standardChecklist');
 
 const UPLOAD_ROOT = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
@@ -112,7 +113,7 @@ async function seedTenderSeverniy() {
   const vorBuf = buildXlsxBuffer(vorRows, 'ВОР');
   const vorPath = writeFile(tenderId, 'VOR_Severnyy.xlsx', vorBuf);
   const vorText = vorRows.map((r) => Object.values(r).join(' | ')).join('\n');
-  await insertDocument(
+  const vorDocId = await insertDocument(
     { id: tenderId },
     'vor',
     'VOR_Severnyy.xlsx',
@@ -121,6 +122,13 @@ async function seedTenderSeverniy() {
     vorText,
     'ВОР заказчика',
   );
+  // Демо-ВОР сразу импортируется структурно (позиции в vor_items) — так же,
+  // как это делает загрузка документа. Сбой разбора не должен ронять сид.
+  try {
+    await importVorFile(tenderId, { documentId: vorDocId, filePath: vorPath });
+  } catch (err) {
+    console.warn(`[seed] структурный импорт демо-ВОР не удался: ${err.message}`);
+  }
 
   // ПД (текстовая фикстура — упрощённо)
   const pdText =

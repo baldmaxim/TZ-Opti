@@ -7,6 +7,8 @@ const { newId, nowIso } = require('../utils/ids');
 const { badRequest, notFound } = require('../utils/errors');
 const { extractFromFile } = require('../services/textExtractionService');
 const { importQaXlsx } = require('../services/qaImportService');
+const { importVorFile } = require('../services/vor/vorImportService');
+const { isSpreadsheet } = require('../services/vor/vorReader');
 const { markStaleExclusionsOnNewRevision } = require('../services/tzActiveTextService');
 
 const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
@@ -64,6 +66,27 @@ exports.upload = async (req, res) => {
           `UPDATE documents SET processing_status = 'extracted' WHERE id = ?`,
           id,
         );
+      } else if (docType === 'vor' && isSpreadsheet(req.file.originalname, req.file.mimetype)) {
+        // ВОР-таблица разбирается СТРУКТУРНО (позиции в vor_items), а не как
+        // «CSV всего листа». Текст сохраняем в любом случае: он нужен для
+        // просмотра документа и остаётся фолбэком, если таблицу разобрать не
+        // удалось, — неразобранный ВОР не должен выглядеть как сбой загрузки.
+        const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
+        await db.queryRun(
+          'UPDATE documents SET extracted_text = ?, processing_status = ? WHERE id = ?',
+          text, status, id,
+        );
+        if (reason) console.warn(`[extract] doc ${id}: ${reason}`);
+        try {
+          const report = await importVorFile(tenderId, { documentId: id, filePath: req.file.path });
+          console.log(`[extract] doc ${id}: ВОР — ${report.stats.items} позиций импортировано`);
+        } catch (err) {
+          console.warn(`[extract] doc ${id}: структурный разбор ВОР не удался — ${err.message}`);
+          await db
+            .queryRun('UPDATE documents SET import_report = ? WHERE id = ?',
+              JSON.stringify({ error: err.message, imported_at: new Date().toISOString() }), id)
+            .catch(() => {});
+        }
       } else {
         const { text, status, reason } = await extractFromFile(req.file.path, req.file.mimetype);
         await db.queryRun(
@@ -100,12 +123,17 @@ exports.download = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const id = req.params.id;
-  const row = await db.queryOne('SELECT file_path FROM documents WHERE id = ?', id);
+  const row = await db.queryOne('SELECT file_path, doc_type, tender_id FROM documents WHERE id = ?', id);
   if (!row) throw notFound('Документ не найден');
   try {
     if (row.file_path && fs.existsSync(row.file_path)) fs.unlinkSync(row.file_path);
   } catch (_e) {
     /* swallow disk errors so DB stays consistent */
+  }
+  // Позиции ВОР живут отдельной таблицей — удаляем вместе с документом,
+  // иначе анализ продолжит сверяться с ведомостью, которой уже нет.
+  if (row.doc_type === 'vor') {
+    await db.queryRun('DELETE FROM vor_items WHERE tender_id = ? AND document_id = ?', row.tender_id, id);
   }
   await db.queryRun('DELETE FROM documents WHERE id = ?', id);
   res.json({ ok: true });

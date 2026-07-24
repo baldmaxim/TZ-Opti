@@ -50,6 +50,42 @@ CREATE TABLE IF NOT EXISTS work_checklist_items (
 
 CREATE INDEX IF NOT EXISTS idx_checklist_tender ON work_checklist_items(tender_id);
 
+-- Позиции ВОР (ведомость объёмов работ), импортированные СТРУКТУРНО из xls/xlsx
+-- (services/vor/). Раньше ВОР жил только как extracted_text (CSV всего листа),
+-- и стадия 1 угадывала наименование по «самой длинной ячейке строки» — номер
+-- позиции, шифр, единица, количество и координаты терялись.
+-- Здесь одна строка = одна позиция ведомости со всеми координатами: лист,
+-- номер строки Excel и адреса ячеек каждого поля (cells) — находку всегда
+-- можно показать инженеру «где именно в ВОР».
+CREATE TABLE IF NOT EXISTS vor_items (
+  id            TEXT PRIMARY KEY,
+  tender_id     TEXT NOT NULL,
+  document_id   TEXT,               -- документ-источник (documents.id)
+  order_idx     INTEGER NOT NULL,   -- сквозной порядок по всей книге
+  sheet_name    TEXT,
+  sheet_index   INTEGER,
+  row_index     INTEGER,            -- 1-based строка Excel
+  position_no   TEXT,               -- № п/п («12», «3.4.1»)
+  code          TEXT,               -- шифр расценки / обоснование
+  section       TEXT,               -- раздел (колонка или строка-заголовок выше)
+  name          TEXT NOT NULL,      -- наименование работы
+  name_key      TEXT,               -- нормализованный ключ (дедуп/сопоставление)
+  unit          TEXT,               -- нормализованная единица (м2, м3, шт, ...)
+  unit_raw      TEXT,               -- как было в файле («кв.м.»)
+  unit_known    INTEGER DEFAULT 0,  -- 1 = единица распознана словарём
+  quantity      DOUBLE PRECISION,   -- нормализованное количество (NULL, если не число)
+  quantity_raw  TEXT,               -- как было в файле («1 234,56»)
+  note          TEXT,
+  row_kind      TEXT DEFAULT 'item',-- 'item' (позиция); разделы/итоги не сохраняем
+  cells         TEXT,               -- JSON {поле: 'C12'} — адреса ячеек
+  merged_cells  TEXT,               -- JSON {поле: 'C10'} — источник объединённой ячейки
+  imported_at   TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_vor_items_tender ON vor_items(tender_id, order_idx);
+CREATE INDEX IF NOT EXISTS idx_vor_items_key ON vor_items(tender_id, name_key);
+
 CREATE TABLE IF NOT EXISTS company_conditions (
   id           TEXT PRIMARY KEY,
   tender_id    TEXT NOT NULL,

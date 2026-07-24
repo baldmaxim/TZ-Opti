@@ -66,13 +66,32 @@ test('4xx не логируется', (t) => {
   assert.equal(lines.length, 0);
 });
 
-test('стек ошибки не уходит клиенту', (t) => {
+test('в production наружу уходит только generic-сообщение и request_id', (t) => {
+  muteConsole(t);
+  const { resetSecurityConfig } = require('../../security/config');
+  const saved = process.env.ERRORS_EXPOSE_INTERNALS;
+  process.env.ERRORS_EXPOSE_INTERNALS = '0';
+  resetSecurityConfig();
+  t.after(() => {
+    if (saved === undefined) delete process.env.ERRORS_EXPOSE_INTERNALS;
+    else process.env.ERRORS_EXPOSE_INTERNALS = saved;
+    resetSecurityConfig();
+  });
+
+  const res = fakeRes();
+  errorHandler(new Error('boom: /srv/app/server/db/connection.js:42'), { requestId: 'req-9' }, res, () => {});
+  assert.deepEqual(Object.keys(res.body).sort(), ['error', 'request_id']);
+  assert.equal(res.body.error, errorHandler.GENERIC_500);
+  assert.equal(res.body.request_id, 'req-9');
+  assert.ok(!JSON.stringify(res.body).includes('connection.js'));
+});
+
+test('вне production разработчик видит сообщение и укороченный стек', (t) => {
   muteConsole(t);
   const res = fakeRes();
   errorHandler(new Error('boom'), {}, res, () => {});
-  assert.deepEqual(Object.keys(res.body).sort(), ['code', 'details', 'error']);
-  assert.equal(res.body.details, undefined);
-  assert.ok(!JSON.stringify(res.body).includes('at Object'));
+  assert.equal(res.body.error, 'boom');
+  assert.ok(Array.isArray(res.body.stack) && res.body.stack.length <= 5);
 });
 
 test('code и details пробрасываются, если заданы явно', () => {

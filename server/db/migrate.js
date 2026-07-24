@@ -12,6 +12,29 @@ if (require.main === module) {
 
 const db = require('./connection');
 
+// Гонка одновременных миграций. `CREATE TABLE IF NOT EXISTS` в PostgreSQL не
+// атомарен относительно другого такого же вызова: два процесса, применяющих
+// схему к ПУСТОЙ базе одновременно (несколько integration-файлов, две реплики
+// на деплое), получают duplicate key ... pg_type_typname_nsp_index. Объект при
+// этом создаётся — достаточно повторить операцию один раз.
+const DDL_RACE_CODES = new Set([
+  '23505', // unique_violation в системном каталоге
+  '42P07', // duplicate_table
+  '42701', // duplicate_column
+  '42P06', // duplicate_schema
+  '40P01', // deadlock_detected
+]);
+
+async function execTolerant(sql) {
+  try {
+    await db.exec(sql);
+  } catch (err) {
+    if (!DDL_RACE_CODES.has(err.code)) throw err;
+    await new Promise((r) => setTimeout(r, 150));
+    await db.exec(sql); // объект уже есть — второй проход проходит по IF NOT EXISTS
+  }
+}
+
 async function columnExists(table, column) {
   const r = await db.queryOne(
     `SELECT 1 AS ok
@@ -25,13 +48,19 @@ async function columnExists(table, column) {
 
 async function ensureColumn(table, column, type) {
   if (await columnExists(table, column)) return false;
-  await db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type};`);
+  try {
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type};`);
+  } catch (err) {
+    // Столбец добавил параллельный процесс между проверкой и ALTER — не ошибка.
+    if (err.code === '42701') return false;
+    throw err;
+  }
   console.log(`[migrate] ${table}.${column} added`);
   return true;
 }
 
 async function ensureIndex(name, table, columns) {
-  await db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${table}(${columns});`);
+  await execTolerant(`CREATE INDEX IF NOT EXISTS ${name} ON ${table}(${columns});`);
 }
 
 // Идемпотентно снимает NOT NULL со столбца (если он сейчас NOT NULL).
@@ -52,7 +81,7 @@ async function dropNotNull(table, column) {
 async function runMigration() {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
-  await db.exec(sql);
+  await execTolerant(sql);
 
   // Идемпотентные ALTER-ы для расширения существующих таблиц.
   await ensureColumn('company_conditions', 'condition_idx', 'INTEGER');
@@ -211,6 +240,42 @@ async function runMigration() {
     await db.exec(`UPDATE tz_excluded_ranges SET after_stage = 4 WHERE after_stage = 3;`);
     console.log('[migrate] stages renumbered: 3=conditions(new), 4=risks(was 3), 5=selfAnalysis(was 4)');
   }
+
+  // --- Безопасность: изоляция тенантов и происхождение файлов ---------------
+  // tenders.tenant_id — ключ изоляции. Существующие тендеры уходят в тенант по
+  // умолчанию (SECURITY_DEFAULT_TENANT, обычно 'default'): до появления
+  // мультитенантности вся база принадлежала одной организации.
+  const tenantAdded = await ensureColumn('tenders', 'tenant_id', 'TEXT');
+  const defaultTenant = (process.env.SECURITY_DEFAULT_TENANT || 'default').trim() || 'default';
+  await db.queryRun(
+    `INSERT INTO tenants (id, name, status, created_at)
+     VALUES (?, ?, 'active', to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+     ON CONFLICT (id) DO NOTHING`,
+    defaultTenant,
+    defaultTenant === 'default' ? 'Организация по умолчанию' : defaultTenant,
+  );
+  const orphanTenders = await db.queryOne('SELECT COUNT(*) AS c FROM tenders WHERE tenant_id IS NULL');
+  if (Number(orphanTenders && orphanTenders.c) > 0) {
+    await db.queryRun('UPDATE tenders SET tenant_id = ? WHERE tenant_id IS NULL', defaultTenant);
+    console.log(`[migrate] tenders.tenant_id backfilled → '${defaultTenant}' (${orphanTenders.c})`);
+  }
+  // DEFAULT + NOT NULL: тендер БЕЗ тенанта невозможен на уровне схемы. Иначе
+  // любой путь вставки в обход контроллера (сид, служебный скрипт, тест)
+  // создавал бы «ничью» строку, которую проверка изоляции вынуждена была бы
+  // трактовать по умолчанию. Внешнего ключа на tenants сознательно нет: тенант
+  // заводит провайдер токенов, портал не должен блокировать работу до ручного
+  // провижининга организации.
+  await db.exec(`ALTER TABLE tenders ALTER COLUMN tenant_id SET DEFAULT '${defaultTenant.replace(/'/g, "''")}';`);
+  await db.exec('ALTER TABLE tenders ALTER COLUMN tenant_id SET NOT NULL;');
+  if (tenantAdded) await ensureIndex('idx_tenders_tenant', 'tenders', 'tenant_id');
+
+  // Происхождение загруженного файла: хэш (что именно лежит на диске), размер и
+  // вердикт антивируса — чтобы по журналу можно было доказать, ЧТО приняли.
+  await ensureColumn('documents', 'sha256', 'TEXT');
+  await ensureColumn('documents', 'size_bytes', 'INTEGER');
+  await ensureColumn('documents', 'av_status', 'TEXT');
+  await ensureColumn('documents', 'uploaded_by', 'TEXT');
+  await ensureIndex('idx_documents_sha256', 'documents', 'sha256');
 
   // Порядок ручного ввода характеристик (для отображения в UI).
   const added = await ensureColumn('characteristics', 'sort_order', 'INTEGER DEFAULT 0');

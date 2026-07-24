@@ -49,22 +49,23 @@ export default function ResultPanel() {
         >
           📋 Открыть рецензию
         </Link>
-        <a
-          href={api.exportReviewMdUrl(tenderId)}
+        {/* Выгрузки закрыты токеном — скачиваем запросом с заголовком, не ссылкой. */}
+        <button
+          type="button"
+          onClick={() => api.downloadExportReviewMd(tenderId).catch((e) => alert(e.message))}
           className="btn btn-secondary"
-          download
           title="review.md со всеми правками со всех стадий"
         >
           ⤓ Скачать review.md (все стадии)
-        </a>
-        <a
-          href={api.exportDocxUrl(tenderId)}
+        </button>
+        <button
+          type="button"
+          onClick={() => api.downloadExportDocx(tenderId).catch((e) => alert(e.message))}
           className="btn btn-primary"
-          download
           title="Итоговый .docx с правками Track Changes из всех стадий — открывается в Word"
         >
           ⤓ ТЗ с правками .docx (все стадии)
-        </a>
+        </button>
         <Link
           to={`/tenders/${tenderId}/export`}
           className="btn btn-secondary"

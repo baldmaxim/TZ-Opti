@@ -88,22 +88,23 @@ export default function StagePanel({ stage }) {
           <StageRunControls stage={stage} status={status} hasSummary={!!summary} />
           {tenderId && summary && isReadOnly && (
             <div className="flex gap-2 flex-wrap justify-end">
-              <a
-                href={api.exportReviewMdUrl(tenderId, stage)}
+              {/* Выгрузки закрыты токеном — скачиваем запросом с заголовком, не ссылкой. */}
+              <button
+                type="button"
+                onClick={() => api.downloadExportReviewMd(tenderId, stage).catch((e) => alert(e.message))}
                 className="btn btn-secondary text-xs"
-                download
                 title={`Скачать review.md только с решениями стадии ${stage}`}
               >
                 ⤓ review.md (ст. {stage})
-              </a>
-              <a
-                href={api.exportDocxUrl(tenderId, stage)}
+              </button>
+              <button
+                type="button"
+                onClick={() => api.downloadExportDocx(tenderId, stage).catch((e) => alert(e.message))}
                 className="btn btn-secondary text-xs"
-                download
                 title={`Скачать ТЗ.docx с правками режима рецензии — только решения стадии ${stage}`}
               >
                 ⤓ ТЗ с правками .docx (ст. {stage})
-              </a>
+              </button>
             </div>
           )}
         </div>

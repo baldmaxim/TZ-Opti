@@ -50,33 +50,35 @@ export default function ExportPage() {
     return <GateNotice stepId="export" />;
   }
 
+  // Выгрузки закрыты Bearer-токеном: файл забирается запросом с заголовком
+  // (api.download*), а не переходом по ссылке — браузер токен не подставит.
   const items = [
     {
       title: 'ТЗ.docx с правками и комментариями',
       desc: 'Главный артефакт. Берётся исходный ТЗ.docx, в него вносятся настоящие правки Word (Track Changes) и комментарии по принятым решениям.',
-      url: api.exportDocxUrl(tenderId),
+      get: () => api.downloadExportDocx(tenderId),
       primary: true,
     },
     {
       title: 'HTML-preview режима рецензии',
       desc: 'Просмотр в браузере без Word. Те же решения по пунктам ТЗ, что и в Word: зачёркивание, замена, примечание.',
-      url: api.reviewPreviewUrl(tenderId),
-      target: '_blank',
+      get: () => api.openReviewPreview(tenderId),
+      action: 'Открыть',
     },
     {
       title: 'CSV реестра замечаний',
       desc: 'UTF-8 BOM, открывается в Excel. По всем стадиям, с колонкой analysis_stage.',
-      url: api.exportCsvUrl(tenderId),
+      get: () => api.downloadExportCsv(tenderId),
     },
     {
       title: 'JSON результатов анализа',
       desc: 'Полный дамп: тендер, прогоны, замечания, решения.',
-      url: api.exportJsonUrl(tenderId),
+      get: () => api.downloadExportJson(tenderId),
     },
     {
       title: 'Краткая сводка (Markdown)',
       desc: 'Сводка по тендеру, итоги анализа, ключевые риски, неучтённые работы.',
-      url: api.exportSummaryUrl(tenderId),
+      get: () => api.downloadExportSummary(tenderId),
     },
   ];
 
@@ -94,13 +96,13 @@ export default function ExportPage() {
             <div className="font-semibold">{it.title}</div>
             <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">{it.desc}</div>
           </div>
-          <a
-            href={it.url}
-            target={it.target || '_self'}
+          <button
+            type="button"
+            onClick={() => it.get().catch((e) => alert(e.message))}
             className={`btn ${it.primary ? 'btn-primary' : 'btn-secondary'}`}
           >
-            {it.target === '_blank' ? 'Открыть' : 'Скачать'}
-          </a>
+            {it.action || 'Скачать'}
+          </button>
         </div>
       ))}
 

@@ -582,3 +582,51 @@ CREATE TABLE IF NOT EXISTS analysis_segments (
 
 CREATE INDEX IF NOT EXISTS idx_segments_stage ON analysis_segments(tender_id, analysis_stage, segment_index);
 CREATE INDEX IF NOT EXISTS idx_segments_status ON analysis_segments(tender_id, status);
+
+-- ============================================================================
+-- Безопасность: тенанты (изоляция организаций) и журнал аудита.
+-- ============================================================================
+
+-- Тенант = организация. Тендер принадлежит ровно одному тенанту, всё остальное
+-- (документы, находки, решения, выгрузки) наследует тенант через тендер.
+CREATE TABLE IF NOT EXISTS tenants (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'suspended'
+  created_at  TEXT NOT NULL
+);
+
+-- Журнал аудита: кто, что, над чем и чем кончилось. Пишется на КАЖДОЕ
+-- обращение к защищённому маршруту: чтение, изменение, запуск анализа,
+-- решение, выгрузка и любой отказ доступа (401/403/429).
+-- Строки не изменяются и не удаляются приложением (только чистка по сроку
+-- хранения — services/audit/auditService.purgeOlderThan).
+CREATE TABLE IF NOT EXISTS audit_log (
+  id             TEXT PRIMARY KEY,
+  ts             TEXT NOT NULL,
+  request_id     TEXT,
+  tenant_id      TEXT,
+  actor_sub      TEXT,              -- subject токена (sub)
+  actor_email    TEXT,
+  actor_roles    TEXT,              -- роли через запятую на момент действия
+  auth_method    TEXT,              -- 'token' | 'dev-bypass'
+  action         TEXT NOT NULL,     -- 'stage.run', 'review.cluster.decide', 'export.docx', ...
+  category       TEXT NOT NULL,     -- read|write|analysis|decision|export|admin|auth
+  outcome        TEXT NOT NULL,     -- allowed|denied|error
+  resource_type  TEXT,
+  resource_id    TEXT,
+  tender_id      TEXT,
+  method         TEXT,
+  path           TEXT,
+  status         INTEGER,
+  duration_ms    INTEGER,
+  ip             TEXT,
+  user_agent     TEXT,
+  reason         TEXT,              -- код и причина отказа (без секретов)
+  meta           TEXT               -- JSON: хэш файла, подпись антивируса и т.п.
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_tenant_ts ON audit_log(tenant_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_tender_ts ON audit_log(tender_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_actor_ts  ON audit_log(actor_sub, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_action_ts ON audit_log(action, ts DESC);

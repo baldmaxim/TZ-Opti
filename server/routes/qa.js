@@ -2,12 +2,14 @@
 
 const express = require('express');
 const ctrl = require('../controllers/qaController');
-const { qaUpload } = require('../middleware/upload');
+const { acceptSingle, qaScreening } = require('../middleware/upload');
 const asyncHandler = require('../utils/asyncHandler');
 
 const router = express.Router();
 
-router.post('/tenders/:id/qa/import', qaUpload.single('file'), asyncHandler(ctrl.import));
+// Файл принимается в карантин (acceptSingle) и попадает в папку тендера
+// только после проверок формата, сигнатуры и антивируса (qaScreening).
+router.post('/tenders/:id/qa/import', acceptSingle('file'), asyncHandler(qaScreening), asyncHandler(ctrl.import));
 router.post('/tenders/:id/qa/auto-link', asyncHandler(ctrl.autoLink));
 router.get('/tenders/:id/qa', asyncHandler(ctrl.listQa));
 router.get('/tenders/:id/qa/export', asyncHandler(ctrl.exportXlsx));

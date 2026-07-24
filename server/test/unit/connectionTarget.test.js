@@ -69,11 +69,46 @@ test('этот процесс распознан как тестовый (ина
   assert.equal(isTestProcess(), true);
 });
 
-test('TLS включён по умолчанию и выключается только явным sslmode=disable', () => {
-  assert.deepEqual(sslOptionFor(PROD), { rejectUnauthorized: false });
-  assert.deepEqual(sslOptionFor('postgresql://u:p@db.supabase.co:5432/postgres?sslmode=require'), {
+test('вне production: TLS включён, сертификат не проверяется, sslmode=disable выключает TLS', () => {
+  const dev = { NODE_ENV: 'development' };
+  assert.deepEqual(sslOptionFor(PROD, dev), { rejectUnauthorized: false });
+  assert.deepEqual(sslOptionFor('postgresql://u:p@db.supabase.co:5432/postgres?sslmode=require', dev), {
     rejectUnauthorized: false,
   });
-  assert.equal(sslOptionFor('postgresql://postgres@127.0.0.1:55432/tz_opti_test?sslmode=disable'), false);
-  assert.equal(sslOptionFor('postgresql://postgres@127.0.0.1:55432/db?a=1&sslmode=disable&b=2'), false);
+  assert.equal(sslOptionFor('postgresql://postgres@127.0.0.1:55432/tz_opti_test?sslmode=disable', dev), false);
+  assert.equal(sslOptionFor('postgresql://postgres@127.0.0.1:55432/db?a=1&sslmode=disable&b=2', dev), false);
+});
+
+// --- строгий TLS в production ------------------------------------------------
+
+const PROD_ENV = { NODE_ENV: 'production' };
+
+test('production: сертификат Postgres проверяется всегда', () => {
+  const ssl = sslOptionFor(PROD, PROD_ENV);
+  assert.equal(ssl.rejectUnauthorized, true);
+  assert.equal(ssl.servername, 'prod.example.com', 'имя хоста нужно для проверки сертификата через пулер');
+});
+
+test('production: sslmode=disable и sslmode=no-verify запрещены, а не «поняты»', () => {
+  assert.throws(
+    () => sslOptionFor('postgresql://u:p@db.example.com:5432/postgres?sslmode=disable', PROD_ENV),
+    (err) => err.code === 'DB_TLS_DISABLED_IN_PRODUCTION',
+  );
+  assert.throws(
+    () => sslOptionFor('postgresql://u:p@db.example.com:5432/postgres?sslmode=no-verify', PROD_ENV),
+    (err) => err.code === 'DB_TLS_VERIFY_DISABLED_IN_PRODUCTION',
+  );
+});
+
+test('production: корневой сертификат берётся из переменной (PEM или base64)', () => {
+  const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----';
+  assert.equal(sslOptionFor(PROD, { ...PROD_ENV, DATABASE_CA_CERT: `${pem}\n` }).ca, pem);
+  assert.equal(sslOptionFor(PROD, { ...PROD_ENV, DATABASE_CA_CERT: Buffer.from(pem).toString('base64') }).ca, pem);
+});
+
+test('production: нечитаемый файл сертификата — ошибка, а не тихий пропуск проверки', () => {
+  assert.throws(
+    () => sslOptionFor(PROD, { ...PROD_ENV, PGSSLROOTCERT: 'C:/no/such/ca.crt' }),
+    (err) => err.code === 'DB_CA_CERT_UNREADABLE',
+  );
 });

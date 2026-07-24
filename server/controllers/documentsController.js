@@ -10,6 +10,7 @@ const { importQaXlsx } = require('../services/qaImportService');
 const { importVorFile } = require('../services/vor/vorImportService');
 const { isSpreadsheet } = require('../services/vor/vorReader');
 const { markStaleExclusionsOnNewRevision } = require('../services/tzActiveTextService');
+const { UPLOAD_ROOT } = require('../middleware/upload');
 
 const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
 
@@ -36,10 +37,15 @@ exports.upload = async (req, res) => {
   const version = (req.body.version || '1').toString();
   const comment = (req.body.comment || '').toString();
 
+  // Происхождение файла считает middleware/upload.js (карантин → проверки):
+  // SHA-256, размер и вердикт антивируса сохраняются вместе с документом.
+  const scan = req.fileScan || {};
+
   await db.queryRun(
     `
-    INSERT INTO documents (id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    INSERT INTO documents (id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status,
+                           sha256, size_bytes, av_status, uploaded_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
   `,
     id,
     tenderId,
@@ -50,6 +56,10 @@ exports.upload = async (req, res) => {
     version,
     uploaded_at,
     comment,
+    scan.sha256 || null,
+    scan.size || null,
+    scan.av_status || null,
+    (req.principal && req.principal.subject) || null,
   );
 
   const row = await db.queryOne(
@@ -115,10 +125,17 @@ exports.download = async (req, res) => {
   const id = req.params.id;
   const row = await db.queryOne('SELECT name, file_path, mime_type FROM documents WHERE id = ?', id);
   if (!row) throw notFound('Документ не найден');
-  if (!fs.existsSync(row.file_path)) throw notFound('Файл отсутствует на диске');
+  // Отдаём только то, что лежит внутри каталога загрузок: file_path приходит из
+  // БД, но путь наружу отдаётся файловой системе — проверка дешевле разбора,
+  // как туда могла попасть строка с «..».
+  const resolved = path.resolve(row.file_path);
+  if (resolved !== path.resolve(UPLOAD_ROOT) && !resolved.startsWith(path.resolve(UPLOAD_ROOT) + path.sep)) {
+    throw notFound('Файл отсутствует на диске');
+  }
+  if (!fs.existsSync(resolved)) throw notFound('Файл отсутствует на диске');
   res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.name)}"`);
-  fs.createReadStream(row.file_path).pipe(res);
+  fs.createReadStream(resolved).pipe(res);
 };
 
 exports.remove = async (req, res) => {

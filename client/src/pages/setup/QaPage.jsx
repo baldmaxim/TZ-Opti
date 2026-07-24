@@ -143,14 +143,14 @@ export default function QaPage() {
             </p>
           </div>
           {qaEntries.length > 0 && (
-            <a
-              href={api.qaExportUrl(tenderId)}
+            <button
+              type="button"
+              onClick={() => api.downloadQaExport(tenderId).catch((e) => alert(e.message))}
               className="btn btn-secondary text-sm whitespace-nowrap"
-              download
               title="Скачать текущую таблицу Q&A в .xlsx"
             >
               ⤓ Экспорт в Excel
-            </a>
+            </button>
           )}
         </div>
         <div className="mt-3 flex items-center gap-3 flex-wrap">

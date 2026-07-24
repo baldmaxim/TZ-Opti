@@ -601,6 +601,14 @@ server.requestTimeout = TIMEOUT_MS + 60000;
 server.headersTimeout = 65000;
 server.keepAliveTimeout = TIMEOUT_MS + 60000;
 
+// Бридж — инструмент РАЗРАБОТКИ: он слушает без аутентификации и пропускает
+// произвольный промт в модель. В production такого сервиса быть не должно, даже
+// на localhost, поэтому запуск там прерывается, а не «работает тихо».
+if ((process.env.NODE_ENV || '').trim().toLowerCase() === 'production') {
+  console.error('[claudeBridge] запуск в production запрещён: это dev-инструмент без аутентификации.');
+  process.exit(1);
+}
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(
     `[claudeBridge] listening on http://127.0.0.1:${PORT}  model=${MODEL}  timeout=${TIMEOUT_MS}ms  debug=${DEBUG_REL}/`,

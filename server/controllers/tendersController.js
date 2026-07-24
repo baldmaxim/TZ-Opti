@@ -66,10 +66,22 @@ async function getTenderById(tenderId) {
   return { ...t, stage_state, counts, setup_locks };
 }
 
+// Тенант субъекта. Единственный источник — токен (req.principal), который
+// проставляет middleware/authenticate.js: ни тело запроса, ни query, ни
+// заголовок на принадлежность тендера повлиять не могут.
+function tenantOf(req) {
+  if (req.principal && req.principal.tenantId) return req.principal.tenantId;
+  // Сюда можно попасть только если маршрут смонтирован в обход authenticate —
+  // fail-closed: лучше пустая выборка, чем чужие данные.
+  throw new Error('tenantOf: запрос без principal');
+}
+
 exports.list = async (req, res) => {
   const { search, status, type } = req.query;
-  let sql = 'SELECT * FROM tenders WHERE 1=1';
-  const params = [];
+  // Список ВСЕГДА ограничен тенантом субъекта — изоляция не может зависеть от
+  // того, вспомнил ли вызывающий про фильтр.
+  let sql = 'SELECT * FROM tenders WHERE tenant_id = ?';
+  const params = [tenantOf(req)];
   if (search) {
     sql += ' AND (title ILIKE ? OR customer ILIKE ? OR description ILIKE ?)';
     const like = `%${search}%`;
@@ -117,9 +129,11 @@ exports.create = async (req, res) => {
   }
   const id = newId();
   const created_at = nowIso();
-  const insertCols = ['id', ...TENDER_FIELDS, 'created_at'];
+  // tenant_id берётся из токена, а не из тела запроса: завести тендер в чужой
+  // организации нельзя даже намеренно.
+  const insertCols = ['id', ...TENDER_FIELDS, 'created_at', 'tenant_id'];
   const placeholders = insertCols.map(() => '?').join(', ');
-  const values = [id, ...TENDER_FIELDS.map((f) => body[f] ?? null), created_at];
+  const values = [id, ...TENDER_FIELDS.map((f) => body[f] ?? null), created_at, tenantOf(req)];
   await db.queryRun(`INSERT INTO tenders (${insertCols.join(', ')}) VALUES (${placeholders})`, ...values);
   await ensureStageState(id);
   await populateStandardChecklist(id);
@@ -148,7 +162,9 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   const id = req.params.id;
-  const r = await db.queryRun('DELETE FROM tenders WHERE id = ?', id);
+  // Условие по тенанту дублирует проверку middleware/authorize.js намеренно:
+  // удаление необратимо, и второй рубеж здесь дешевле любой ошибки монтирования.
+  const r = await db.queryRun('DELETE FROM tenders WHERE id = ? AND tenant_id = ?', id, tenantOf(req));
   if (!r.changes) throw notFound('Тендер не найден');
   res.json({ ok: true });
 };

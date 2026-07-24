@@ -36,9 +36,15 @@ test('createApp возвращает независимые экземпляры
 // --- 2. HTTP-поведение --------------------------------------------------------
 
 // Поднимает приложение на эфемерном порту 127.0.0.1 и гарантированно гасит.
-async function withServer(t, fn) {
+// devBypass=true собирает приложение с включённым обходом аутентификации
+// (в тестовом процессе это разрешено, в production — ошибка старта).
+async function withServer(t, fn, { devBypass = false } = {}) {
   const { createApp } = require('../../app');
-  const app = createApp({ logger: false });
+  const { buildConfig } = require('../../security/config');
+  const app = createApp({
+    logger: false,
+    security: devBypass ? { config: buildConfig({ NODE_ENV: 'test', AUTH_DEV_BYPASS: '1' }) } : {},
+  });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
@@ -57,13 +63,17 @@ test('GET /api/health → 200 {ok:true} (без БД)', async (t) => {
   });
 });
 
-test('неизвестный /api-маршрут → 404 JSON, публичные маршруты не тронуты', async (t) => {
+test('любой /api-маршрут, кроме /health, закрыт аутентификацией', async (t) => {
   await withServer(t, async (base) => {
-    const res = await fetch(`${base}/api/definitely-not-a-route`);
-    assert.equal(res.status, 404);
-    const body = await res.json();
-    assert.equal(body.error, 'Not found');
-    assert.equal(body.path, '/api/definitely-not-a-route');
+    // Неизвестный путь тоже закрыт: сначала «кто ты», и только потом разбор
+    // маршрута — иначе по кодам ответа можно изучать поверхность API.
+    for (const path of ['/api/definitely-not-a-route', '/api/tenders', '/api/audit']) {
+      const res = await fetch(`${base}${path}`);
+      assert.equal(res.status, 401, `${path} должен требовать аутентификацию`);
+      const body = await res.json();
+      assert.equal(body.error, 'Требуется аутентификация');
+      assert.ok(res.headers.get('www-authenticate'), 'нужен заголовок WWW-Authenticate');
+    }
   });
 });
 
@@ -87,14 +97,19 @@ test('ошибка в маршруте уходит в error middleware: 500 JSO
 
   // /api/tenders обращается к БД; в тестовом процессе без TEST_DATABASE_URL это
   // fail-closed ошибка — она обязана дойти до errorHandler как JSON, а не
-  // подвесить запрос и не уронить процесс.
-  await withServer(t, async (base) => {
-    const res = await fetch(`${base}/api/tenders`);
-    assert.equal(res.status, 500);
-    const body = await res.json();
-    assert.match(body.error, /TEST_DATABASE_URL/);
-    assert.ok(!JSON.stringify(body).includes('prod:pw@'), 'в ответе не должно быть строки подключения');
-  });
+  // подвесить запрос и не уронить процесс. Аутентификацию проходим dev-обходом
+  // (он разрешён только вне production).
+  await withServer(
+    t,
+    async (base) => {
+      const res = await fetch(`${base}/api/tenders`);
+      assert.equal(res.status, 500);
+      const body = await res.json();
+      assert.match(body.error, /TEST_DATABASE_URL/);
+      assert.ok(!JSON.stringify(body).includes('prod:pw@'), 'в ответе не должно быть строки подключения');
+    },
+    { devBypass: true },
+  );
 });
 
 test('зарегистрированы все публичные /api-маршруты (набор не изменился)', () => {
@@ -102,7 +117,7 @@ test('зарегистрированы все публичные /api-маршр
   const app = createApp({ logger: false });
   const stack = app._router.stack; // express 4: таблица маршрутов
   const mounted = stack.filter((l) => l.name === 'router').length;
-  assert.equal(mounted, 21, 'ожидается 21 смонтированный /api-роутер');
+  assert.equal(mounted, 23, 'ожидается 23 смонтированных /api-роутера (+auth, +audit)');
 
   const paths = [];
   for (const layer of stack) {

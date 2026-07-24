@@ -62,6 +62,29 @@ TZ-Opti/
 Прогресс стадии читается из БД (`jobs/jobService.stageProgress`), in-memory
 `progressRegistry` удалён.
 
+**Безопасность — закрытый контур, а не набор советов.** Все `/api`-маршруты,
+кроме `/api/health`, требуют Bearer-токен (OIDC/JWT, провайдер-независимо:
+`server/security/` — `jwt.js` на `node:crypto`, `keyStore.js` discovery+JWKS,
+`principal.js` клеймы→субъект). Права — роли `viewer|engineer|lead|manager|admin`
+(`security/roles.js`), доступ к маршруту — таблица `security/policy.js`
+с **default deny** (нет правила → 403; тест обходит все маршруты и требует
+правило). Изоляция тенантов: тенант субъекта — только из токена, тенант ресурса —
+только из БД (`security/tenantAccess.js`), межтенантное обращение → 403
+`CROSS_TENANT_DENIED`; `tenders.tenant_id` — ключ, остальное наследует через
+тендер. Журнал аудита — `audit_log` + `services/audit/auditService.js`
+(чтения/изменения/анализ/решения/выгрузки/отказы, best-effort запись, чтение
+только своего тенанта). Транспорт: `middleware/` — requestContext (X-Request-Id),
+securityHeaders, corsPolicy (allowlist), rateLimit (в т.ч. антиподбор токена),
+errorHandler (в production 5xx без внутренних деталей). Загрузки: карантин →
+формат → магические байты → SHA-256 → **обязательный антивирус**
+(`services/uploads/`), fail-closed. TLS до Postgres в production строгий
+(`db/connectionTarget.js`). Dev-bypass (`AUTH_DEV_BYPASS=1`) — только вне
+production; небезопасная production-конфигурация роняет старт
+(`security/config.js` → `assertProductionSecurity` в `server.js`).
+Новых зависимостей ради этого не добавлено. Полное описание —
+[docs/security.md](docs/security.md), переменные — блок «БЕЗОПАСНОСТЬ» в
+`.env.example`, тесты — `server/test/unit/security/**`.
+
 ## Конвенции
 
 - Без TypeScript на клиенте

@@ -1,7 +1,31 @@
+import { authHeaders, notifyUnauthorized } from './auth';
+
 const BASE = '/api';
 
+// Разбор ответа с ошибкой: сервер в production отдаёт общий текст и request_id —
+// его показываем инженеру, чтобы поддержка нашла запрос в логе.
+async function toError(res) {
+  let message = 'Ошибка ' + res.status;
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (_e) {
+    /* ответ не JSON — остаётся код статуса */
+  }
+  if (data?.error) message = data.error;
+  if (res.status === 403 && data?.code === 'CROSS_TENANT_DENIED') message = 'Доступ к данным другой организации запрещён';
+  if (res.status === 429) message = data?.error || 'Слишком много запросов, повторите позже';
+  const requestId = data?.request_id || res.headers.get('X-Request-Id');
+  const err = new Error(requestId ? `${message} (запрос ${requestId})` : message);
+  err.status = res.status;
+  err.code = data?.code;
+  err.requestId = requestId;
+  if (res.status === 401) notifyUnauthorized(err.code);
+  return err;
+}
+
 async function request(path, { method = 'GET', body, headers, isForm } = {}) {
-  const opts = { method, headers: { ...(headers || {}) } };
+  const opts = { method, headers: { ...authHeaders(), ...(headers || {}) } };
   if (body !== undefined) {
     if (isForm) {
       opts.body = body;
@@ -11,14 +35,41 @@ async function request(path, { method = 'GET', body, headers, isForm } = {}) {
     }
   }
   const res = await fetch(BASE + path, opts);
-  if (!res.ok) {
-    let err = 'Ошибка ' + res.status;
-    try { const data = await res.json(); err = data.error || err; } catch (_e) { /* ignore */ }
-    throw new Error(err);
-  }
+  if (!res.ok) throw await toError(res);
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('application/json')) return res.json();
   return res.text();
+}
+
+// Скачивание защищённого файла. Прямая ссылка <a href> не годится: браузер не
+// подставит в неё Authorization, и сервер ответит 401. Поэтому файл забираем
+// запросом с токеном и сохраняем из памяти.
+async function download(path, fallbackName) {
+  const res = await fetch(BASE + path, { headers: { ...authHeaders() } });
+  if (!res.ok) throw await toError(res);
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  const name = match ? decodeURIComponent(match[1]) : fallbackName || 'download';
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Освобождаем память после того, как браузер забрал содержимое.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+// Открыть защищённый ресурс в новой вкладке (HTML-предпросмотр рецензии).
+async function openInNewTab(path) {
+  const res = await fetch(BASE + path, { headers: { ...authHeaders() } });
+  if (!res.ok) throw await toError(res);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 export const api = {
@@ -171,4 +222,26 @@ export const api = {
   // Dry-run отчёт «что попало в Word, а что нет» (без скачивания файла).
   exportDocxReport: (tenderId, stage = null) =>
     request(`/tenders/${tenderId}/export/docx/report${stage ? `?stage=${stage}` : ''}`),
+
+  // --- скачивание защищённых файлов ---------------------------------------
+  // Эндпоинты закрыты Bearer-токеном, поэтому файл забирается запросом с
+  // заголовком, а не прямой ссылкой (см. download() выше). *Url-хелперы выше
+  // оставлены для показа адреса, но переходить по ним напрямую нельзя.
+  downloadDocument: (id, name) => download(`/documents/${id}/download`, name),
+  downloadQaExport: (tenderId) => download(`/tenders/${tenderId}/qa/export`, 'qa.xlsx'),
+  downloadExportDocx: (tenderId, stage = null) =>
+    download(`/tenders/${tenderId}/export/docx${stage ? `?stage=${stage}` : ''}`, 'ТЗ-с-правками.docx'),
+  downloadExportCsv: (tenderId) => download(`/tenders/${tenderId}/export/issues.csv`, 'issues.csv'),
+  downloadExportJson: (tenderId) => download(`/tenders/${tenderId}/export/issues.json`, 'issues.json'),
+  downloadExportSummary: (tenderId) => download(`/tenders/${tenderId}/export/summary.md`, 'summary.md'),
+  downloadExportReviewMd: (tenderId, stage = null) =>
+    download(`/tenders/${tenderId}/export/review.md${stage ? `?stage=${stage}` : ''}`, 'review.md'),
+  openReviewPreview: (tenderId) => openInNewTab(`/tenders/${tenderId}/review/preview`),
+
+  // --- субъект и журнал аудита --------------------------------------------
+  getMe: () => request('/auth/me'),
+  listAudit: (params = {}) => {
+    const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString();
+    return request('/audit' + (q ? '?' + q : ''));
+  },
 };

@@ -15,6 +15,7 @@ const { runMigration } = require('./db/migrate');
 const { runSeedIfEmpty } = require('./db/seed');
 const stageEngine = require('./services/stageAnalysis/stageAnalysisEngine');
 const { createWorker, workerOptionsFromEnv } = require('./services/jobs/worker');
+const { getSecurityConfig, assertProductionSecurity } = require('./security/config');
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -25,6 +26,27 @@ const workerEnabled = (env = process.env) =>
   String(env.WORKER_MODE || 'embedded').trim().toLowerCase() !== 'external';
 
 async function start({ port = PORT, migrate = true, seed = true, worker = workerEnabled() } = {}) {
+  // Проверка безопасности — ПЕРВЫМ делом, до миграции и до открытия порта.
+  // В production небезопасная конфигурация (нет аутентификации, открытый CORS,
+  // выключенный антивирус, dev-bypass, нестрогий TLS) обязана остановить старт,
+  // а не всплыть на первом запросе.
+  const security = assertProductionSecurity(getSecurityConfig());
+  console.log(
+    `[tz-opti-server] режим=${security.mode} auth=${security.auth.mode}` +
+      `${security.auth.devBypass.enabled ? ' (DEV-BYPASS: аутентификация отключена)' : ''}` +
+      ` av=${security.uploads.av.mode} rate-limit=${security.rateLimit.enabled ? 'on' : 'off'}`,
+  );
+  // Вне production «не настроено» — это не ошибка старта, но и не молчание:
+  // без токена и без обхода портал ответит 401 на всё, и разработчик должен
+  // сразу понимать, почему и что включить.
+  if (security.auth.mode === 'disabled' && !security.auth.devBypass.enabled) {
+    console.warn(
+      '[tz-opti-server] ВНИМАНИЕ: аутентификация не настроена — все /api-маршруты, кроме /api/health, ответят 401.\n' +
+        '                 Для локальной работы добавьте в .env:  AUTH_DEV_BYPASS=1\n' +
+        '                 Для реального провайдера — AUTH_OIDC_ISSUER и AUTH_JWT_AUDIENCE (см. docs/security.md).',
+    );
+  }
+
   if (migrate) await runMigration();
   if (seed) await runSeedIfEmpty();
   // Задачи, осиротевшие при прошлом падении/рестарте: их подберёт reaper воркера

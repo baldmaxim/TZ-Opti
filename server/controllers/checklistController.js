@@ -57,9 +57,13 @@ exports.create = async (req, res) => {
   res.status(201).json(await db.queryOne('SELECT * FROM work_checklist_items WHERE id = ?', id));
 };
 
+// Вложенная запись адресуется ПАРОЙ (тендер из пути + id записи). Доступ к
+// тендеру проверил middleware/authorize.js, поэтому условие по tender_id
+// закрывает вторую половину: чужой itemId под своим тендером не найдётся.
 exports.update = async (req, res) => {
   const id = req.params.itemId;
-  const existing = await db.queryOne('SELECT id FROM work_checklist_items WHERE id = ?', id);
+  const tenderId = req.params.id;
+  const existing = await db.queryOne('SELECT id FROM work_checklist_items WHERE id = ? AND tender_id = ?', id, tenderId);
   if (!existing) throw notFound('Запись не найдена');
   const data = normalize(req.body || {});
   if (!Object.keys(data).length) {
@@ -68,12 +72,21 @@ exports.update = async (req, res) => {
   const sets = Object.keys(data)
     .map((k) => `${k} = ?`)
     .join(', ');
-  await db.queryRun(`UPDATE work_checklist_items SET ${sets} WHERE id = ?`, ...Object.values(data), id);
+  await db.queryRun(
+    `UPDATE work_checklist_items SET ${sets} WHERE id = ? AND tender_id = ?`,
+    ...Object.values(data),
+    id,
+    tenderId,
+  );
   res.json(await db.queryOne('SELECT * FROM work_checklist_items WHERE id = ?', id));
 };
 
 exports.remove = async (req, res) => {
-  const r = await db.queryRun('DELETE FROM work_checklist_items WHERE id = ?', req.params.itemId);
+  const r = await db.queryRun(
+    'DELETE FROM work_checklist_items WHERE id = ? AND tender_id = ?',
+    req.params.itemId,
+    req.params.id,
+  );
   if (!r.changes) throw notFound('Запись не найдена');
   res.json({ ok: true });
 };

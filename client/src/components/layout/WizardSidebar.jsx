@@ -18,7 +18,8 @@ export default function WizardSidebar({ collapsed = false, onNavigate }) {
 
   const downloadDocx = () => {
     if (!exportReady) return;
-    window.location.href = api.exportDocxUrl(tenderId);
+    // Переход по адресу не годится: браузер не подставит Bearer-токен.
+    api.downloadExportDocx(tenderId).catch((e) => alert(e.message));
   };
 
   return (

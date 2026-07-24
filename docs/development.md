@@ -48,7 +48,33 @@ npm --prefix client ci      # client
 
 Локальный TLS: строки подключения к managed-Postgres (Supabase) идут с TLS по
 умолчанию; для локального кластера добавьте `?sslmode=disable` — это
-единственный явный способ выключить TLS (`sslOptionFor`).
+единственный явный способ выключить TLS (`sslOptionFor`). **В production так
+нельзя:** там сертификат проверяется всегда, а `sslmode=disable`/`no-verify` —
+ошибка подключения (см. [security.md](security.md)).
+
+### Локальная разработка при включённой аутентификации
+
+Портал закрыт: без Bearer-токена все `/api`-маршруты, кроме `/api/health`,
+отвечают **401**. Для локальной работы есть два пути:
+
+```bash
+# 1. Обход аутентификации — только вне production (в production это ошибка старта).
+#    В .env:
+AUTH_DEV_BYPASS=1
+AUTH_DEV_TENANT=default
+AUTH_DEV_ROLES=engineer     # viewer | engineer | lead | manager | admin
+
+# 2. Настоящий токен вашего провайдера (проверяется всерьёз):
+AUTH_OIDC_ISSUER=https://idp.example.com/realms/tz
+AUTH_JWT_AUDIENCE=tz-opti-api
+#    и для клиента, чтобы он подставлял токен в запросы:
+VITE_AUTH_TOKEN=<access token>
+```
+
+Если ни то, ни другое не задано, сервер при старте пишет предупреждение и
+объясняет, что включить. Роль удобно менять через `AUTH_DEV_ROLES` — так
+проверяется, что 403 приходит там, где должен (например `viewer` не должен
+запускать анализ).
 
 ## Миграции
 

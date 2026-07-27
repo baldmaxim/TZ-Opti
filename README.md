@@ -353,9 +353,24 @@ clustering из сигналов, затем делает QC. Группиров
 QC-шага, единственного с LLM). Порядок шагов фиксирован зависимостями; после сбоя шага оставшиеся
 помечаются `skipped`, отчёт прогона предсказуем (`{ ok, failed_step, steps[] }` со статусом
 `done|failed|skipped` и `summary` слоя на каждый шаг — как у отчёта экспорта, сбой шага не
-превращается в HTTP-ошибку). Свежесть слоёв — `GET /api/tenders/:id/pipeline/status`: счётчик +
-время сборки + флаг `stale` на слой (слой пуст при непустом родителе или собран раньше родителя)
-и сводный `needs_rebuild`. Тест — `server/test/pipeline.test.js`.
+превращается в HTTP-ошибку).
+
+**Исход прогона хранится, а не выводится заново.** При завершении (активация /
+закрытие без активации / провал) весь отчёт пишется в `analysis_runs.summary`:
+`status` (`completed` | `completed_with_warnings` | `failed`), `warnings` и причины
+частичного результата (`partial`), `failed_step`, `steps[]`, **manifest входных
+stage-прогонов**, `started_at` / `finished_at`. Узкая колонка `analysis_runs.status`
+знает только `completed|failed|running` и не различает частичный итог, поэтому
+источник истины — сохранённый отчёт (`buildRunOutcome` / `parseRunOutcome`).
+`GET /api/tenders/:id/pipeline/status` отдаёт: свежесть слоёв (счётчик + время
+сборки + `stale` на слой, сводный `needs_rebuild`), `active_run` (прогон под
+указателем), `last_run` (**последний прогон оркестратора, в т.ч. неуспешный** —
+провалившийся указателем не становится, но его исход обязан быть виден) и верхним
+уровнем `status` / `severity` / `warnings` / `partial` / `failed_step` /
+`stage_inputs`. После перезагрузки страницы и рестарта процесса портал показывает
+ТОТ ЖЕ исход, что был зафиксирован при завершении. Тесты —
+`server/test/unit/pipeline.test.js` (успех / частичный / сбой + повторное чтение)
+и `server/test/integration/pipelineOutcome.integration.test.js` (круг через Postgres).
 
 **Debug-страницы** (по прямому URL, без пункта меню): `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline` — зарегистрированы в `client/src/App.jsx`, методы API — в `client/src/services/api.js`.
 
@@ -499,7 +514,7 @@ POST   /api/tenders/:id/self-analysis/build          QC/полнота над к
 GET    /api/tenders/:id/self-analysis                ?finding_type=missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
 POST   /api/tenders/:id/pipeline/run                  пересобрать слои 2–5 одним вызовом ({with_self_analysis:false} — без QC-шага;
                                                       {async:true} — не ждать, задание уходит в очередь → 202 {job})
-GET    /api/tenders/:id/pipeline/status               свежесть слоёв (count/built_at/stale на слой, сводный needs_rebuild)
+GET    /api/tenders/:id/pipeline/status               свежесть слоёв + сохранённый исход прогона (active_run/last_run, status/warnings/partial/failed_step/stage_inputs)
 
 # Очередь фоновых задач (analysis_jobs / analysis_tasks)
 GET    /api/tenders/:id/jobs                          задания тендера (?status=&limit=) с задачами и прогрессом

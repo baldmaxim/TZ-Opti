@@ -10,6 +10,7 @@
 const db = require('../../../db/connection');
 const pipeline = require('../../pipeline/analysisPipeline');
 const analysisRuns = require('../../analysisRuns/analysisRunsService');
+const { STATUS } = require('../../analysis/resultStatus');
 
 // Шаг 0: зафиксировать manifest входов, начать снимок (прогон) и запомнить его в
 // задании — следующие задачи пишут в него же. Режим сборки берём из payload
@@ -17,12 +18,13 @@ const analysisRuns = require('../../analysisRuns/analysisRunsService');
 // сразу, не считая шаги.
 async function runBegin(ctx) {
   const mode = (safeParse(ctx.job.payload_json) || {}).mode || (ctx.payload && ctx.payload.mode) || null;
-  const { runId, documentsRevisionId, configVersion } = await pipeline.beginPipelineRun(
+  const { runId, documentsRevisionId, configVersion, startedAt } = await pipeline.beginPipelineRun(
     ctx.job.tender_id, undefined, { mode },
   );
   await db.queryRun('UPDATE analysis_jobs SET analysis_run_id = ? WHERE id = ?', runId, ctx.job.id);
   return {
     run_id: runId, documents_revision_id: documentsRevisionId, config_version: configVersion,
+    started_at: startedAt,
     mode: pipeline.resolveMode({ mode }),
   };
 }
@@ -55,6 +57,7 @@ async function runFinalize(ctx) {
       documentsRevisionId: beginRes.documents_revision_id,
       configVersion: beginRes.config_version,
       mode: beginRes.mode || null,
+      startedAt: beginRes.started_at || null,
     },
   );
   await db.queryRun('UPDATE analysis_jobs SET result_json = ? WHERE id = ?', JSON.stringify(report), ctx.job.id);
@@ -85,12 +88,29 @@ async function requireRunId(ctx) {
 }
 
 // Задание оборвано/отменено до финализатора — прогон не должен остаться
-// «running» навсегда.
+// «running» навсегда. Исход пишем тем же форматом, что и финализатор: узкая
+// колонка знает только 'failed', а отчёт различает «отменён» и «оборван» — и
+// показывает это после перезагрузки страницы.
 async function onJobSettled({ job }) {
   if (job.status === 'completed' || !job.analysis_run_id) return;
-  const run = await db.queryOne('SELECT status FROM analysis_runs WHERE id = ?', job.analysis_run_id);
+  const run = await db.queryOne(
+    'SELECT status, started_at FROM analysis_runs WHERE id = ?', job.analysis_run_id,
+  );
   if (!run || run.status !== 'running') return;
-  await analysisRuns.failRun(job.analysis_run_id, JSON.stringify({ job_status: job.status, error: job.error || null }));
+  const status = job.status === 'cancelled' ? STATUS.CANCELLED
+    : (job.status === 'interrupted' ? STATUS.INTERRUPTED : STATUS.FAILED);
+  const outcome = pipeline.buildRunOutcome({
+    status,
+    ok: false,
+    run_id: job.analysis_run_id,
+    steps: [],
+    error: job.error || `задание конвейера завершилось со статусом «${job.status}»`,
+  }, {
+    manifest: await analysisRuns.getRunInputsManifest(job.analysis_run_id),
+    startedAt: run.started_at || null,
+    finishedAt: new Date().toISOString(),
+  });
+  await analysisRuns.failRun(job.analysis_run_id, JSON.stringify({ ...outcome, job_status: job.status }));
 }
 
 function safeParse(v) {

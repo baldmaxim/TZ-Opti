@@ -172,7 +172,25 @@ Excel-number → number; единицы «кв.м»/«м²»/«куб.м»/«п.
 
 **Зоны ответственности и сборка итога.** Каждый агент 1–4 пишет ТОЛЬКО в свой домен `problem_type` — единый реестр `server/services/review/stageDomains.js` (Stage1 покрытие расчёта; Stage2 Q&A+характеристики; Stage3 условия; Stage4 риски); движок логирует находки вне домена (`off_domain` в summary). Слой сборки `server/services/review/consolidation.js` (`consolidate(tenderId)`) сводит находки разных стадий, указывающие на одно место ТЗ (абзац + перекрытие char-диапазонов; фолбэк — цитата), в группы: **primary** по критичности (тай-брейк — порядок стадий), прочие — `related`, конфликты помечаются (решает инженер). Один итог: `GET /api/tenders/:id/review/consolidated` → экран «Итог» (`client/src/pages/result/SummaryPage.jsx`). Экспорт берёт **одно** решение на место (primary; дубли попадают в отчёт экспорта как `skipped`) через `dedupeExportDecisions`. Тесты слоя — `server/test/consolidation.test.js`.
 
-**Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis).** Поверх стадий работает основной аналитический конвейер: стадии 1–4 добывают находки → движок пишет их сигналами (`signals/signalWriter.js`, авто, best-effort) → `unifiedAnalysis/unifiedIssueBuilder.js` (draft_issues) → `critic/criticService.js` (значимость) → `clustering/clusteringService.js` (кластеры) → `selfAnalysis/selfAnalysisService.js` (QC, Стадия 5). Каждый слой — таблица + сервис + контроллер + роут + debug-страница + офлайн-тест чистых функций. Оркестратор `pipeline/analysisPipeline.js` пересобирает слои 2–5 одним вызовом (`POST /api/tenders/:id/pipeline/run`, `{with_self_analysis:false}` — без LLM-шага; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}` — сбой ≠ HTTP-ошибка) и отдаёт свежесть слоёв `GET …/pipeline/status` (`stale` на слой + `needs_rebuild`); debug-страница `/tenders/:id/debug/pipeline`, тест `server/test/pipeline.test.js`.
+**Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis).** Поверх стадий работает основной аналитический конвейер: стадии 1–4 добывают находки → движок пишет их сигналами (`signals/signalWriter.js`, авто, best-effort) → `unifiedAnalysis/unifiedIssueBuilder.js` (draft_issues) → `critic/criticService.js` (значимость) → `clustering/clusteringService.js` (кластеры) → `selfAnalysis/selfAnalysisService.js` (QC, Стадия 5). Каждый слой — таблица + сервис + контроллер + роут + debug-страница + офлайн-тест чистых функций. Оркестратор `pipeline/analysisPipeline.js` пересобирает слои 2–5 одним вызовом (`POST /api/tenders/:id/pipeline/run`, `{with_self_analysis:false}` — без LLM-шага; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}` — сбой ≠ HTTP-ошибка); debug-страница `/tenders/:id/debug/pipeline`, тест `server/test/unit/pipeline.test.js`.
+
+**Исход прогона конвейера ХРАНИТСЯ в `analysis_runs.summary`, а не выводится заново.**
+`buildRunOutcome` (чистая) собирает ОДИН отчёт и для ответа API, и для записи в БД:
+`status` (контракт `resultStatus`), `warnings`, причины частичного результата (`partial`),
+`failed_step`, `steps[]`, **manifest входных stage-прогонов**, `started_at`/`finished_at`.
+Пишется при ЛЮБОМ завершении — `activateRun` / `completeRunWithoutActivation` / `failRun`
+(и `onJobSettled` для оборванного задания: `cancelled`/`interrupted` вместо голого failed).
+Узкая колонка `analysis_runs.status` (`completed|failed|running`) не различает частичный
+итог, поэтому источник истины — сохранённый отчёт (`parseRunOutcome`; чужой summary
+(backfill/кандидат) отчётом не считается, статус тогда выводится из колонки, fail-closed).
+`GET …/pipeline/status` отдаёт свежесть слоёв (`stale` + `needs_rebuild`), `active_run`
+(прогон под указателем), **`last_run`** (последний прогон оркестратора, в т.ч. НЕуспешный —
+провалившийся указателем не становится, но исход обязан быть виден) и верхним уровнем
+`status`/`severity`/`warnings`/`partial`/`failed_step`/`stage_inputs`. После перезагрузки
+страницы и рестарта процесса портал показывает ТОТ ЖЕ `completed` /
+`completed_with_warnings` / `failed`. Тесты — `server/test/unit/pipeline.test.js`
+(успех/частичный/сбой + повторное чтение) и
+`server/test/integration/pipelineOutcome.integration.test.js` (круг через Postgres).
 
 **Снимок НЕИЗМЕНЯЕМ: писать можно только в свой прогон-кандидат.**
 `analysisRuns.beginCandidateRun` — единственный законный адресат записи слоя (пустой

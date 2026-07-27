@@ -159,9 +159,14 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 > `POST …/pipeline/run` (`services/pipeline/analysisPipeline.js`; тело
 > `{with_self_analysis:false}` — без QC-шага, единственного с LLM). Порядок шагов фиксирован
 > зависимостями; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}`
-> предсказуем (сбой шага ≠ HTTP-ошибка). Свежесть слоёв — `GET …/pipeline/status`
-> (count/built_at/`stale` на слой: пуст при непустом родителе или собран раньше родителя;
-> сводный `needs_rebuild`). Чтение каждого слоя — с фильтром важности
+> предсказуем (сбой шага ≠ HTTP-ошибка). Отчёт прогона ЦЕЛИКОМ сохраняется в
+> `analysis_runs.summary` (`status`/`warnings`/`partial`/`failed_step`/`steps[]`/manifest
+> входов/`started_at`/`finished_at`), поэтому исход переживает перезагрузку страницы и
+> рестарт процесса. `GET …/pipeline/status` = свежесть слоёв (count/built_at/`stale` на
+> слой: пуст при непустом родителе или собран раньше родителя; сводный `needs_rebuild`)
+> + `active_run` (под указателем) + `last_run` (последний прогон оркестратора, в т.ч.
+> неуспешный) + верхнеуровневые `status`/`severity`/`warnings`/`partial`/`failed_step`/
+> `stage_inputs`. Чтение каждого слоя — с фильтром важности
 > `?mode=important|working|full`. Debug-страницы (по прямому URL):
 > `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline`.
 

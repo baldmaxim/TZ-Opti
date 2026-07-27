@@ -40,8 +40,14 @@ exports.run = async (req, res) => {
   return res.json(report);
 };
 
-// GET /api/tenders/:id/pipeline/status — свежесть слоёв конвейера
-// (счётчик + время сборки + stale на слой, сводный needs_rebuild).
+// GET /api/tenders/:id/pipeline/status — состояние конвейера:
+//   • свежесть слоёв (счётчик + время сборки + stale, сводный needs_rebuild);
+//   • active_run — прогон под указателем (его читает портал);
+//   • last_run — последний прогон оркестратора, в т.ч. НЕуспешный;
+//   • status/severity/warnings/partial/failed_step/stage_inputs — исход последней
+//     сборки, ЗАФИКСИРОВАННЫЙ в analysis_runs.summary при завершении. Поэтому
+//     после перезагрузки страницы и рестарта процесса портал показывает тот же
+//     completed / completed_with_warnings / failed, а не выводит его заново.
 exports.status = async (req, res) => {
   await ensureTender(req.params.id);
   res.json(await pipeline.pipelineStatus(req.params.id));

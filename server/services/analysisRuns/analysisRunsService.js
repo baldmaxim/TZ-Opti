@@ -237,6 +237,37 @@ async function getRunInputsManifest(runId, tx) {
   try { return JSON.parse(raw); } catch (_e) { return null; }
 }
 
+// Строка прогона целиком: статус, времена, сохранённый в summary исход. Нужна
+// отчётам и статусу конвейера — зафиксированный при завершении результат читается
+// из БД, а не восстанавливается по косвенным признакам.
+async function getRun(runId, tx) {
+  if (!runId) return null;
+  return exec(tx).queryOne(
+    `SELECT id, tender_id, stage, kind, documents_revision_id, config_version,
+            started_at, finished_at, status, summary, superseded_at
+       FROM analysis_runs WHERE id = ?`,
+    runId,
+  );
+}
+
+// Последний прогон ОРКЕСТРАТОРА конвейера — независимо от указателя. Нужен, чтобы
+// после перезагрузки страницы (и после рестарта процесса) показать тот же исход,
+// который был зафиксирован при завершении, в том числе НЕуспешный: провалившийся
+// прогон указателем не становится, и по analysis_active_runs его не найти.
+// Прогоны-кандидаты одиночных build* сюда не попадают: manifest входов пишет
+// только beginPipelineRun (см. pipeline/pipelineManifest.js).
+async function getLatestPipelineRun(tenderId, tx) {
+  return exec(tx).queryOne(
+    `SELECT id, tender_id, kind, documents_revision_id, config_version,
+            started_at, finished_at, status, summary, superseded_at
+       FROM analysis_runs
+      WHERE tender_id = ? AND kind = 'pipeline' AND inputs_manifest IS NOT NULL
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1`,
+    tenderId,
+  );
+}
+
 // Входы конвейера: на каждую обязательную стадию — АКТУАЛЬНЫЙ снимок (указатель)
 // и id САМОГО СВЕЖЕГО прогона стадии. Второе критично: если после успешного
 // прогона стадию гоняли снова и она упала, указатель остался на старом снимке —
@@ -542,6 +573,8 @@ module.exports = {
   completeRunWithoutActivation,
   failRun,
   getRunInputsManifest,
+  getRun,
+  getLatestPipelineRun,
   collectStageInputs,
   archiveStageRunsFrom,
   clearPipelinePointer,

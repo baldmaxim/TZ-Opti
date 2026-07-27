@@ -300,6 +300,10 @@ async function buildSelfAnalysis(tenderId, runId) {
   const heuristic = runHeuristics(clusters, signalStats);
 
   let llm = [];
+  // Части ТЗ, которые LLM-QC не досчитал (часть упала, но не все). Это НЕ полный
+  // успех: итог собран частично — прогон стадии/шага обязан пометиться warning,
+  // иначе портал отрапортует зелёный «завершено» после сбоя части (см. п.4 аудита).
+  let failedParts = null;
   try {
     const raw = await runSelfAnalysisLlm({
       tzText,
@@ -312,10 +316,13 @@ async function buildSelfAnalysis(tenderId, runId) {
         tenderId, stage: 5, revisionId: tzRevisionId, runId: rid, logTag: 'selfAnalysis',
       }),
     });
+    failedParts = (raw && raw.segmentation && raw.segmentation.failed_parts) || null;
     const clusterIds = new Set(clusters.map((c) => c.id));
     llm = raw.map((r) => normalizeLlmFinding(r, clusterIds));
   } catch (e) {
-    // LLM-обогащение best-effort: без бриджа/ключа остаёмся на эвристиках.
+    // LLM-обогащение best-effort: без бриджа/ключа (или когда НИ ОДНА часть не
+    // досчиталась — runSelfAnalysisLlm бросает) остаёмся на эвристиках. Это
+    // осознанный skip QC-обогащения, а не частичный результат — warning не ставим.
     // eslint-disable-next-line no-console
     console.warn(`[selfAnalysis] LLM-обогащение пропущено: ${e.message}`);
   }
@@ -351,6 +358,10 @@ async function buildSelfAnalysis(tenderId, runId) {
       llm: llm.length,
       by_type: byType,
       missed_categories: signalStats.missedCategories,
+      // Частичный QC: часть(и) ТЗ не досчитаны. Читатели (движок стадии,
+      // оркестратор конвейера) обязаны пометить исход warning, а не success.
+      failed_parts: failedParts,
+      partial: Boolean(failedParts && failedParts.length),
     },
     items: findings,
   };

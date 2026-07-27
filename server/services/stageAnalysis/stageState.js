@@ -17,9 +17,25 @@ const { STATUS } = require('../analysis/resultStatus');
 // без живого процесса — тоже осиротевший прогон. Задание очереди может
 // закончиться обрывом (рестарт/потеря воркера) или отменой инженера — такие
 // прогоны пишутся своим статусом. Неизвестный статус — fail-closed.
+// Контракт-статус из summary прогона (полный набор хранится там, а не в узкой
+// колонке analysis_runs.status). summary — JSON-строка или уже разобранный объект.
+function contractStatusFromSummary(run) {
+  let s = run && run.summary;
+  if (typeof s === 'string') {
+    try { s = JSON.parse(s); } catch (_e) { return null; }
+  }
+  return (s && typeof s === 'object' && s.status) || null;
+}
+
 function classifyStageRun(run) {
   if (!run) return STATUS.INTERRUPTED;
-  if (run.status === 'completed') return STATUS.COMPLETED;
+  if (run.status === 'completed') {
+    // completed в колонке может скрывать частичный результат (Стадия 5 QC):
+    // полный контракт живёт в summary. Частичный → warning, а не success.
+    return contractStatusFromSummary(run) === STATUS.COMPLETED_WITH_WARNINGS
+      ? STATUS.COMPLETED_WITH_WARNINGS
+      : STATUS.COMPLETED;
+  }
   if (run.status === 'failed') return STATUS.FAILED;
   if (run.status === 'running') return STATUS.INTERRUPTED;
   if (run.status === STATUS.INTERRUPTED) return STATUS.INTERRUPTED;

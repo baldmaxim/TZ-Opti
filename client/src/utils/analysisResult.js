@@ -26,13 +26,22 @@ export function severityOf(status) {
   return SEVERITY[status] || 'error';
 }
 
-// Исход прогона стадии по строке из /stages (analysis_runs.status column).
-// Зеркало classifyStageRun на сервере.
+// Исход прогона стадии по строке из /stages. Зеркало classifyStageRun на сервере:
+// узкая колонка analysis_runs.status ('completed'|'failed'|'running'|'cancelled'|
+// 'interrupted') + полный контракт в разобранном summary (run.summary.status),
+// где живёт completed_with_warnings (частичный QC Стадии 5).
 export function stageOutcome(run) {
   if (!run) return ANALYSIS_STATUS.INTERRUPTED;
-  if (run.status === 'completed') return ANALYSIS_STATUS.COMPLETED;
+  if (run.status === 'completed') {
+    const contract = run.summary && run.summary.status;
+    return contract === ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+      ? ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+      : ANALYSIS_STATUS.COMPLETED;
+  }
   if (run.status === 'failed') return ANALYSIS_STATUS.FAILED;
   if (run.status === 'running') return ANALYSIS_STATUS.INTERRUPTED;
+  if (run.status === ANALYSIS_STATUS.CANCELLED) return ANALYSIS_STATUS.CANCELLED;
+  if (run.status === ANALYSIS_STATUS.INTERRUPTED) return ANALYSIS_STATUS.INTERRUPTED;
   return ANALYSIS_STATUS.FAILED;
 }
 

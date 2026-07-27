@@ -50,6 +50,31 @@ test('classifyStageRun: неизвестный статус → failed (fail-clo
   assert.equal(engine.classifyStageRun({ status: 'weird' }), STATUS.FAILED);
 });
 
+// Частичный результат (Стадия 5 QC: часть ТЗ не досчитана): колонка
+// analysis_runs.status='completed', но полный контракт лежит в summary. Исход
+// обязан читаться как warning, а не полный success — иначе портал отрапортует
+// зелёный «завершено» после сбоя части (п.4 аудита: ошибка этапа ≠ успех).
+test('classifyStageRun: completed + summary.partial → completed_with_warnings (не success)', () => {
+  const summaryObj = { stage: 5, status: STATUS.COMPLETED_WITH_WARNINGS };
+  // summary как объект (getStageRunSummary отдаёт разобранным) …
+  const asObj = engine.classifyStageRun({ status: 'completed', summary: summaryObj });
+  assert.equal(asObj, STATUS.COMPLETED_WITH_WARNINGS);
+  assert.equal(severityOf(asObj), 'warning');
+  // … и как JSON-строка (сырой ряд из БД).
+  const asStr = engine.classifyStageRun({ status: 'completed', summary: JSON.stringify(summaryObj) });
+  assert.equal(asStr, STATUS.COMPLETED_WITH_WARNINGS);
+  assert.notEqual(severityOf(asStr), 'success');
+});
+
+test('classifyStageRun: completed без warning-контракта → полный completed', () => {
+  assert.equal(
+    engine.classifyStageRun({ status: 'completed', summary: JSON.stringify({ stage: 1, status: STATUS.COMPLETED }) }),
+    STATUS.COMPLETED,
+  );
+  // битый summary не должен ронять классификацию — остаётся completed.
+  assert.equal(engine.classifyStageRun({ status: 'completed', summary: '{not json' }), STATUS.COMPLETED);
+});
+
 // --- canFinishStage ------------------------------------------------------------
 
 test('canFinishStage: завершать можно только из reviewing (после успешного прогона)', () => {

@@ -272,10 +272,17 @@ async function runStageInner(tenderId, stage, control = null) {
   const runId = await analysisRuns.beginRun(tenderId, analysisRuns.stageScope(stage), {
     stage, documentsRevisionId, configVersion,
   });
+  // Частичный результат (Стадия 5 QC: часть ТЗ не досчитана) — это НЕ полный
+  // успех. Единый контракт результата: warning, а не completed. Добытчики 1–4
+  // fail-loud (упавшая часть бросает и роняет весь прогон), поэтому partial у них
+  // не возникает — только QC-стадия помечает себя частичной.
+  const stageStatus = issues.selfAnalysis && issues.selfAnalysis.partial
+    ? STATUS.COMPLETED_WITH_WARNINGS
+    : STATUS.COMPLETED;
   const summary = {
     stage,
     label: STAGE_LABELS[stage],
-    status: STATUS.COMPLETED, // единый контракт результата (см. resultStatus)
+    status: stageStatus, // единый контракт результата (см. resultStatus)
     result_type: stageResultType(stage),
     issues_count: issues.length,
     off_domain: offDomain.length,

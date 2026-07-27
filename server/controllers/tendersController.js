@@ -6,6 +6,7 @@ const { badRequest, notFound } = require('../utils/errors');
 const { STANDARD_CHECKLIST } = require('../db/standardChecklist');
 const { populateStandardCharacteristics } = require('../services/characteristicsTemplate');
 const { getLocksMap } = require('./setupLocksController');
+const analysisRuns = require('../services/analysisRuns/analysisRunsService');
 
 const TENDER_FIELDS = ['title', 'customer', 'type', 'stage', 'deadline', 'owner', 'status', 'description'];
 
@@ -44,14 +45,21 @@ async function getTenderById(tenderId) {
   const t = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!t) return null;
   const stage_state = await db.queryOne('SELECT * FROM tender_stage_state WHERE tender_id = ?', tenderId);
+  // Находки считаем ТОЛЬКО по АКТУАЛЬНЫМ stage-прогонам (снимок): архивные
+  // прогоны не удаляются, поэтому без run-скоупа повторный анализ удваивал бы
+  // счётчики (п.5 — повтор не смешивает старые и новые результаты).
+  const rf = await analysisRuns.issuesRunFilter(tenderId, 'i');
   const [docs, checklist, conditions, risks, qa_entries, issues_total, issues_pending] = await Promise.all([
     db.queryOne('SELECT COUNT(*) as c FROM documents WHERE tender_id = ?', tenderId),
     db.queryOne('SELECT COUNT(*) as c FROM work_checklist_items WHERE tender_id = ?', tenderId),
     db.queryOne('SELECT COUNT(*) as c FROM company_conditions WHERE tender_id = ?', tenderId),
     db.queryOne('SELECT COUNT(*) as c FROM risk_templates WHERE tender_id = ? OR is_global = 1', tenderId),
     db.queryOne('SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?', tenderId),
-    db.queryOne('SELECT COUNT(*) as c FROM issues WHERE tender_id = ?', tenderId),
-    db.queryOne("SELECT COUNT(*) as c FROM issues WHERE tender_id = ? AND review_status = 'pending'", tenderId),
+    db.queryOne(`SELECT COUNT(*) as c FROM issues i WHERE i.tender_id = ?${rf.sql}`, tenderId, ...rf.params),
+    db.queryOne(
+      `SELECT COUNT(*) as c FROM issues i WHERE i.tender_id = ? AND i.review_status = 'pending'${rf.sql}`,
+      tenderId, ...rf.params,
+    ),
   ]);
   const counts = {
     documents: docs?.c ?? 0,
@@ -100,9 +108,12 @@ exports.list = async (req, res) => {
   const enriched = await Promise.all(
     rows.map(async (t) => {
       const docs = await db.queryOne('SELECT COUNT(*) as c FROM documents WHERE tender_id = ?', t.id);
+      // Только активный снимок (см. getTenderById): без run-скоупа архивные
+      // прогоны удваивали бы «в работе».
+      const rf = await analysisRuns.issuesRunFilter(t.id, 'i');
       const issues = await db.queryOne(
-        "SELECT COUNT(*) as c FROM issues WHERE tender_id = ? AND review_status = 'pending'",
-        t.id,
+        `SELECT COUNT(*) as c FROM issues i WHERE i.tender_id = ? AND i.review_status = 'pending'${rf.sql}`,
+        t.id, ...rf.params,
       );
       return {
         ...t,

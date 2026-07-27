@@ -97,9 +97,11 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 > `issue_clusters` через `review/clusterReviewService.js`: одно решение на кластер
 > (`review_decisions.cluster_id`), выгрузки собираются из primary draft_issue кластера
 > (docx/preview/md локализуют место по тексту `source_fragment`, поэтому переписывать
-> `reviewDocx` не понадобилось). id кластера **детерминирован** (`clusteringService.clusterId`
-> от `tenderId + cluster_key`) — решение по `cluster_id` переживает идемпотентную пересборку
-> конвейера. **Backward-compat:** issue-level путь (`review_decisions.issue_id`,
+> `reviewDocx` не понадобилось). id кластера **run-scoped** (`analysisRuns.clusterRunId`
+> от `tenderId + analysis_run_id + cluster_key`): каждый анализ — неизменяемый снимок, кластеры
+> разных прогонов не сталкиваются по id, повторный запуск не смешивает результаты, а перенос
+> решений на новый прогон — только явный (`listCarryOverProposals` → `confirmCarryOvers`).
+> **Backward-compat:** issue-level путь (`review_decisions.issue_id`,
 > `consolidation.js`, пер-стадийная рецензия внутри стадий 1–4) сохранён как fallback; каждая
 > выгрузка авто-падает на него, когда кластеров/кластерных решений нет, и принудительно — по
 > `?source=issues` (фактический источник виден в `X-Export-Source`). Старые

@@ -217,7 +217,14 @@ export const useTenderStore = create((set, get) => ({
         const info = (data.stages || []).find((s) => s.stage === n);
         const outcome = stageOutcome(info && info.summary);
         stageStatuses.push(outcome);
-        if (outcome !== ANALYSIS_STATUS.COMPLETED) {
+        // Прекращаем добычу только на ошибке (error). warning (частичный QC) у
+        // добытчиков 1–4 не бывает, но не роняем прогон на нём и здесь.
+        if (severityOf(outcome) === 'error') {
+          // Отмена/обрыв — отдельные исходы (п.12): пробрасываем как aborted, чтобы
+          // сводка показала «отменён»/«прерван», а не общий «не выполнен».
+          if (outcome === ANALYSIS_STATUS.CANCELLED || outcome === ANALYSIS_STATUS.INTERRUPTED) {
+            aborted = outcome;
+          }
           // Стадия не досчитана — НЕ завершаем её (сервер и так это запретит) и
           // прекращаем добычу: следующие стадии залочены за незавершённой.
           toastError(`Шаг ${n}: анализ не удался — стадия не завершена.`);
@@ -241,7 +248,11 @@ export const useTenderStore = create((set, get) => ({
       try {
         const report = await api.runPipeline(id, { withSelfAnalysis });
         if (report && report.ok) {
-          pipelineStatus = ANALYSIS_STATUS.COMPLETED;
+          // {ok:true} может нести warnings (частичный QC): не рапортуем полный
+          // успех, если сборка неполная — берём статус контракта из отчёта.
+          pipelineStatus = report.status === ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+            ? ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+            : ANALYSIS_STATUS.COMPLETED;
         } else {
           const step = report && report.failed_step ? `: шаг «${report.failed_step}»` : '';
           toastError(`Сборка кластеров не удалась${step}.`);

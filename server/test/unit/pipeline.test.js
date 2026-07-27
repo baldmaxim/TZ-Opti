@@ -13,6 +13,7 @@ const {
   summarizeRun,
   computeLayerStatus,
   runPipeline,
+  runPipelineStep,
 } = require('../../services/pipeline/analysisPipeline');
 const { STATUS, severityOf } = require('../../services/analysis/resultStatus');
 
@@ -61,6 +62,53 @@ test('summarizeRun: пустой прогон не считается успеш
   const s = summarizeRun([]);
   assert.equal(s.ok, false);
   assert.equal(s.status, STATUS.FAILED);
+});
+
+// Частичный результат шага (self-analysis: часть ТЗ не досчитана) — не сбой, но и
+// не полный успех: status=completed_with_warnings (severity=warning), ok остаётся
+// true (итог пригоден). Портал НЕ показывает зелёный полный успех (п.4 аудита).
+test('summarizeRun: шаг done+warnings -> completed_with_warnings, ok=true, но не success', () => {
+  const s = summarizeRun([
+    { step: 'draft_issues', status: 'done' },
+    { step: 'clustering', status: 'done' },
+    { step: 'self_analysis', status: 'done', warnings: true, warnings_reason: 'не досчитано частей ТЗ: 2' },
+  ]);
+  assert.equal(s.ok, true);
+  assert.equal(s.status, STATUS.COMPLETED_WITH_WARNINGS);
+  assert.equal(severityOf(s.status), 'warning');
+  assert.equal(s.failed_step, null);
+  assert.ok(Array.isArray(s.warnings) && s.warnings.length === 1);
+  assert.equal(s.warnings[0].step, 'self_analysis');
+});
+
+test('summarizeRun: сбой шага важнее warnings — status failed', () => {
+  const s = summarizeRun([
+    { step: 'draft_issues', status: 'done', warnings: true },
+    { step: 'critic', status: 'failed' },
+  ]);
+  assert.equal(s.ok, false);
+  assert.equal(s.status, STATUS.FAILED);
+});
+
+// --- runPipelineStep: частичный summary шага -> warnings ------------------------
+
+test('runPipelineStep: summary.partial помечает шаг warnings (не роняя его в failed)', async () => {
+  const runners = {
+    self_analysis: async () => ({ summary: { findings: 3, partial: true, failed_parts: [{ part: 2 }, { part: 4 }] } }),
+  };
+  const step = await runPipelineStep('t-1', 'run-1', 'self_analysis', runners);
+  assert.equal(step.status, 'done');
+  assert.equal(step.warnings, true);
+  assert.match(step.warnings_reason, /2/);
+});
+
+test('runPipelineStep: полный summary шага -> без warnings', async () => {
+  const runners = {
+    clustering: async () => ({ summary: { clusters: 5, partial: false } }),
+  };
+  const step = await runPipelineStep('t-1', 'run-1', 'clustering', runners);
+  assert.equal(step.status, 'done');
+  assert.ok(!step.warnings);
 });
 
 // --- runPipeline: оркестрация с инъекцией раннеров + реестра прогонов (без БД) --

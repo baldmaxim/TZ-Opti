@@ -48,17 +48,26 @@ function planSteps({ withSelfAnalysis = true } = {}) {
 }
 
 // Свёртка отчёта прогона: ok — все шаги done; failed_step — первый сбой.
-// status — единый контракт результата (resultStatus): полный успех либо сбой.
-// Пустой прогон (0 шагов) успехом НЕ считается.
+// status — единый контракт результата (resultStatus): полный успех, частичный
+// (шаг дал usable, но неполный результат — warnings) либо сбой. Пустой прогон
+// (0 шагов) успехом НЕ считается. ok остаётся true при warnings: итог пригоден,
+// но НЕ зелёный — портал не рапортует полный успех после недосчёта части (п.4).
 function summarizeRun(stepResults) {
   const failed = stepResults.find((s) => s.status === 'failed') || null;
-  const ok = !failed && stepResults.length > 0 && stepResults.every((s) => s.status === 'done');
+  const allDone = !failed && stepResults.length > 0 && stepResults.every((s) => s.status === 'done');
+  const warnings = stepResults.filter((s) => s.status === 'done' && s.warnings).map((s) => ({
+    step: s.step, reason: s.warnings_reason || 'частичный результат',
+  }));
+  const ok = allDone;
+  let status = STATUS.FAILED;
+  if (allDone) status = warnings.length ? STATUS.COMPLETED_WITH_WARNINGS : STATUS.COMPLETED;
   return {
     ok,
-    status: ok ? STATUS.COMPLETED : STATUS.FAILED,
+    status,
     steps_done: stepResults.filter((s) => s.status === 'done').length,
     steps_total: stepResults.length,
     failed_step: failed ? failed.step : null,
+    warnings: warnings.length ? warnings : null,
   };
 }
 
@@ -110,7 +119,20 @@ async function runPipelineStep(tenderId, runId, key, runners = STEP_RUNNERS) {
   const meta = stepMeta(key);
   const t0 = Date.now();
   const res = await runners[key](tenderId, runId);
-  return { step: key, label: meta.label, status: 'done', ms: Date.now() - t0, summary: (res && res.summary) || null };
+  const summary = (res && res.summary) || null;
+  // Шаг может дать пригодный, но НЕПОЛНЫЙ результат (self-analysis: часть ТЗ не
+  // досчитана). Это не сбой шага (status='done'), но и не полный успех —
+  // помечаем warnings, чтобы свёртка прогона не показала зелёный (п.4 аудита).
+  const partial = Boolean(summary && summary.partial);
+  const step = { step: key, label: meta.label, status: 'done', ms: Date.now() - t0, summary };
+  if (partial) {
+    step.warnings = true;
+    const fp = summary.failed_parts;
+    step.warnings_reason = Array.isArray(fp) && fp.length
+      ? `не досчитано частей ТЗ: ${fp.length}`
+      : 'частичный результат';
+  }
+  return step;
 }
 
 // Финал прогона: по успеху всех шагов — активация снимка (указатель переводится,

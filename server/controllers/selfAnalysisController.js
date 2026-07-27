@@ -10,17 +10,22 @@ async function ensureTender(tenderId) {
 }
 
 // POST /api/tenders/:id/self-analysis/build — QC над итогом (кластеры + ТЗ).
+// ОТЛАДОЧНЫЙ путь: QC собирается в НОВЫЙ прогон-кандидат (со своими слоями),
+// указатель НЕ переводится — действующий снимок не меняется. Рабочий путь —
+// Стадия 5 / POST …/pipeline/run: там снимок собирается целиком и активируется.
 exports.build = async (req, res) => {
   await ensureTender(req.params.id);
   const result = await selfAnalysis.buildSelfAnalysis(req.params.id);
-  res.json(result);
+  res.json({ ...result, run_id: result.summary.run_id, activated: false });
 };
 
-// GET /api/tenders/:id/self-analysis?finding_type=missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment
+// GET /api/tenders/:id/self-analysis?finding_type=…&run_id=…
 exports.list = async (req, res) => {
   await ensureTender(req.params.id);
   const findingType = req.query.finding_type || null;
-  const items = await selfAnalysis.listSelfAnalysis(req.params.id, { findingType });
+  const items = await selfAnalysis.listSelfAnalysis(req.params.id, {
+    findingType, runId: req.query.run_id || null,
+  });
   const byType = items.reduce((acc, f) => {
     acc[f.finding_type] = (acc[f.finding_type] || 0) + 1;
     return acc;

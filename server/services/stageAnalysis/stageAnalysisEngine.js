@@ -17,7 +17,8 @@ const { runStage1Llm } = require('./stage1_llm');
 const { runStage2Llm } = require('./stage2_llm');
 const { runStage3Llm } = require('./stage3_llm');
 const { runStage4Llm } = require('./stage4_llm');
-const selfAnalysis = require('../selfAnalysis/selfAnalysisService');
+const { runPipeline } = require('../pipeline/analysisPipeline');
+const audit = require('../audit/auditService');
 const { importQaXlsx } = require('../qaImportService');
 const { ensureVorItems } = require('../vor/vorImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
@@ -106,13 +107,36 @@ async function buildContextForStage(tenderId, stage) {
 // (кластеры новой архитектуры + исходный ТЗ), а НЕ второй поток issues по тексту.
 // Поэтому она НЕ пишет в таблицу issues — возвращает пустой issues[], а находки
 // о качестве разбора кладёт в self_analysis_results (selfAnalysisService).
+// Стадия 5 НЕ мутирует действующий pipeline-снимок. Прежде она звала
+// buildSelfAnalysis без runId, тот брал АКТИВНЫЙ прогон и перезаписывал в нём
+// self_analysis_results — правка уже выданного результата. Теперь стадия
+// заказывает у оркестратора НОВЫЙ снимок (кандидат: draft_issues → critic →
+// clustering → self-analysis) и он активируется целиком только по успеху; при
+// сбое указатель остаётся на прежнем снимке.
+// Полного отказа QC buildSelfAnalysis не маскирует (бросает) — шаг конвейера
+// падает, прогон стадии становится failed через recordFailedRun.
 async function runStage5SelfAnalysis(ctx) {
-  const res = await selfAnalysis.buildSelfAnalysis(ctx.tenderId);
+  const report = await runPipeline(ctx.tenderId, { withSelfAnalysis: true });
+  if (!report.ok) {
+    const reason = report.error
+      || (report.failed_step ? `шаг «${report.failed_step}» не выполнен` : 'сборка снимка не удалась');
+    const err = new Error(`Самоанализ (Стадия 5): ${reason}`);
+    err.status = report.blocked === 'inputs' ? 409 : 502;
+    throw err;
+  }
+  const step = (report.steps || []).find((s) => s.step === 'self_analysis');
+  const sa = (step && step.summary) || {};
   const issues = [];
+  const qc = sa.llm_status
+    ? ` LLM-QC: ${sa.llm_status}${sa.llm_reason ? ` (${sa.llm_reason})` : ''}.`
+    : '';
   issues.analysisNote =
-    `Самоанализ (QC) над итогом: ${res.summary.findings} замечаний о качестве разбора ` +
-    `по ${res.summary.clusters} кластерам — см. self_analysis_results (issues не порождаются).`;
-  issues.selfAnalysis = res.summary;
+    `Самоанализ (QC) над итогом: ${sa.findings ?? 0} замечаний о качестве разбора ` +
+    `по ${sa.clusters ?? 0} кластерам — см. self_analysis_results (issues не порождаются). ` +
+    `Собран НОВЫЙ снимок конвейера ${report.run_id}; решения прошлого снимка переносятся ` +
+    `явно (Перенос решений).${qc}`;
+  issues.selfAnalysis = sa;
+  issues.pipelineRunId = report.run_id;
   return issues;
 }
 
@@ -276,7 +300,11 @@ async function runStageInner(tenderId, stage, control = null) {
   // успех. Единый контракт результата: warning, а не completed. Добытчики 1–4
   // fail-loud (упавшая часть бросает и роняет весь прогон), поэтому partial у них
   // не возникает — только QC-стадия помечает себя частичной.
-  const stageStatus = issues.selfAnalysis && issues.selfAnalysis.partial
+  // Источник истины — статус слоя self-analysis (он же несёт llm_status:
+  // completed | completed_with_warnings | skipped | not_applicable); partial —
+  // совместимый фолбэк. FAILED сюда не доходит: buildSelfAnalysis бросает.
+  const sa = issues.selfAnalysis || null;
+  const stageStatus = (sa && sa.status === STATUS.COMPLETED_WITH_WARNINGS) || (sa && sa.partial)
     ? STATUS.COMPLETED_WITH_WARNINGS
     : STATUS.COMPLETED;
   const summary = {
@@ -494,40 +522,84 @@ async function finishStage(tenderId, stage) {
   return getStageState(tenderId);
 }
 
-async function resetStage(tenderId, stage) {
-  // Каскадно сбрасываем стадии ≥ N
-  await db.transaction(async (tx) => {
-    const issuesToDelete = await tx.queryAll(
-      'SELECT id FROM issues WHERE tender_id = ? AND analysis_stage >= ?',
-      tenderId,
-      stage,
-    );
-    const ids = issuesToDelete.map((r) => r.id);
-    if (ids.length) {
-      const placeholders = ids.map(() => '?').join(',');
-      await tx.queryRun(`DELETE FROM review_decisions WHERE issue_id IN (${placeholders})`, ...ids);
-      await tx.queryRun(`DELETE FROM tz_excluded_ranges WHERE source_issue_id IN (${placeholders})`, ...ids);
-      await tx.queryRun(`DELETE FROM issues WHERE id IN (${placeholders})`, ...ids);
+// СБРОС СТАДИИ — операция УКАЗАТЕЛЕЙ И РАБОЧЕГО СОСТОЯНИЯ, а не удаление истории.
+//
+// Раньше reset физически удалял analysis_runs, issues, решения инженера и связанные
+// исключения — история анализа исчезала безвозвратно, восстановить «что портал
+// показывал вчера» было нечем, а журнал аудита ссылался на несуществующие строки.
+// Теперь reset:
+//   • снимает указатели актуальных stage-прогонов для стадий ≥ N и АРХИВИРУЕТ эти
+//     прогоны (superseded_at) — строки, issues, signals и решения остаются в БД;
+//   • снимает указатель pipeline: производный снимок собран из отозванных входов,
+//     показывать его как актуальный итог нельзя (его слои тоже остаются в БД);
+//   • возвращает workflow-состояние стадий (open / locked, current_stage);
+//   • чистит ПРОЕКЦИИ, а не историю: tz_excluded_ranges (исключения из активного
+//     текста — иначе текст остался бы урезанным) и analysis_segments (кэш частей);
+//   • пишет событие в журнал аудита (что снято, что сохранено).
+// Физическое удаление истории — только отдельной admin-командой
+// (services/admin/purgeService.js).
+// actor (опц.) — субъект из токена для записи аудита.
+async function resetStage(tenderId, stage, { actor = null, requestId = null } = {}) {
+  const outcome = await db.transaction(async (tx) => {
+    // Что именно уводим из актуального состояния — фиксируем ДО изменений.
+    const stageRunIds = [];
+    for (let s = stage; s <= 5; s += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const id = await analysisRuns.getActiveStageRunId(tenderId, s, tx);
+      if (id) stageRunIds.push({ stage: s, run_id: id });
     }
-    await tx.queryRun('DELETE FROM analysis_runs WHERE tender_id = ? AND stage >= ?', tenderId, stage);
-    // Части ТЗ сброшенных стадий: нарезка и сохранённые результаты частей больше
-    // не действительны (после сброса текст/справочники сверяются заново).
-    await tx.queryRun(
-      'DELETE FROM analysis_segments WHERE tender_id = ? AND analysis_stage >= ?',
-      tenderId, stage,
+    const keptIssues = await tx.queryOne(
+      'SELECT COUNT(*) AS c FROM issues WHERE tender_id = ? AND analysis_stage >= ?', tenderId, stage,
     );
-    await tx.queryRun('DELETE FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage >= ?', tenderId, stage);
-    // Снимаем указатели актуальных stage-прогонов для сброшенных стадий (>= N),
-    // иначе указатель ссылался бы на удалённый прогон.
-    await analysisRuns.clearStagePointers(tenderId, stage, tx);
 
-    // Возвращаем статусы
+    // Проекции (не история): исключения из активного текста и кэш частей ТЗ.
+    await tx.queryRun('DELETE FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage >= ?', tenderId, stage);
+    await tx.queryRun(
+      'DELETE FROM analysis_segments WHERE tender_id = ? AND analysis_stage >= ?', tenderId, stage,
+    );
+
+    // Указатели: стадии ≥ N + производный pipeline-снимок. Прогоны архивируются,
+    // но НЕ удаляются.
+    await analysisRuns.clearStagePointers(tenderId, stage, tx);
+    const archived = await analysisRuns.archiveStageRunsFrom(tenderId, stage, tx);
+    const pipelineRunId = await analysisRuns.clearPipelinePointer(tenderId, tx);
+
+    // Workflow-состояние.
     for (let s = stage; s <= 5; s += 1) {
       const status = s === stage ? 'open' : 'locked';
+      // eslint-disable-next-line no-await-in-loop
       await tx.queryRun(`UPDATE tender_stage_state SET stage${s}_status = ? WHERE tender_id = ?`, status, tenderId);
     }
     await tx.queryRun('UPDATE tender_stage_state SET current_stage = ? WHERE tender_id = ?', stage, tenderId);
+
+    return {
+      from_stage: stage,
+      cleared_stage_pointers: stageRunIds,
+      archived_stage_runs: archived,
+      cleared_pipeline_pointer: pipelineRunId,
+      kept: { issues: Number((keptIssues && keptIssues.c) || 0), analysis_runs: true, signals: true, decisions: true },
+    };
   });
+
+  // Событие аудита: сброс — заметное действие над результатом анализа. Запись
+  // best-effort (журнал не должен ронять уже выполненную операцию).
+  await audit.record({
+    requestId,
+    tenantId: actor && actor.tenantId,
+    actorSub: actor && actor.subject,
+    actorEmail: actor && actor.email,
+    actorRoles: actor && actor.roles,
+    authMethod: actor && actor.authMethod,
+    action: 'stage.reset',
+    category: 'analysis',
+    outcome: 'allowed',
+    resourceType: 'stage',
+    resourceId: String(stage),
+    tenderId,
+    reason: `сброс стадий ≥ ${stage}: сняты указатели, история сохранена`,
+    meta: outcome,
+  });
+
   return getStageState(tenderId);
 }
 

@@ -24,6 +24,8 @@ npm run install:all   # установить зависимости root/server/
 npm run dev           # запустить server (:4000) и client (:5173) одновременно
 npm run worker        # ОТДЕЛЬНЫЙ процесс-воркер очереди (при WORKER_MODE=external)
 npm run seed          # пересеять Postgres-БД демо-данными (--force чтобы перезаписать)
+npm run purge -- --tender <id>              # ПЛАН удаления архивных снимков (dry-run)
+npm run purge -- --tender <id> --confirm <id>  # физически удалить архивные снимки анализа
 npm run build         # production-сборка клиента
 npm run test:unit     # серверные юнит-тесты (без БД, без сети, без LLM)
 npm run verify        # unit → integration (доступные) → сборка клиента
@@ -164,11 +166,65 @@ Excel-number → number; единицы «кв.м»/«м²»/«куб.м»/«п.
 
 **Стадия 5 — QC, не добытчик issues.** `runStage5SelfAnalysis` в движке возвращает `issues=[]` (после прогона `SELECT COUNT(*) FROM issues WHERE analysis_stage=5` = 0) и вместо этого пишет в `self_analysis_results` через `selfAnalysis/selfAnalysisService.js` (5-й слой конвейера, см. ниже). `stage5_llm.js` — QC-агент над кластерами; ТЗ подаётся ему ЧАСТЯМИ (кластеры повторяются в каждой части), упавшая часть не обнуляет остальные — QC отдаёт то, что посчиталось, и пишет `failed_parts`.
 
+**Исход self-analysis явный — ложного успеха на эвристиках нет.** `runSelfAnalysisLlm` НЕ бросает, а возвращает `{ status, findings, segmentation, reason }`; `selfAnalysisService.resolveSelfAnalysisOutcome` (чистая, fail-closed) сводит его в исход слоя: **N/N** частей → `completed`; **1..N-1/N** → `completed_with_warnings` + `failed_parts` (`partial:true`); **0/N** → `failed` и `buildSelfAnalysis` БРОСАЕТ (`code='SELF_ANALYSIS_FAILED'`) — прогон стадии становится failed, шаг конвейера — failed (страж в `runPipelineStep`: `summary.status==='failed'` роняет шаг). Два исхода «QC не запускался» — не сбой: `not_applicable` (кластеров нет, модель не зовём) и `skipped` (нет `OPENAI_API_KEY`; помечается warning, не зелёным). Клиент: `stageToast` в `client/src/utils/analysisResult.js` — success зелёный, warning ЖЁЛТЫЙ, сбой/обрыв красный (`_pollStage` в `useTenderStore`). Тесты — `server/test/unit/selfAnalysis.test.js` (0/N, 1/N, N/N, пустые кластеры, LLM не настроен), `clientAnalysisResult.test.js` (warning-toast), `pipeline.test.js`.
+
 После стадий 1–4 решения с действием `delete` / `remove_from_scope` исключают фрагменты из активного текста для следующих стадий.
 
 **Зоны ответственности и сборка итога.** Каждый агент 1–4 пишет ТОЛЬКО в свой домен `problem_type` — единый реестр `server/services/review/stageDomains.js` (Stage1 покрытие расчёта; Stage2 Q&A+характеристики; Stage3 условия; Stage4 риски); движок логирует находки вне домена (`off_domain` в summary). Слой сборки `server/services/review/consolidation.js` (`consolidate(tenderId)`) сводит находки разных стадий, указывающие на одно место ТЗ (абзац + перекрытие char-диапазонов; фолбэк — цитата), в группы: **primary** по критичности (тай-брейк — порядок стадий), прочие — `related`, конфликты помечаются (решает инженер). Один итог: `GET /api/tenders/:id/review/consolidated` → экран «Итог» (`client/src/pages/result/SummaryPage.jsx`). Экспорт берёт **одно** решение на место (primary; дубли попадают в отчёт экспорта как `skipped`) через `dedupeExportDecisions`. Тесты слоя — `server/test/consolidation.test.js`.
 
 **Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis).** Поверх стадий работает основной аналитический конвейер: стадии 1–4 добывают находки → движок пишет их сигналами (`signals/signalWriter.js`, авто, best-effort) → `unifiedAnalysis/unifiedIssueBuilder.js` (draft_issues) → `critic/criticService.js` (значимость) → `clustering/clusteringService.js` (кластеры) → `selfAnalysis/selfAnalysisService.js` (QC, Стадия 5). Каждый слой — таблица + сервис + контроллер + роут + debug-страница + офлайн-тест чистых функций. Оркестратор `pipeline/analysisPipeline.js` пересобирает слои 2–5 одним вызовом (`POST /api/tenders/:id/pipeline/run`, `{with_self_analysis:false}` — без LLM-шага; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}` — сбой ≠ HTTP-ошибка) и отдаёт свежесть слоёв `GET …/pipeline/status` (`stale` на слой + `needs_rebuild`); debug-страница `/tenders/:id/debug/pipeline`, тест `server/test/pipeline.test.js`.
+
+**Снимок НЕИЗМЕНЯЕМ: писать можно только в свой прогон-кандидат.**
+`analysisRuns.beginCandidateRun` — единственный законный адресат записи слоя (пустой
+прогон `status='running'`, указатель НЕ переведён); `assertRunWritable(tenderId, runId,
+{kind}, tx)` — страж уровня сервиса: `completed`/`superseded`/чужой тендер/без runId →
+409 `RUN_NOT_WRITABLE`. Вызывается ВНУТРИ транзакции каждого build (`SELECT … FOR UPDATE`
+по строке прогона), поэтому активация не может проскочить между проверкой и записью.
+`ensurePipelineRun` УДАЛЁН и возвращать его нельзя: он отдавал АКТИВНЫЙ прогон, и
+`buildDraftIssues/buildIssueReviews/buildClusters/buildSelfAnalysis` без runId делали
+DELETE+INSERT в уже выданном инженеру снимке. Теперь без runId каждый build пишет в НОВЫЙ
+кандидат и НЕ активирует его (в ответе `run_id` + `activated:false`); одиночные
+`POST …/unified|critic|clustering|self-analysis/build` — отладочные, production-снимок не
+меняют, а debug-страницы читают кандидата явным `?run_id=` (плашка `CandidateRunBanner`).
+Указатель переводит ТОЛЬКО оркестратор после полного успеха. **Стадия 5** не мутирует
+действующий pipeline: `runStage5SelfAnalysis` заказывает у оркестратора новый снимок
+(`runPipeline({withSelfAnalysis:true})`), решения прошлого снимка переносятся явно.
+`ensureReviewPipeline` тоже делегирует оркестратору (свой жизненный цикл не дублирует).
+
+**resetStage не удаляет историю.** Снимает указатели стадий ≥ N, архивирует их прогоны
+(`archiveStageRunsFrom`), снимает указатель pipeline (`clearPipelinePointer` — входы
+производного снимка отозваны), возвращает workflow-состояние и пишет событие
+`stage.reset` в `audit_log` (что снято / что сохранено). `analysis_runs`, `issues`,
+`analysis_signals` и `review_decisions` остаются в БД; чистятся только ПРОЕКЦИИ —
+`tz_excluded_ranges` (иначе активный текст остался бы урезанным) и `analysis_segments` (кэш
+частей). **Физическое удаление — только admin-purge:** `services/admin/purgeService.js`
+(чистое ядро `selectRunsToPurge`), CLI `npm run purge -- --tender <id> [--confirm <id>]
+[--keep-last N] [--older-than ISO]` и `GET|POST /api/admin/tenders/:id/analysis-history/purge`
+(право `admin.system`). Инварианты purge: актуальный (по указателю) и `running` прогон не
+удаляются никогда, по умолчанию dry-run, удаление требует `confirm === tenderId`,
+`keep_last` сохраняет последние архивы (основа переноса решений), событие идёт в аудит.
+Тесты — `server/test/integration/snapshotImmutability.integration.test.js`,
+`server/test/unit/adminPurge.test.js`.
+
+**Сборка атомарна и привязана к ТОЧНОМУ набору stage-прогонов.** На старте фиксируется
+**manifest входов** (`pipeline/pipelineManifest.js`, чистое ядро; хранится в
+`analysis_runs.inputs_manifest`, потому что сборка идёт задачами очереди и может менять процесс):
+на каждую обязательную стадию 1–4 — `stage` + `analysis_run_id` + `documents_revision_id` +
+`config_version` + `status`, плюс ревизия и версия конфигурации прогона. Проверок ДВЕ:
+до шагов (набор годен) и **перед активацией** (набор не изменился) — `verifyPipelineInputs`.
+Нарушения (`VIOLATION.*`): `stage_run_missing`, `stage_run_not_completed`,
+**`stage_pointer_stale`** (у стадии есть НОВЕЕ прогон, а актуальным остался прежний — старый
+успешный снимок НЕ подставляется вместо нового упавшего), `stage_revision_mismatch`,
+`stage_revision_unknown` (легаси-прогон без ревизии — стадию надо пересчитать),
+`stage_pointer_moved` / `stage_run_superseded` / `documents_revision_changed` (сдвиг во время
+сборки → **stale pipeline не активируется**, `report.stale_inputs`, указатель цел).
+Негодные входы = отчёт `{ok:false, blocked:'inputs', violations[]}`, прогон даже не начинается
+(не HTTP-ошибка). Режимы: **production** (дефолт, fail-closed — только точное `mode:'debug'`
+включает другой) требует полный валидный набор и переводит указатель; **debug** — явная
+ЧАСТИЧНАЯ сборка: слои считаются, но `completeRunWithoutActivation` закрывает прогон
+**без перевода указателя** (`report.activated:false`). Клиент: `checkProductionPipeline`
+(`utils/analysisResult.js`) — после `failed`/`cancelled`/`interrupted` стадии `runAnalysis`
+production-сборку **не запускает вовсе**; debug-сборка — кнопка на debug-странице конвейера.
 
 **Этапы 6–7 — рецензия и ВСЕ выгрузки работают от кластеров.** Source of truth: `signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export`. Финальный шаг «Рецензия» (`ReviewPage`), экран «Итог» (`SummaryPage`), экспорт `.docx`, HTML-preview (`reviewHtmlService.js`), review.md (`mdReview/renderer.js`) и CSV/JSON/summary.md (`exportService.js`) основным путём идут от `issue_clusters` через `server/services/review/clusterReviewService.js` (`loadClusterDecisions` — решённые, `loadClusterReviewRows` — все кластеры): одно решение на кластер пишется в `review_decisions.cluster_id`, выгрузки собираются из primary draft_issue кластера (место локализуется по тексту `source_fragment` — `reviewDocx` не переписывался). **Каждый анализ — неизменяемый снимок с `analysis_run_id`** (`analysisRuns/analysisRunsService.js`): id кластера **run-scoped** (`clusterRunId` от `tenderId + analysis_run_id + cluster_key`), поэтому кластеры разных прогонов НЕ сталкиваются по id и решения прошлого прогона НЕ приклеиваются автоматически к новому — повторный запуск не смешивает старые и новые результаты. Перенос решений между прогонами — только ЯВНЫЙ (`listCarryOverProposals` предлагает по `cluster_key`/месту/тексту, `confirmCarryOvers` подтверждает). Эндпоинты: `POST/GET /api/tenders/:id/review/clusters[...]`. **Backward-compat (fallback):** issue-level путь (`review_decisions.issue_id`, `consolidation.js` `/review/consolidated`, пер-стадийная рецензия внутри стадий 1–4) сохранён; каждая выгрузка авто-падает на него, когда кластеров/кластерных решений нет, и принудительно по `?source=issues` (фактический источник — заголовок `X-Export-Source`). Старые `issues`/`review_decisions(issue_id)` не удалялись. Полное описание сущностей, source-of-truth и end-to-end — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

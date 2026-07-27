@@ -17,9 +17,8 @@ const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { badRequest, notFound } = require('../../utils/errors');
 const clustering = require('../clustering/clusteringService');
-const critic = require('../critic/criticService');
-const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
+const { runPipeline } = require('../pipeline/analysisPipeline');
 const { humanizeNoteText } = require('./noteText');
 
 const ALLOWED_DECISIONS = ['accept', 'reject', 'edit', 'delete', 'remove_from_scope'];
@@ -77,8 +76,14 @@ function decisionKindFor(decision) {
 
 // --- DB-обвязка -------------------------------------------------------------
 
-// Достроить конвейер до кластеров. force=true — пересобрать целиком (подхватить новые
-// сигналы стадий). Решения по cluster_id переживают пересборку: id детерминирован.
+// Достроить конвейер до кластеров. force=true — пересобрать целиком (подхватить
+// новые сигналы стадий).
+//
+// Сборку ведёт ОРКЕСТРАТОР (pipeline/analysisPipeline): кандидат → слои → проверка
+// входов → активация. Свой жизненный цикл здесь больше не дублируется — иначе
+// пришлось бы дублировать и проверки набора stage-прогонов, и правило «активируем
+// только по полному успеху». Сбой сборки НЕ снимает прежний снимок: указатель
+// остаётся на нём, метод сообщает причину.
 async function ensureReviewPipeline(tenderId, { force = false } = {}) {
   const activeRunId = await analysisRuns.getActivePipelineRunId(tenderId);
   if (!force && activeRunId) {
@@ -88,15 +93,18 @@ async function ensureReviewPipeline(tenderId, { force = false } = {}) {
     );
     if (Number(row && row.c) > 0) return { built: false, clusters: Number(row.c) };
   }
-  // Новый неизменяемый снимок конвейера (self-analysis не входит — см. оркестратор).
-  const documentsRevisionId = await analysisRuns.currentDocumentsRevision(tenderId);
-  const configVersion = analysisRuns.currentConfigVersion();
-  const runId = await analysisRuns.beginRun(tenderId, analysisRuns.SCOPE_PIPELINE, { documentsRevisionId, configVersion });
-  await unified.buildDraftIssues(tenderId, runId);
-  await critic.buildIssueReviews(tenderId, runId);
-  const res = await clustering.buildClusters(tenderId, runId);
-  await analysisRuns.activateRun(tenderId, analysisRuns.SCOPE_PIPELINE, runId, { documentsRevisionId, configVersion });
-  return { built: true, clusters: res.summary.clusters, summary: res.summary };
+  const report = await runPipeline(tenderId, { withSelfAnalysis: false });
+  if (!report.ok) {
+    return {
+      built: false,
+      clusters: 0,
+      error: report.error || (report.failed_step ? `шаг «${report.failed_step}» не выполнен` : 'сборка не удалась'),
+      report,
+    };
+  }
+  const step = (report.steps || []).find((s) => s.step === 'clustering');
+  const summary = (step && step.summary) || {};
+  return { built: true, clusters: summary.clusters || 0, run_id: report.run_id, summary };
 }
 
 async function getCluster(tenderId, clusterId) {

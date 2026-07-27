@@ -43,10 +43,17 @@ exports.finish = async (req, res) => {
   res.json({ ok: true, state });
 };
 
+// Сброс стадии НЕ удаляет историю (прогоны, issues, сигналы, решения остаются):
+// снимаются указатели, архивируются прогоны, возвращается workflow-состояние,
+// пишется событие аудита. Физическое удаление — admin-purge.
 exports.reset = async (req, res) => {
   const stage = Number(req.params.n);
   if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
-  const state = await engine.resetStage(req.params.id, stage);
+  const state = await engine.resetStage(req.params.id, stage, {
+    actor: req.principal || null,
+    requestId: req.requestId || null,
+  });
+  req.auditMeta = { stage, history_preserved: true };
   res.json({ ok: true, state });
 };
 

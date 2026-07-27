@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
+import CandidateRunBanner from '../../components/debug/CandidateRunBanner';
 
 // Debug-вкладка единого анализатора ТЗ (draft_issues поверх signals).
 // Не входит в основной wizard-сайдбар — /tenders/:id/debug/draft-issues.
@@ -23,27 +24,32 @@ export default function DraftIssuesPage() {
   const [byCategory, setByCategory] = useState({});
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
+  // Прогон, который смотрим: null — действующий снимок, иначе кандидат от build.
+  const [runId, setRunId] = useState(null);
 
-  const load = async () => {
+  const load = async (rid = runId) => {
     if (!tenderId) return;
     setLoading(true);
     try {
-      const res = await api.listDraftIssues(tenderId);
+      const res = await api.listDraftIssues(tenderId, rid);
       setItems(res.items || []);
       setByCategory(res.by_category || {});
     } catch (err) { toastError(err.message); }
     setLoading(false);
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tenderId]);
+  useEffect(() => { setRunId(null); load(null); /* eslint-disable-next-line */ }, [tenderId]);
 
+  // Одиночный build — отладочный: пишет в НОВЫЙ кандидат, указатель не переводит.
   const build = async () => {
     if (!tenderId) return;
     setBuilding(true);
     try {
       const res = await api.buildDraftIssues(tenderId);
-      toastSuccess(`Собрано draft issues: ${res.summary?.draft_issues ?? 0} (из ${res.summary?.signals ?? 0} сигналов)`);
-      await load();
+      toastSuccess(`Собрано draft issues: ${res.summary?.draft_issues ?? 0} (из ${res.summary?.signals ?? 0} сигналов) `
+        + '— в прогоне-кандидате, действующий снимок не изменён');
+      setRunId(res.run_id || null);
+      await load(res.run_id || null);
     } catch (err) { toastError(err.message); }
     setBuilding(false);
   };
@@ -65,6 +71,8 @@ export default function DraftIssuesPage() {
           </button>
         </div>
       </div>
+
+      <CandidateRunBanner runId={runId} onClear={() => { setRunId(null); load(null); }} />
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
         Единый анализатор сводит совокупность signals (стадии 1–4) одного места ТЗ в один

@@ -144,9 +144,15 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 (она же `runStage5SelfAnalysis` в движке). `buildSelfAnalysis`:
 1. `ensureClusters(tenderId)` — если кластеров ещё нет, **сам достраивает конвейер** из сигналов:
    `buildDraftIssues` → `buildIssueReviews` → `buildClusters`.
-2. Прогоняет чистые эвристики (пропуски/слабые/противоречия/обогащение) + best-effort
-   LLM-обогащение (`stage5_llm.js`), пишет `self_analysis_results`.
+2. Прогоняет чистые эвристики (пропуски/слабые/противоречия/обогащение) + LLM-QC по
+   ЧАСТЯМ ТЗ (`stage5_llm.js`), пишет `self_analysis_results`.
 3. **Не пишет issues** (`runStage5SelfAnalysis` возвращает `issues=[]`).
+4. **Исход слоя явный** (`resolveSelfAnalysisOutcome`, чистая, fail-closed):
+   `completed` (все части) · `completed_with_warnings` + `failed_parts` (часть упала) ·
+   `failed` — 0 из N частей: `buildSelfAnalysis` БРОСАЕТ, эвристики успехом не выдаются.
+   «QC не запускался» — отдельные исходы, не сбой: `not_applicable` (кластеров нет) и
+   `skipped` (нет `OPENAI_API_KEY`) — оба видны в `summary.llm_status`, второй помечает
+   прогон warning. Исход шага/стадии — `summary.status` (контракт `analysis/resultStatus`).
 
 > Слои 2–4 можно собрать и явно/раньше: `POST …/unified/build` → `POST …/critic/build` →
 > `POST …/clustering/build`, либо все слои 2–5 одним вызовом через оркестратор
@@ -158,6 +164,49 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 > сводный `needs_rebuild`). Чтение каждого слоя — с фильтром важности
 > `?mode=important|working|full`. Debug-страницы (по прямому URL):
 > `/tenders/:id/debug/signals|draft-issues|issue-reviews|clusters|self-analysis|pipeline`.
+
+**C1. Неизменяемость снимков.** Писать слой можно ТОЛЬКО в свой прогон-кандидат:
+`analysisRuns.beginCandidateRun` (пустой прогон `running`, указатель не переведён) +
+`assertRunWritable` внутри транзакции build (`SELECT … FOR UPDATE` по строке прогона) →
+`completed`/`superseded`/чужой тендер/без runId дают 409 `RUN_NOT_WRITABLE`. Функция
+`ensurePipelineRun` удалена (она отдавала активный прогон, и build без runId перезаписывал
+действующий снимок). Одиночные `…/build` — отладочные: пишут в новый кандидат, возвращают
+`run_id` + `activated:false`, читаются через `?run_id=`; указатель переводит только
+оркестратор по полному успеху. Стадия 5 и `ensureReviewPipeline` заказывают снимок у
+оркестратора, а не правят действующий.
+
+**C1a. resetStage и admin-purge.** Сброс стадии — операция указателей и workflow-состояния:
+снимает указатели стадий ≥ N (+ архивирует их прогоны), снимает указатель pipeline,
+возвращает статусы стадий и пишет `stage.reset` в `audit_log`; `analysis_runs`, `issues`,
+`analysis_signals`, `review_decisions` НЕ удаляются (чистятся только проекции —
+`tz_excluded_ranges`, `analysis_segments`). Физическое удаление — единственная точка:
+`services/admin/purgeService.js` (CLI `npm run purge`, `GET|POST
+/api/admin/tenders/:id/analysis-history/purge`, право `admin.system`); dry-run по умолчанию,
+удаление по `confirm === tenderId`, актуальный и `running` прогон неудаляемы, `keep_last`
+сохраняет последние архивы, событие идёт в аудит.
+
+**C2. Атомарность сборки: manifest входов.** Конвейер собирается не «из того, что лежит в БД»,
+а из ТОЧНОГО набора stage-прогонов, зафиксированного на старте (`services/pipeline/pipelineManifest.js`,
+хранится в `analysis_runs.inputs_manifest` — сборка идёт задачами очереди и может менять процесс):
+на каждую стадию 1–4 `stage` + `analysis_run_id` + `documents_revision_id` + `config_version` +
+`status`. Набор проверяется дважды — ДО шагов и ПЕРЕД АКТИВАЦИЕЙ (`verifyPipelineInputs`):
+
+| нарушение | смысл |
+| --- | --- |
+| `stage_run_missing` | у обязательной стадии нет снимка (не гонялась / указатель снят `resetStage`) |
+| `stage_run_not_completed` | снимок стадии не `completed` (failed / cancelled / interrupted / running) |
+| `stage_pointer_stale` | у стадии есть БОЛЕЕ НОВЫЙ прогон, а актуальным остался прежний: старый успешный снимок не подставляется вместо нового неуспешного |
+| `stage_revision_mismatch` / `stage_revision_unknown` | стадия посчитана по другой (или неизвестной) ревизии документов |
+| `stage_pointer_moved` / `stage_run_superseded` / `documents_revision_changed` | входы изменились ВО ВРЕМЯ сборки → снимок stale |
+
+Негодные входы → прогон не начинается: `{ok:false, blocked:'inputs', violations[]}` (не HTTP-ошибка).
+Сдвиг во время сборки → `{ok:false, stale_inputs:true, activated:false}`, `failRun`, указатель цел.
+Режимы: **production** (дефолт; только точное `mode:'debug'` переключает — fail-closed) требует
+полный валидный набор и переводит указатель; **debug** — явная частичная сборка:
+`completeRunWithoutActivation` (прогон `completed` + сразу `superseded_at`) — слои доступны по
+своему `analysis_run_id`, но основной указатель НЕ двигается и чтения портала их не видят.
+Клиент после `failed`/`cancelled`/`interrupted` стадии production-сборку не запускает
+(`checkProductionPipeline` в `client/src/utils/analysisResult.js`).
 
 **D. Рецензия, итог и выгрузки (cluster-primary).**
 - `POST /api/tenders/:id/review/clusters/build` (+`?force=1`) → достроить конвейер до

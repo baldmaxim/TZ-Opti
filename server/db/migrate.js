@@ -138,6 +138,12 @@ async function runMigration() {
   await ensureColumn('analysis_runs', 'documents_revision_id', 'TEXT');
   await ensureColumn('analysis_runs', 'config_version', 'TEXT');
   await ensureColumn('analysis_runs', 'superseded_at', 'TEXT');
+  // Manifest входов прогона: для pipeline-прогона — ТОЧНЫЙ набор stage-прогонов
+  // (стадия + analysis_run_id + ревизия документов + версия конфигурации + статус),
+  // зафиксированный на старте. Финализатор сверяет его перед активацией, поэтому
+  // набор обязан переживать смену процесса (сборка идёт задачами очереди).
+  // См. services/pipeline/pipelineManifest.js.
+  await ensureColumn('analysis_runs', 'inputs_manifest', 'TEXT');
   await dropNotNull('analysis_runs', 'stage'); // pipeline-прогон: stage=NULL
   await ensureColumn('draft_issues', 'analysis_run_id', 'TEXT');
   await ensureColumn('issue_reviews', 'analysis_run_id', 'TEXT');

@@ -59,6 +59,7 @@ const pipelineRouter = require('./routes/pipeline');
 const jobsRouter = require('./routes/jobs');
 const authRouter = require('./routes/auth');
 const auditRouter = require('./routes/audit');
+const adminRouter = require('./routes/admin');
 
 // Собирает приложение со всеми публичными маршрутами.
 // opts.logger:   'dev' (по умолчанию) | false — отключает morgan в тестах.
@@ -103,6 +104,7 @@ function createApp({ logger = 'dev', security = {} } = {}) {
 
   app.use('/api', authRouter);
   app.use('/api', auditRouter);
+  app.use('/api', adminRouter);
   app.use('/api', tendersRouter);
   app.use('/api', documentsRouter);
   app.use('/api', checklistRouter);

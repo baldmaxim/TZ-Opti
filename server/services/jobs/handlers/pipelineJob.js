@@ -11,12 +11,20 @@ const db = require('../../../db/connection');
 const pipeline = require('../../pipeline/analysisPipeline');
 const analysisRuns = require('../../analysisRuns/analysisRunsService');
 
-// Шаг 0: начать снимок (прогон) и запомнить его в задании — следующие задачи
-// пишут в него же.
+// Шаг 0: зафиксировать manifest входов, начать снимок (прогон) и запомнить его в
+// задании — следующие задачи пишут в него же. Режим сборки берём из payload
+// задания (production по умолчанию): в production негодные входы роняют задание
+// сразу, не считая шаги.
 async function runBegin(ctx) {
-  const { runId, documentsRevisionId, configVersion } = await pipeline.beginPipelineRun(ctx.job.tender_id);
+  const mode = (safeParse(ctx.job.payload_json) || {}).mode || (ctx.payload && ctx.payload.mode) || null;
+  const { runId, documentsRevisionId, configVersion } = await pipeline.beginPipelineRun(
+    ctx.job.tender_id, undefined, { mode },
+  );
   await db.queryRun('UPDATE analysis_jobs SET analysis_run_id = ? WHERE id = ?', runId, ctx.job.id);
-  return { run_id: runId, documents_revision_id: documentsRevisionId, config_version: configVersion };
+  return {
+    run_id: runId, documents_revision_id: documentsRevisionId, config_version: configVersion,
+    mode: pipeline.resolveMode({ mode }),
+  };
 }
 
 async function runStep(ctx) {
@@ -39,9 +47,15 @@ async function runFinalize(ctx) {
     .sort((a, b) => a.seq - b.seq)
     .map((t) => stepReport(t));
 
+  // Manifest финализатор берёт из строки прогона (он мог быть зафиксирован в
+  // другом процессе), режим — из результата begin-задачи.
   const report = await pipeline.finalizePipelineRun(
     ctx.job.tender_id, runId, steps,
-    { documentsRevisionId: beginRes.documents_revision_id, configVersion: beginRes.config_version },
+    {
+      documentsRevisionId: beginRes.documents_revision_id,
+      configVersion: beginRes.config_version,
+      mode: beginRes.mode || null,
+    },
   );
   await db.queryRun('UPDATE analysis_jobs SET result_json = ? WHERE id = ?', JSON.stringify(report), ctx.job.id);
   return report;

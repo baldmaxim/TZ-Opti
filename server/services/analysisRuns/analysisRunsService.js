@@ -142,18 +142,150 @@ const exec = (tx) => tx || db;
 
 // Создать прогон (status='running'). НЕ трогает указатель/архивацию — активация
 // отдельным шагом (activateRun) после успеха. Возвращает runId.
+// opts.inputsManifest — зафиксированный набор входов (для pipeline-прогона: какие
+// именно stage-прогоны взяты, см. pipeline/pipelineManifest.js). Хранится в строке
+// прогона, потому что конвейер может собираться очередью в НЕСКОЛЬКО процессов:
+// финализатор обязан судить по тому же набору, что зафиксировал старт.
 async function beginRun(tenderId, scope, opts = {}, tx) {
   const e = exec(tx);
   const runId = newId();
   const kind = opts.kind || (scope === SCOPE_PIPELINE ? 'pipeline' : 'stage');
+  const manifest = opts.inputsManifest
+    ? (typeof opts.inputsManifest === 'string' ? opts.inputsManifest : JSON.stringify(opts.inputsManifest))
+    : null;
   await e.queryRun(
     `INSERT INTO analysis_runs
-       (id, tender_id, stage, kind, documents_revision_id, config_version, started_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'running')`,
+       (id, tender_id, stage, kind, documents_revision_id, config_version, started_at, status, inputs_manifest)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
     runId, tenderId, opts.stage ?? null, kind,
-    opts.documentsRevisionId ?? null, opts.configVersion ?? null, nowIso(),
+    opts.documentsRevisionId ?? null, opts.configVersion ?? null, nowIso(), manifest,
   );
   return runId;
+}
+
+// НЕИЗМЕНЯЕМОСТЬ СНИМКОВ — страж уровня сервиса.
+//
+// Писать можно ТОЛЬКО в свой незавершённый прогон-кандидат: status='running' и не
+// архивирован. Прогон, ставший completed (а тем более архивированный), — история:
+// на него уже смотрят экспорт, решения инженера и отчёты, поэтому DELETE+INSERT в
+// нём подменял бы уже выданный результат. Раньше эта дыра была открыта: build*
+// без runId получал АКТИВНЫЙ прогон через ensurePipelineRun и перезаписывал его.
+//
+// tx (обязателен для записи): проверка идёт SELECT … FOR UPDATE, поэтому
+// одновременная активация (activateRun меняет ту же строку) ждёт коммита
+// строителя — «проверил и пишу» атомарно, а не «проверил, потом кто-то активировал».
+function runNotWritable(runId, reason) {
+  const err = new Error(`Запись в снимок ${runId} запрещена: ${reason}`);
+  err.status = 409;
+  err.code = 'RUN_NOT_WRITABLE';
+  err.retryable = false;
+  return err;
+}
+
+async function assertRunWritable(tenderId, runId, { kind = null } = {}, tx) {
+  if (!runId) {
+    const err = new Error('Запись слоя без analysis_run_id запрещена: нужен прогон-кандидат');
+    err.status = 500;
+    err.code = 'RUN_ID_REQUIRED';
+    throw err;
+  }
+  const e = exec(tx);
+  const row = await e.queryOne(
+    `SELECT id, tender_id, kind, status, superseded_at FROM analysis_runs WHERE id = ?${tx ? ' FOR UPDATE' : ''}`,
+    runId,
+  );
+  if (!row) throw runNotWritable(runId, 'прогон не найден');
+  if (tenderId && row.tender_id !== tenderId) throw runNotWritable(runId, 'прогон принадлежит другому тендеру');
+  if (kind && row.kind !== kind) throw runNotWritable(runId, `ожидался прогон kind='${kind}', а не '${row.kind}'`);
+  if (row.superseded_at) throw runNotWritable(runId, 'снимок архивирован (superseded) — история неизменяема');
+  if (row.status !== 'running') {
+    throw runNotWritable(runId, `снимок уже завершён (status='${row.status}') — история неизменяема`);
+  }
+  return row;
+}
+
+// Новый ПРОГОН-КАНДИДАТ: пустой снимок со status='running', на который НЕ
+// переведён указатель. Единственный законный адресат записи слоёв. Активируется
+// только после полного успешного завершения сборки (activateRun) — до тех
+// пор ни одно чтение портала его не видит.
+// reason — кто и зачем начал (в summary прогона: видно происхождение снимка).
+async function beginCandidateRun(tenderId, opts = {}, tx) {
+  const scope = opts.scope || SCOPE_PIPELINE;
+  const documentsRevisionId = opts.documentsRevisionId !== undefined
+    ? opts.documentsRevisionId : await currentDocumentsRevision(tenderId, tx);
+  const configVersion = opts.configVersion !== undefined ? opts.configVersion : currentConfigVersion();
+  const runId = await beginRun(tenderId, scope, {
+    kind: opts.kind, stage: opts.stage,
+    documentsRevisionId, configVersion,
+    inputsManifest: opts.inputsManifest || null,
+  }, tx);
+  if (opts.reason) {
+    await exec(tx).queryRun(
+      'UPDATE analysis_runs SET summary = ? WHERE id = ?',
+      JSON.stringify({ candidate: true, reason: opts.reason }), runId,
+    );
+  }
+  return runId;
+}
+
+// Зафиксированный набор входов прогона (JSON → объект). null, если не писался.
+async function getRunInputsManifest(runId, tx) {
+  const row = await exec(tx).queryOne('SELECT inputs_manifest FROM analysis_runs WHERE id = ?', runId);
+  const raw = row && row.inputs_manifest;
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(raw); } catch (_e) { return null; }
+}
+
+// Входы конвейера: на каждую обязательную стадию — АКТУАЛЬНЫЙ снимок (указатель)
+// и id САМОГО СВЕЖЕГО прогона стадии. Второе критично: если после успешного
+// прогона стадию гоняли снова и она упала, указатель остался на старом снимке —
+// собирать итог из него нельзя (см. VIOLATION.STAGE_POINTER_STALE).
+async function collectStageInputs(tenderId, stages = [1, 2, 3, 4], tx) {
+  const e = exec(tx);
+  const pointers = await e.queryAll(
+    `SELECT scope, analysis_run_id FROM analysis_active_runs WHERE tender_id = ? AND scope LIKE 'stage:%'`,
+    tenderId,
+  );
+  const activeByStage = new Map();
+  for (const p of pointers) {
+    const n = Number(String(p.scope).split(':')[1]);
+    if (Number.isFinite(n) && p.analysis_run_id) activeByStage.set(n, p.analysis_run_id);
+  }
+  // Самый свежий прогон каждой стадии (в т.ч. failed/interrupted/running).
+  const latest = await e.queryAll(
+    `SELECT DISTINCT ON (stage) stage, id, status, started_at
+       FROM analysis_runs
+      WHERE tender_id = ? AND kind = 'stage' AND stage IS NOT NULL
+      ORDER BY stage, started_at DESC, id DESC`,
+    tenderId,
+  );
+  const latestByStage = new Map(latest.map((r) => [Number(r.stage), r]));
+
+  const activeIds = [...activeByStage.values()];
+  let runsById = new Map();
+  if (activeIds.length) {
+    const ph = activeIds.map(() => '?').join(', ');
+    const rows = await e.queryAll(
+      `SELECT id, stage, status, documents_revision_id, config_version, superseded_at, started_at
+         FROM analysis_runs WHERE id IN (${ph})`,
+      ...activeIds,
+    );
+    runsById = new Map(rows.map((r) => [r.id, r]));
+  }
+
+  return stages.map((stage) => {
+    const n = Number(stage);
+    const activeId = activeByStage.get(n) || null;
+    const latestRow = latestByStage.get(n) || null;
+    return {
+      stage: n,
+      active_run_id: activeId,
+      latest_run_id: latestRow ? latestRow.id : null,
+      latest_status: latestRow ? latestRow.status : null,
+      run: activeId ? (runsById.get(activeId) || null) : null,
+    };
+  });
 }
 
 // Активировать прогон по успеху: архивировать прежний актуальный прогон этого
@@ -190,6 +322,23 @@ async function activateRun(tenderId, scope, runId, opts = {}, tx) {
        analysis_run_id = EXCLUDED.analysis_run_id,
        updated_at = EXCLUDED.updated_at`,
     tenderId, scope, opts.documentsRevisionId ?? null, opts.configVersion ?? null, runId, now,
+  );
+}
+
+// Завершить прогон БЕЗ активации: строка помечается completed и СРАЗУ
+// архивируется (superseded_at), указатель НЕ двигается. Это режим debug-сборки:
+// слои посчитаны и доступны по своему analysis_run_id для отладки, но ни одно
+// чтение портала их не видит — актуальным остаётся прежний снимок.
+async function completeRunWithoutActivation(runId, opts = {}, tx) {
+  const e = exec(tx);
+  const now = nowIso();
+  await e.queryRun(
+    `UPDATE analysis_runs
+        SET status = 'completed', finished_at = ?,
+            summary = COALESCE(?, summary),
+            superseded_at = COALESCE(superseded_at, ?)
+      WHERE id = ?`,
+    now, opts.summary ?? null, now, runId,
   );
 }
 
@@ -256,17 +405,44 @@ async function currentDocumentsRevision(tenderId, tx) {
 }
 const currentConfigVersion = () => computeConfigVersion(process.env);
 
-// Гарантирует наличие АКТУАЛЬНОГО pipeline-прогона: вернёт id активного либо
-// создаст и активирует пустой (для одиночных build*/debug-путей, которым нужен
-// прогон-адресат). Оркестратор runPipeline вместо этого начинает НОВЫЙ прогон.
-async function ensurePipelineRun(tenderId) {
-  const active = await getActivePipelineRunId(tenderId);
-  if (active) return active;
-  const documentsRevisionId = await currentDocumentsRevision(tenderId);
-  const configVersion = currentConfigVersion();
-  const runId = await beginRun(tenderId, SCOPE_PIPELINE, { documentsRevisionId, configVersion });
-  await activateRun(tenderId, SCOPE_PIPELINE, runId, { documentsRevisionId, configVersion });
-  return runId;
+// ВНИМАНИЕ: функции ensurePipelineRun здесь БОЛЬШЕ НЕТ и возвращать её нельзя.
+// Она отдавала АКТИВНЫЙ pipeline-прогон (а если его не было — создавала и сразу
+// активировала пустой), и любой build* без runId писал DELETE+INSERT прямо в
+// действующий снимок. Вместо неё: beginCandidateRun (адресат записи) +
+// activateRun строго после полного успеха сборки.
+
+// Архивировать stage-прогоны сброшенных стадий (>= fromStage): строки остаются
+// (история не удаляется), но перестают быть «актуальными» — snapshot не выглядит
+// живым после снятия указателя. Возвращает id архивированных прогонов.
+async function archiveStageRunsFrom(tenderId, fromStage, tx) {
+  const e = exec(tx);
+  const rows = await e.queryAll(
+    `SELECT id FROM analysis_runs
+      WHERE tender_id = ? AND kind = 'stage' AND stage >= ? AND superseded_at IS NULL`,
+    tenderId, fromStage,
+  );
+  if (rows.length) {
+    const ph = rows.map(() => '?').join(', ');
+    await e.queryRun(
+      `UPDATE analysis_runs SET superseded_at = ? WHERE id IN (${ph})`,
+      nowIso(), ...rows.map((r) => r.id),
+    );
+  }
+  return rows.map((r) => r.id);
+}
+
+// Снять указатель pipeline (производный снимок): его входы отозваны, показывать
+// его как актуальный итог — врать. Строка прогона и его слои остаются в БД.
+async function clearPipelinePointer(tenderId, tx) {
+  const e = exec(tx);
+  const prev = await getActiveRunId(tenderId, SCOPE_PIPELINE, tx);
+  if (!prev) return null;
+  await e.queryRun('DELETE FROM analysis_active_runs WHERE tender_id = ? AND scope = ?', tenderId, SCOPE_PIPELINE);
+  await e.queryRun(
+    'UPDATE analysis_runs SET superseded_at = ? WHERE id = ? AND superseded_at IS NULL',
+    nowIso(), prev,
+  );
+  return prev;
 }
 
 // --- Перенос решений (явное сопоставление + подтверждение) -------------------
@@ -360,8 +536,15 @@ module.exports = {
   dedupeExportRows,
   // DB: жизненный цикл прогона
   beginRun,
+  beginCandidateRun,
+  assertRunWritable,
   activateRun,
+  completeRunWithoutActivation,
   failRun,
+  getRunInputsManifest,
+  collectStageInputs,
+  archiveStageRunsFrom,
+  clearPipelinePointer,
   getActivePipelineRunId,
   getActiveStageRunId,
   getActiveStageRunIds,
@@ -369,7 +552,6 @@ module.exports = {
   clearStagePointers,
   currentDocumentsRevision,
   currentConfigVersion,
-  ensurePipelineRun,
   // DB: перенос решений
   listCarryOverProposals,
   confirmCarryOvers,

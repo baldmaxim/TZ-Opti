@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import { api } from '../services/api';
 import { toastError, toastSuccess, toastWarning } from './useToastStore';
 import { analysisStartKey } from '../components/stages/AnalysisProgressRing';
-import { ANALYSIS_STATUS, severityOf, stageOutcome, aggregateRun } from '../utils/analysisResult';
+import {
+  ANALYSIS_STATUS, severityOf, stageOutcome, stageToast, aggregateRun, checkProductionPipeline,
+} from '../utils/analysisResult';
 
 // Финальный тост по единому контракту результата: success — только полный успех,
 // warning — частичный итог, error — сбой. Специфичные тосты (что именно упало)
@@ -106,17 +108,14 @@ export const useTenderStore = create((set, get) => ({
         if (st !== 'running') {
           const info = (data.stages || []).find((s) => s.stage === n);
           const sm = info && info.summary;
-          // Success только при завершённом прогоне (contract). Иначе — ошибка:
-          // не рапортуем «завершено» после сбоя/обрыва стадии.
-          if (severityOf(stageOutcome(sm)) === 'success') {
-            toastSuccess(`Стадия ${n}: анализ завершён`);
-          } else {
-            toastError(
-              `Стадия ${n}: анализ не удался — ${
-                (sm && sm.summary && sm.summary.error) || 'см. логи'
-              }. Повторите запуск.`,
-            );
-          }
+          // Три исхода, а не два (contract): success — только полный успех,
+          // WARNING (жёлтый) — частичный итог (QC Стадии 5 не досчитал часть ТЗ,
+          // LLM-QC пропущен), error — сбой/обрыв. Частичный итог больше не
+          // показывается красной ошибкой и никогда — зелёным успехом.
+          const { severity, message } = stageToast(n, sm);
+          if (severity === 'success') toastSuccess(message);
+          else if (severity === 'warning') toastWarning(message);
+          else toastError(message);
           return;
         }
       }
@@ -241,24 +240,36 @@ export const useTenderStore = create((set, get) => ({
         await get().refreshStages();
       }
 
-      // Сборка кластеров — из того, что успело добыться. Отчёт конвейера {ok}
-      // проверяем: {ok:false} = сборка не удалась (шаг конвейера упал).
-      set({ analysisStep: 'Сборка кластеров…' });
+      // Сборка кластеров — ТОЛЬКО когда добыты все стадии и ни одна не упала.
+      // Иначе production-сборку не запускаем вовсе: она взяла бы старый активный
+      // снимок неуспешной стадии и выдала бы его за свежий итог. Частичная
+      // сборка — отдельный явный debug-режим (указатель не двигает).
       let pipelineStatus = ANALYSIS_STATUS.FAILED;
-      try {
-        const report = await api.runPipeline(id, { withSelfAnalysis });
-        if (report && report.ok) {
-          // {ok:true} может нести warnings (частичный QC): не рапортуем полный
-          // успех, если сборка неполная — берём статус контракта из отчёта.
-          pipelineStatus = report.status === ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
-            ? ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
-            : ANALYSIS_STATUS.COMPLETED;
-        } else {
-          const step = report && report.failed_step ? `: шаг «${report.failed_step}»` : '';
-          toastError(`Сборка кластеров не удалась${step}.`);
+      const gate = checkProductionPipeline({ stageStatuses, aborted });
+      if (!gate.allowed) {
+        toastError(`Сборка итога не запущена: ${gate.reason}.`);
+      } else {
+        set({ analysisStep: 'Сборка кластеров…' });
+        try {
+          const report = await api.runPipeline(id, { withSelfAnalysis });
+          if (report && report.ok) {
+            // {ok:true} может нести warnings (частичный QC): не рапортуем полный
+            // успех, если сборка неполная — берём статус контракта из отчёта.
+            pipelineStatus = report.status === ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+              ? ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+              : ANALYSIS_STATUS.COMPLETED;
+          } else if (report && report.blocked === 'inputs') {
+            // Сервер отверг набор входов (manifest) — итог не собран и указатель цел.
+            toastError(`Сборка итога отклонена сервером: ${report.error || 'входы не годятся'}.`);
+          } else if (report && report.stale_inputs) {
+            toastError('Итог не активирован: во время сборки изменились входы (стадии/документы). Повторите анализ.');
+          } else {
+            const step = report && report.failed_step ? `: шаг «${report.failed_step}»` : '';
+            toastError(`Сборка кластеров не удалась${step}.`);
+          }
+        } catch (err) {
+          toastError(`Сборка кластеров не удалась — ${err.message}`);
         }
-      } catch (err) {
-        toastError(`Сборка кластеров не удалась — ${err.message}`);
       }
       await Promise.all([get().refreshStages(), get().refreshTender()]);
 

@@ -25,9 +25,10 @@ const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
 const { listSignals } = require('../signals/signalWriter');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { getActiveTzText } = require('../tzActiveTextService');
-const { runSelfAnalysisLlm, FINDING_TYPES } = require('../stageAnalysis/stage5_llm');
+const { runSelfAnalysisLlm, FINDING_TYPES, QC_STATUS } = require('../stageAnalysis/stage5_llm');
 const { makeStageSegmentStore } = require('../stageAnalysis/segments/segmentStore');
 const { FAMILY } = require('../analysis/actions');
+const { STATUS } = require('../analysis/resultStatus');
 
 const CRIT_RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0 };
 // Основание короче этого (без маркеров/пробелов) считаем слабым/общим.
@@ -248,6 +249,36 @@ function assembleFindings(heuristic, llm) {
   return out;
 }
 
+// --- Исход слоя self-analysis (чистая функция) --------------------------------
+
+// Сводит исход LLM-шага QC в исход СЛОЯ. Раньше здесь была дыра: LLM-шаг бросал
+// «не досчитана ни одна часть», вызывающий глотал исключение и отдавал успешный
+// результат на одних эвристиках — портал видел зелёный после полного отказа QC.
+// Теперь исход явный:
+//   0 из N частей   → failed (usable=false: слой не собран, вызывающий обязан упасть);
+//   1..N-1 из N     → completed_with_warnings (partial);
+//   N из N          → completed;
+//   кластеров нет   → completed + llm_status=not_applicable (проверять нечего, НЕ сбой);
+//   LLM не настроен → completed_with_warnings + llm_status=skipped (QC не выполнялся,
+//                     эвристики в силе, но зелёным это не считаем).
+function resolveSelfAnalysisOutcome(llm) {
+  const qc = llm && llm.status ? llm.status : QC_STATUS.FAILED;
+  const seg = (llm && llm.segmentation) || null;
+  const failedParts = (seg && seg.failed_parts) || null;
+  const reason = (llm && llm.reason) || null;
+  const base = { llm_status: qc, llm_reason: reason, failed_parts: failedParts };
+
+  if (qc === QC_STATUS.COMPLETED_WITH_WARNINGS || qc === QC_STATUS.SKIPPED) {
+    return { ...base, status: STATUS.COMPLETED_WITH_WARNINGS, partial: true, usable: true };
+  }
+  if (qc === QC_STATUS.COMPLETED || qc === QC_STATUS.NOT_APPLICABLE) {
+    return { ...base, status: STATUS.COMPLETED, partial: false, usable: true };
+  }
+  // failed и любой неизвестный исход — fail-closed: лучше признать отказ, чем
+  // случайно отрапортовать успех (тот самый ложный успех, который мы убираем).
+  return { ...base, llm_status: QC_STATUS.FAILED, status: STATUS.FAILED, partial: false, usable: false };
+}
+
 // --- DB-обвязка -------------------------------------------------------------
 
 // Если кластеров ещё нет — best-effort собрать конвейер из накопленных сигналов
@@ -273,8 +304,14 @@ async function ensureClusters(tenderId, runId) {
 
 // Главная функция: собрать self_analysis_results и сохранить (idempotent в
 // пределах прогона). Возвращает summary + items.
+//
+// runId — прогон-КАНДИДАТ (его даёт оркестратор конвейера). Без runId QC НЕ
+// трогает действующий снимок: создаётся новый кандидат, ensureClusters достраивает
+// в него свои слои, указатель остаётся на прежнем прогоне. Прежнее поведение
+// (ensurePipelineRun → DELETE+INSERT self_analysis_results в АКТИВНОМ снимке)
+// было мутацией уже выданного результата.
 async function buildSelfAnalysis(tenderId, runId) {
-  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  const rid = runId || await analysisRuns.beginCandidateRun(tenderId, { reason: 'self_analysis.build' });
   await ensureClusters(tenderId, rid);
 
   const clusters = await clustering.listClusters(tenderId, 'full', rid);
@@ -299,13 +336,13 @@ async function buildSelfAnalysis(tenderId, runId) {
 
   const heuristic = runHeuristics(clusters, signalStats);
 
-  let llm = [];
-  // Части ТЗ, которые LLM-QC не досчитал (часть упала, но не все). Это НЕ полный
-  // успех: итог собран частично — прогон стадии/шага обязан пометиться warning,
-  // иначе портал отрапортует зелёный «завершено» после сбоя части (см. п.4 аудита).
-  let failedParts = null;
+  // Исход LLM-шага QC — явный (см. resolveSelfAnalysisOutcome). runSelfAnalysisLlm
+  // не бросает: «не досчитана ни одна часть» приходит как status=failed. Неожидан-
+  // ное исключение (баг/инфраструктура) тоже трактуем как отказ слоя, а НЕ как
+  // «пропустим обогащение и отрапортуем успех на эвристиках».
+  let qc;
   try {
-    const raw = await runSelfAnalysisLlm({
+    qc = await runSelfAnalysisLlm({
       tzText,
       tzBlocks,
       clusters,
@@ -316,20 +353,22 @@ async function buildSelfAnalysis(tenderId, runId) {
         tenderId, stage: 5, revisionId: tzRevisionId, runId: rid, logTag: 'selfAnalysis',
       }),
     });
-    failedParts = (raw && raw.segmentation && raw.segmentation.failed_parts) || null;
-    const clusterIds = new Set(clusters.map((c) => c.id));
-    llm = raw.map((r) => normalizeLlmFinding(r, clusterIds));
   } catch (e) {
-    // LLM-обогащение best-effort: без бриджа/ключа (или когда НИ ОДНА часть не
-    // досчиталась — runSelfAnalysisLlm бросает) остаёмся на эвристиках. Это
-    // осознанный skip QC-обогащения, а не частичный результат — warning не ставим.
-    // eslint-disable-next-line no-console
-    console.warn(`[selfAnalysis] LLM-обогащение пропущено: ${e.message}`);
+    qc = { status: QC_STATUS.FAILED, findings: [], segmentation: null, reason: e.message };
   }
+  const outcome = resolveSelfAnalysisOutcome(qc);
+  if (outcome.llm_status !== QC_STATUS.COMPLETED) {
+    // eslint-disable-next-line no-console
+    console.warn(`[selfAnalysis] LLM-QC: ${outcome.llm_status} — ${outcome.llm_reason || 'без причины'}`);
+  }
+  const clusterIds = new Set(clusters.map((c) => c.id));
+  const llm = ((qc && qc.findings) || []).map((r) => normalizeLlmFinding(r, clusterIds));
 
   const findings = assembleFindings(heuristic, llm).map((f) => ({ id: newId(), tender_id: tenderId, ...f }));
 
   await db.transaction(async (tx) => {
+    // Страж неизменяемости снимка (см. analysisRuns.assertRunWritable).
+    await analysisRuns.assertRunWritable(tenderId, rid, { kind: 'pipeline' }, tx);
     await tx.queryRun('DELETE FROM self_analysis_results WHERE tender_id = ? AND analysis_run_id = ?', tenderId, rid);
     const createdAt = nowIso();
     for (const f of findings) {
@@ -349,28 +388,48 @@ async function buildSelfAnalysis(tenderId, runId) {
     return acc;
   }, {});
 
-  return {
-    summary: {
-      clusters: clusters.length,
-      signals: signalStats.signals_total,
-      findings: findings.length,
-      heuristic: heuristic.length,
-      llm: llm.length,
-      by_type: byType,
-      missed_categories: signalStats.missedCategories,
-      // Частичный QC: часть(и) ТЗ не досчитаны. Читатели (движок стадии,
-      // оркестратор конвейера) обязаны пометить исход warning, а не success.
-      failed_parts: failedParts,
-      partial: Boolean(failedParts && failedParts.length),
-    },
-    items: findings,
+  const summary = {
+    run_id: rid,
+    clusters: clusters.length,
+    signals: signalStats.signals_total,
+    findings: findings.length,
+    heuristic: heuristic.length,
+    llm: llm.length,
+    by_type: byType,
+    missed_categories: signalStats.missedCategories,
+    // Единый контракт результата слоя (resultStatus) + исход LLM-шага QC:
+    // completed | completed_with_warnings | failed | skipped | not_applicable.
+    status: outcome.status,
+    llm_status: outcome.llm_status,
+    llm_reason: outcome.llm_reason,
+    segmentation: (qc && qc.segmentation) || null,
+    // Частичный QC: часть(и) ТЗ не досчитаны либо QC не выполнялся. Читатели
+    // (движок стадии, оркестратор конвейера) обязаны пометить исход warning,
+    // а не success.
+    failed_parts: outcome.failed_parts,
+    partial: outcome.partial,
   };
+
+  // Слой не собран (QC был запрошен и не досчитал НИ ОДНУ часть) — это отказ.
+  // Бросаем ПОСЛЕ записи: эвристические находки прогона не теряются (прогон
+  // всё равно не будет активирован), но исход честный — вызывающий (движок
+  // стадии 5 / шаг конвейера / контроллер) не выдаст его за успех.
+  if (!outcome.usable) {
+    const err = new Error(`Самоанализ (QC) не выполнен: ${outcome.llm_reason || 'LLM-шаг не дал результата'}`);
+    err.status = 502;
+    err.code = 'SELF_ANALYSIS_FAILED';
+    err.selfAnalysis = summary;
+    throw err;
+  }
+
+  return { summary, items: findings };
 }
 
 // Читает находки + заголовок/критичность связанного кластера. Опциональный
 // фильтр по finding_type.
-async function listSelfAnalysis(tenderId, { findingType } = {}) {
-  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+// runId (опц.) — читать КОНКРЕТНЫЙ прогон (кандидата на debug-странице).
+async function listSelfAnalysis(tenderId, { findingType, runId } = {}) {
+  const rid = runId || await analysisRuns.getActivePipelineRunId(tenderId);
   if (!rid) return [];
   const params = [tenderId, rid];
   let where = 's.tender_id = ? AND s.analysis_run_id = ?';
@@ -400,6 +459,8 @@ module.exports = {
   runHeuristics,
   normalizeLlmFinding,
   assembleFindings,
+  resolveSelfAnalysisOutcome,
+  QC_STATUS,
   // DB
   ensureClusters,
   buildSelfAnalysis,

@@ -19,6 +19,15 @@ const { buildClusters } = require('../clustering/clusteringService');
 const { buildSelfAnalysis } = require('../selfAnalysis/selfAnalysisService');
 const { STATUS } = require('../analysis/resultStatus');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
+const {
+  REQUIRED_STAGES,
+  MODE,
+  resolveMode,
+  buildInputsManifest,
+  verifyInputsManifest,
+  describeViolations,
+  canActivate,
+} = require('./pipelineManifest');
 
 // Шаги прогона в порядке зависимости (каждый читает слой предыдущего).
 // optional: self-analysis — единственный шаг с LLM-вызовом, нужен не на каждой
@@ -103,14 +112,42 @@ const STEP_RUNNERS = {
 
 const stepMeta = (key) => PIPELINE_STEPS.find((s) => s.key === key) || { key, label: key };
 
-// Начало прогона: новый (пока не активированный) pipeline-прогон + контекст
-// снимка. Вынесено отдельным шагом, потому что конвейер собирается не только
-// синхронным вызовом, но и очередью (задание = задача на шаг, см. jobs/handlers).
-async function beginPipelineRun(tenderId, runs = analysisRuns) {
+// Ошибка «входы конвейера не годятся» — отдельный класс отказа: собирать нечего
+// и повтор сам по себе не поможет (нужно пересчитать стадию), поэтому
+// retryable=false для очереди.
+function inputsError(verification) {
+  const err = new Error(`Сборка конвейера невозможна: ${describeViolations(verification.violations)}`);
+  err.status = 409;
+  err.code = 'PIPELINE_INPUTS_INVALID';
+  err.retryable = false;
+  err.violations = verification.violations;
+  return err;
+}
+
+// Начало прогона: фиксируем MANIFEST входов (точный набор stage-прогонов) и
+// создаём новый (пока не активированный) pipeline-прогон. Вынесено отдельным
+// шагом, потому что конвейер собирается не только синхронным вызовом, но и
+// очередью (задание = задача на шаг, см. jobs/handlers) — manifest пишется в
+// строку прогона и потому доживает до финализатора в другом процессе.
+//
+// В production набор проверяется ДО шагов: не собираем итог из неполного или
+// разноревизионного набора (и из старого снимка стадии, чей новый прогон упал).
+// В debug-режиме нарушения допускаются — взамен finalize не двигает указатель.
+async function beginPipelineRun(tenderId, runs = analysisRuns, opts = {}) {
+  const mode = resolveMode(opts);
   const documentsRevisionId = await runs.currentDocumentsRevision(tenderId);
   const configVersion = runs.currentConfigVersion();
-  const runId = await runs.beginRun(tenderId, runs.SCOPE_PIPELINE, { documentsRevisionId, configVersion });
-  return { runId, documentsRevisionId, configVersion };
+  const stageInputs = await runs.collectStageInputs(tenderId, REQUIRED_STAGES);
+  const manifest = buildInputsManifest({
+    stageInputs, documentsRevisionId, configVersion, mode, capturedAt: new Date().toISOString(),
+  });
+  const verification = verifyInputsManifest(manifest, { phase: 'begin' });
+  if (mode === MODE.PRODUCTION && !verification.ok) throw inputsError(verification);
+
+  const runId = await runs.beginRun(tenderId, runs.SCOPE_PIPELINE, {
+    documentsRevisionId, configVersion, inputsManifest: manifest,
+  });
+  return { runId, documentsRevisionId, configVersion, mode, manifest, inputs: verification };
 }
 
 // Один шаг конвейера в уже начатый прогон. Бросает при сбое — решение
@@ -120,32 +157,88 @@ async function runPipelineStep(tenderId, runId, key, runners = STEP_RUNNERS) {
   const t0 = Date.now();
   const res = await runners[key](tenderId, runId);
   const summary = (res && res.summary) || null;
+  // Шаг мог вернуть результат, но контракт (resultStatus) в его summary говорит
+  // «не собран» — это сбой шага, даже если исключения не было. Страж против
+  // ложного успеха: раньше self-analysis отдавал summary после полного отказа QC.
+  if (summary && summary.status === STATUS.FAILED) {
+    const err = new Error(summary.llm_reason || `Шаг «${meta.label}» не собран (status=failed)`);
+    err.status = err.status || 502;
+    throw err;
+  }
   // Шаг может дать пригодный, но НЕПОЛНЫЙ результат (self-analysis: часть ТЗ не
-  // досчитана). Это не сбой шага (status='done'), но и не полный успех —
-  // помечаем warnings, чтобы свёртка прогона не показала зелёный (п.4 аудита).
+  // досчитана либо QC не выполнялся). Это не сбой шага (status='done'), но и не
+  // полный успех — помечаем warnings, чтобы свёртка прогона не показала зелёный
+  // (п.4 аудита).
   const partial = Boolean(summary && summary.partial);
   const step = { step: key, label: meta.label, status: 'done', ms: Date.now() - t0, summary };
   if (partial) {
     step.warnings = true;
     const fp = summary.failed_parts;
-    step.warnings_reason = Array.isArray(fp) && fp.length
-      ? `не досчитано частей ТЗ: ${fp.length}`
-      : 'частичный результат';
+    if (Array.isArray(fp) && fp.length) step.warnings_reason = `не досчитано частей ТЗ: ${fp.length}`;
+    else step.warnings_reason = summary.llm_reason || 'частичный результат';
   }
   return step;
 }
 
-// Финал прогона: по успеху всех шагов — активация снимка (указатель переводится,
-// прежний архивируется), иначе прогон помечается failed, указатель не двигается.
+// Повторная проверка входов ПЕРЕД АКТИВАЦИЕЙ. Manifest берём из строки прогона
+// (а не из памяти вызывающего): сборка могла идти задачами в другом процессе.
+// Сверяем с ТЕКУЩИМ состоянием — сдвинулся указатель стадии или перезалили
+// документы, значит собранный снимок stale и активировать его нельзя.
+async function verifyPipelineInputs(tenderId, runId, runs = analysisRuns, manifestHint = null) {
+  const manifest = manifestHint || await runs.getRunInputsManifest(runId);
+  const stageInputs = await runs.collectStageInputs(
+    tenderId,
+    (manifest && manifest.required_stages && manifest.required_stages.length)
+      ? manifest.required_stages : REQUIRED_STAGES,
+  );
+  const documentsRevisionId = await runs.currentDocumentsRevision(tenderId);
+  return verifyInputsManifest(manifest, { stageInputs, documentsRevisionId, phase: 'activate' });
+}
+
+// Финал прогона. Активация — только когда И шаги прошли, И входы всё те же, И
+// режим production. Иначе:
+//   • debug-режим  → прогон завершается БЕЗ активации (указатель не двигается);
+//   • stale-входы  → прогон failed (stale pipeline не активируется);
+//   • сбой шага    → прогон failed.
+// Указатель в этих случаях остаётся на прежнем снимке.
 async function finalizePipelineRun(tenderId, runId, steps, ctx = {}, runs = analysisRuns) {
-  const report = { ...summarizeRun(steps), steps, run_id: runId };
-  if (report.ok) {
+  const inputs = await verifyPipelineInputs(tenderId, runId, runs, ctx.manifest || null);
+  const mode = resolveMode({ mode: ctx.mode || inputs.mode });
+  const report = {
+    ...summarizeRun(steps), steps, run_id: runId, mode,
+    inputs: { ok: inputs.ok, violations: inputs.violations.length ? inputs.violations : null },
+    activated: false,
+  };
+
+  if (report.ok && mode === MODE.DEBUG) {
+    // Явная частичная сборка: слои посчитаны и доступны по своему run_id, но
+    // основной указатель НЕ трогается — портал продолжает читать прежний снимок.
+    await runs.completeRunWithoutActivation(runId, {
+      summary: JSON.stringify({ mode, debug: true, steps_done: report.steps_done, inputs: report.inputs }),
+    });
+    return report;
+  }
+  if (report.ok && canActivate(inputs)) {
     await runs.activateRun(tenderId, runs.SCOPE_PIPELINE, runId, {
       documentsRevisionId: ctx.documentsRevisionId, configVersion: ctx.configVersion,
     });
-  } else {
-    await runs.failRun(runId, JSON.stringify({ failed_step: report.failed_step }));
+    report.activated = true;
+    return report;
   }
+
+  // Шаги прошли, но входы устарели — это НЕ успех прогона: снимок собран из
+  // набора, которого больше нет. Сообщаем причину явно.
+  if (report.ok) {
+    report.ok = false;
+    report.status = STATUS.FAILED;
+    report.stale_inputs = true;
+    report.error = `Снимок не активирован: ${describeViolations(inputs.violations)}`;
+  }
+  await runs.failRun(runId, JSON.stringify({
+    failed_step: report.failed_step,
+    stale_inputs: report.stale_inputs || null,
+    inputs: report.inputs,
+  }));
   return report;
 }
 
@@ -158,8 +251,34 @@ async function runPipeline(tenderId, opts = {}, runners = STEP_RUNNERS, runs = a
   const keys = planSteps(opts);
   const steps = [];
   let failed = false;
+  const mode = resolveMode(opts);
 
-  const { runId, documentsRevisionId, configVersion } = await beginPipelineRun(tenderId, runs);
+  let begun;
+  try {
+    begun = await beginPipelineRun(tenderId, runs, { mode });
+  } catch (e) {
+    // Входы не годятся — прогон даже не начинаем (снимка нет, указатель цел).
+    // Как и сбой шага, это отчёт, а не HTTP-ошибка.
+    if (e.code !== 'PIPELINE_INPUTS_INVALID') throw e;
+    return {
+      ok: false,
+      status: STATUS.FAILED,
+      mode,
+      steps_done: 0,
+      steps_total: keys.length,
+      failed_step: null,
+      warnings: null,
+      blocked: 'inputs',
+      activated: false,
+      run_id: null,
+      error: e.message,
+      inputs: { ok: false, violations: e.violations || null },
+      steps: keys.map((key) => ({
+        step: key, label: stepMeta(key).label, status: 'skipped', reason: 'входы конвейера не годятся',
+      })),
+    };
+  }
+  const { runId, documentsRevisionId, configVersion, manifest } = begun;
 
   for (const key of keys) {
     const meta = stepMeta(key);
@@ -177,7 +296,9 @@ async function runPipeline(tenderId, opts = {}, runners = STEP_RUNNERS, runs = a
     }
   }
 
-  return finalizePipelineRun(tenderId, runId, steps, { documentsRevisionId, configVersion }, runs);
+  return finalizePipelineRun(
+    tenderId, runId, steps, { documentsRevisionId, configVersion, mode, manifest }, runs,
+  );
 }
 
 // Статус свежести слоёв конвейера: счётчик + время последней сборки на слой,
@@ -224,8 +345,13 @@ module.exports = {
   summarizeRun,
   computeLayerStatus,
   STEP_RUNNERS,
+  // контракт входов (реэкспорт — один источник для контроллеров/очереди)
+  MODE,
+  REQUIRED_STAGES,
+  resolveMode,
   // DB
   beginPipelineRun,
+  verifyPipelineInputs,
   runPipelineStep,
   finalizePipelineRun,
   runPipeline,

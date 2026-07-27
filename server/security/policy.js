@@ -44,6 +44,10 @@ const RULES = [
   // --- служебное ---------------------------------------------------------
   r('GET', '/jobs/queue/stats', 'admin.system', 'queue.stats', ADMIN, 'system', 'queue'),
   r('GET', '/audit', 'audit.read', 'audit.list', ADMIN, 'principal', 'audit'),
+  // Физическое удаление истории анализа — только admin.system (см.
+  // services/admin/purgeService.js). GET — план (dry-run), POST — удаление.
+  r('GET', '/admin/tenders/:tenderId/analysis-history/purge', 'admin.system', 'admin.purge.plan', ADMIN, 'tender', 'analysis_run'),
+  r('POST', '/admin/tenders/:tenderId/analysis-history/purge', 'admin.system', 'admin.purge.runs', ADMIN, 'tender', 'analysis_run'),
   r('GET', '/auth/me', 'tender.read', 'auth.me', READ, 'principal', 'principal'),
 
   // --- тендеры -----------------------------------------------------------

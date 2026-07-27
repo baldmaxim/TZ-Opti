@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import { toastError, toastSuccess } from '../../store/useToastStore';
+import { toastError, toastSuccess, toastWarning } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import SelfAnalysisFindings, { SELF_ANALYSIS_TYPE_LABEL as TYPE_LABEL } from '../../components/selfAnalysis/SelfAnalysisFindings';
+import CandidateRunBanner from '../../components/debug/CandidateRunBanner';
 
 // Debug-вкладка слоя self-analysis — НОВАЯ роль Стадии 5: quality-control над
 // итогом разбора (кластеры + исходный ТЗ), а не второй поток issues.
@@ -25,11 +26,14 @@ export default function SelfAnalysisPage() {
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
 
-  const load = async (ft = findingType) => {
+  // Прогон, который смотрим: null — действующий снимок, иначе кандидат от build.
+  const [runId, setRunId] = useState(null);
+
+  const load = async (ft = findingType, rid = runId) => {
     if (!tenderId) return;
     setLoading(true);
     try {
-      const res = await api.listSelfAnalysis(tenderId, ft);
+      const res = await api.listSelfAnalysis(tenderId, ft, rid);
       setItems(res.items || []);
       setByType(res.by_type || {});
     } catch (err) { toastError(err.message); }
@@ -44,11 +48,14 @@ export default function SelfAnalysisPage() {
     try {
       const res = await api.buildSelfAnalysis(tenderId);
       const s = res.summary || {};
-      toastSuccess(
-        `Self-analysis: ${s.findings ?? 0} замечаний по ${s.clusters ?? 0} кластерам ` +
-        `(эвристик ${s.heuristic ?? 0}, LLM ${s.llm ?? 0})`,
-      );
-      await load();
+      const head = `Self-analysis: ${s.findings ?? 0} замечаний по ${s.clusters ?? 0} кластерам `
+        + `(эвристик ${s.heuristic ?? 0}, LLM ${s.llm ?? 0}) — в прогоне-кандидате`;
+      // Частичный QC (часть ТЗ не досчитана / LLM-QC пропущен) — жёлтым, не
+      // зелёным. Полный отказ QC приходит ошибкой (см. catch).
+      if (s.partial) toastWarning(`${head}. Частично: ${s.llm_reason || s.llm_status || 'неполный QC'}.`);
+      else toastSuccess(head);
+      setRunId(res.run_id || null);
+      await load(findingType, res.run_id || null);
     } catch (err) { toastError(err.message); }
     setBuilding(false);
   };
@@ -75,9 +82,14 @@ export default function SelfAnalysisPage() {
         Новая роль Стадии 5: не второй поток issues, а quality-control над итогом. Проверяет уже
         собранные кластеры + исходный ТЗ и отвечает на 4 вопроса: что могли пропустить, где кластеры
         слабые, где противоречие между кластерами, где усилить basis/review_comment/suggested_redaction.
-        Эвристики работают без LLM; LLM-обогащение — best-effort поверх них. Параллельный слой: в issues
-        ничего не пишется.
+        Эвристики работают без LLM; LLM-QC идёт частями ТЗ поверх них. Исход честный: все части
+        посчитаны — успех, часть упала или QC пропущен — жёлтое предупреждение, ни одна часть не
+        посчитана — ошибка (эвристики за успех не выдаются). Параллельный слой: в issues ничего не пишется.
+        Кнопка ниже — ОТЛАДОЧНАЯ: QC собирается в прогон-кандидат и действующий снимок не меняет
+        (рабочий путь — Стадия 5 / пересборка конвейера: там снимок активируется целиком).
       </p>
+
+      <CandidateRunBanner runId={runId} onClear={() => { setRunId(null); load(findingType, null); }} />
 
       {/* Фильтры по типу */}
       <div className="flex gap-2 flex-wrap">

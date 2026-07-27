@@ -201,8 +201,10 @@ function flattenSignal(row) {
 
 // Главная функция: оценить все draft_issues тендера и записать issue_reviews
 // (идемпотентно — перезапись прежнего набора для этого тендера).
+// runId — прогон-КАНДИДАТ. Без него слой собирается в НОВЫЙ кандидат (указатель не
+// двигается): одиночный build не имеет права переписать действующий снимок.
 async function buildIssueReviews(tenderId, runId) {
-  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  const rid = runId || await analysisRuns.beginCandidateRun(tenderId, { reason: 'critic.build' });
   // draft_issues СНИМКА (этого прогона), не все по тендеру.
   const drafts = await db.queryAll(
     `SELECT * FROM draft_issues WHERE tender_id = ? AND analysis_run_id = ?
@@ -222,6 +224,8 @@ async function buildIssueReviews(tenderId, runId) {
   const scored = reviewDrafts(drafts, signalsById);
 
   await db.transaction(async (tx) => {
+    // Страж неизменяемости снимка (см. analysisRuns.assertRunWritable).
+    await analysisRuns.assertRunWritable(tenderId, rid, { kind: 'pipeline' }, tx);
     await tx.queryRun(`DELETE FROM issue_reviews WHERE tender_id = ? AND analysis_run_id = ?`, tenderId, rid);
     const createdAt = nowIso();
     for (const { draft, review } of scored) {
@@ -248,6 +252,7 @@ async function buildIssueReviews(tenderId, runId) {
 
   return {
     summary: {
+      run_id: rid,
       draft_issues: drafts.length,
       reviewed: scored.length,
       shown: scored.length - hidden,
@@ -267,9 +272,11 @@ const MODE_WHERE = {
   full: ``,
 };
 
-async function listIssueReviews(tenderId, mode = 'working') {
+// runId (опц.) — читать КОНКРЕТНЫЙ прогон (свежесобранного кандидата на
+// debug-странице). По умолчанию — актуальный снимок.
+async function listIssueReviews(tenderId, mode = 'working', { runId = null } = {}) {
   const where = MODE_WHERE[mode] != null ? MODE_WHERE[mode] : MODE_WHERE.working;
-  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+  const rid = runId || await analysisRuns.getActivePipelineRunId(tenderId);
   if (!rid) return [];
   const rows = await db.queryAll(
     `SELECT r.*, d.tz_clause, d.source_fragment, d.problem_type, d.category,

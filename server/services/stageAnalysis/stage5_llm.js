@@ -12,13 +12,28 @@
 // Промт (роль QC + 4 вопроса + режимы) — в stage5Prompts.js.
 
 const crypto = require('crypto');
-const { chatJson, getModel } = require('./llm/openaiClient');
+const { chatJson, getModel, isConfigured } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage5Prompts');
 const { segmentDocument, renderSegmentText, charsToTokens } = require('./shared/segmentation');
+const { STATUS } = require('../analysis/resultStatus');
 
 const hashOf = (s) => crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 16);
 
 const FINDING_TYPES = ['missed_coverage', 'weak_cluster', 'cluster_contradiction', 'needs_enrichment'];
+
+// Исход LLM-шага QC. Три первых — общий контракт результата (resultStatus):
+// completed (все части ТЗ посчитаны) · completed_with_warnings (часть упала) ·
+// failed (не посчитана НИ ОДНА часть, хотя QC был запрошен). Плюс два исхода
+// «QC не запускался» — их НЕЛЬЗЯ путать со сбоем:
+//   not_applicable — кластеров нет, проверять нечего;
+//   skipped        — LLM не настроен (нет ключа), обогащение не выполнялось.
+const QC_STATUS = Object.freeze({
+  COMPLETED: STATUS.COMPLETED,
+  COMPLETED_WITH_WARNINGS: STATUS.COMPLETED_WITH_WARNINGS,
+  FAILED: STATUS.FAILED,
+  NOT_APPLICABLE: 'not_applicable',
+  SKIPPED: 'skipped',
+});
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -142,14 +157,34 @@ function dedupeQcFindings(findings) {
   return out;
 }
 
-// Прогон QC по частям ТЗ. Возвращает СЫРОЙ массив находок (нормализацию/привязку
-// к cluster_id и запись делает selfAnalysisService). Best-effort: при пустом
-// списке кластеров проверять нечего — не зовём модель.
+// Пустой (ничего не считали) исход QC — общая форма ответа.
+function qcOutcome(status, { findings = [], segmentation = null, reason = null } = {}) {
+  return { status, findings, segmentation, reason };
+}
+
+// Прогон QC по частям ТЗ. Возвращает ИСХОД `{ status, findings, segmentation,
+// reason }` (нормализацию/привязку к cluster_id и запись делает
+// selfAnalysisService). Функция НЕ бросает: исход «не посчиталось» — это
+// status=failed, а не исключение, чтобы вызывающий не мог принять его за
+// «LLM недоступен → идём на эвристиках» (ложный успех).
 // segmentStore (опц.) — то же хранилище статуса/результата частей, что у стадий
 // 1–4: часть, посчитанная раньше, не переспрашивается, а упавшую можно
 // перезапустить точечно.
-async function runSelfAnalysisLlm({ tzText, tzBlocks, clusters, signalStats, segmentStore = null, budgetTokens }) {
-  if (!Array.isArray(clusters) || !clusters.length) return [];
+async function runSelfAnalysisLlm({
+  tzText, tzBlocks, clusters, signalStats, segmentStore = null, budgetTokens, llmConfigured,
+}) {
+  // Кластеров нет — QC-проверять нечего. Это НЕ сбой: слой явно неприменим.
+  if (!Array.isArray(clusters) || !clusters.length) {
+    return qcOutcome(QC_STATUS.NOT_APPLICABLE, { reason: 'кластеров нет — QC-проверять нечего' });
+  }
+  // LLM не настроен — QC не запрашивался в принципе (обогащения не будет).
+  // Явный skipped, а не «упало»: эвристики выше остаются в силе.
+  const configured = llmConfigured != null ? Boolean(llmConfigured) : isConfigured();
+  if (!configured) {
+    return qcOutcome(QC_STATUS.SKIPPED, {
+      reason: 'LLM не настроен (OPENAI_API_KEY) — QC-обогащение не выполнялось',
+    });
+  }
   const variant = resolveVariant();
   const system = buildSystemPrompt(variant);
   const segments = segmentsForQc({ tzBlocks, tzText, budgetTokens: budgetTokens || SEGMENT_TOKENS });
@@ -188,7 +223,8 @@ async function runSelfAnalysisLlm({ tzText, tzBlocks, clusters, signalStats, seg
   // QC — слой качества поверх готового итога, поэтому упавшая часть НЕ обнуляет
   // остальные: собираем всё, что посчиталось, и сообщаем о провалившихся частях
   // (их статус лежит в analysis_segments — часть можно пересчитать точечно).
-  // Если не досчиталась НИ ОДНА часть — это уже отказ, бросаем.
+  // Если не досчиталась НИ ОДНА часть — исход failed (см. ниже), пригодного
+  // результата QC нет.
   const all = [];
   const failed = [];
   for (const p of prepared) {
@@ -221,24 +257,36 @@ async function runSelfAnalysisLlm({ tzText, tzBlocks, clusters, signalStats, seg
       console.warn(`[stage5_self_analysis] часть ${p.idx + 1}/${total} не досчитана: ${e.message}`);
     }
   }
-  if (failed.length === total) {
-    const err = new Error(`Самоанализ: не досчитана ни одна часть ТЗ (${failed[0].error})`);
-    err.status = 502;
-    throw err;
-  }
-
   const out = dedupeQcFindings(all);
-  out.segmentation = {
+  const segmentation = {
     segments: total,
+    completed_parts: total - failed.length,
     failed_parts: failed.length ? failed : null,
     findings_raw: all.length,
     findings: out.length,
   };
-  return out;
+
+  // 0 из N — QC был запрошен и не дал ничего: сбой слоя, не «пропуск обогащения».
+  if (failed.length === total) {
+    return qcOutcome(QC_STATUS.FAILED, {
+      segmentation,
+      reason: `не досчитана ни одна часть ТЗ (${total}) — ${failed[0].error}`,
+    });
+  }
+  // 1..N-1 из N — частичный результат: пригоден, но не полон.
+  if (failed.length) {
+    return qcOutcome(QC_STATUS.COMPLETED_WITH_WARNINGS, {
+      findings: out,
+      segmentation,
+      reason: `не досчитано частей ТЗ: ${failed.length} из ${total}`,
+    });
+  }
+  return qcOutcome(QC_STATUS.COMPLETED, { findings: out, segmentation });
 }
 
 module.exports = {
   FINDING_TYPES,
+  QC_STATUS,
   RESPONSE_SCHEMA,
   SEGMENT_TOKENS,
   digestCluster,

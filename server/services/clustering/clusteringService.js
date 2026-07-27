@@ -248,12 +248,16 @@ async function loadPairs(tenderId, runId) {
 
 // Главная функция: собрать кластеры тендера и сохранить (idempotent — перезапись
 // прежнего набора). Возвращает summary.
+// runId — прогон-КАНДИДАТ. Без него кластеры собираются в НОВЫЙ кандидат
+// (указатель не двигается): одиночный build не переписывает действующий снимок.
 async function buildClusters(tenderId, runId) {
-  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  const rid = runId || await analysisRuns.beginCandidateRun(tenderId, { reason: 'clustering.build' });
   const pairs = await loadPairs(tenderId, rid);
   const clusters = clusterPairs(pairs, tenderId);
 
   await db.transaction(async (tx) => {
+    // Страж неизменяемости снимка (см. analysisRuns.assertRunWritable).
+    await analysisRuns.assertRunWritable(tenderId, rid, { kind: 'pipeline' }, tx);
     await tx.queryRun(`DELETE FROM issue_clusters WHERE tender_id = ? AND analysis_run_id = ?`, tenderId, rid);
     const createdAt = nowIso();
     for (const c of clusters) {
@@ -287,6 +291,7 @@ async function buildClusters(tenderId, runId) {
 
   return {
     summary: {
+      run_id: rid,
       draft_issues: pairs.length,
       clusters: clusters.length,
       multi_item: clusters.filter((c) => c.item_count > 1).length,

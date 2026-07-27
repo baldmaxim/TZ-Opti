@@ -241,8 +241,12 @@ async function ensureSignals(tenderId) {
 
 // Главная функция: собрать draft_issues по тендеру и сохранить (idempotent —
 // перезапись прежнего набора для этого тендера).
+// runId — прогон-КАНДИДАТ, в который пишем. Без него слой собирается в НОВЫЙ
+// кандидат (и указатель НЕ переводится): одиночный build — отладочный путь, он не
+// имеет права переписать действующий снимок. Возвращаемый summary.run_id говорит,
+// куда именно легли строки (для чтения этого кандидата).
 async function buildDraftIssues(tenderId, runId) {
-  const rid = runId || await analysisRuns.ensurePipelineRun(tenderId);
+  const rid = runId || await analysisRuns.beginCandidateRun(tenderId, { reason: 'unified.build' });
   await ensureSignals(tenderId);
   const stageRunIds = await analysisRuns.getActiveStageRunIds(tenderId);
   const flat = await loadSignals(tenderId, stageRunIds);
@@ -260,6 +264,10 @@ async function buildDraftIssues(tenderId, runId) {
   const drafts = assembleDrafts(flat, tenderId, tzBlockText);
 
   await db.transaction(async (tx) => {
+    // Страж неизменяемости: писать можно только в СВОЙ незавершённый кандидат.
+    // Проверка под FOR UPDATE в этой же транзакции — активация снимка не может
+    // проскочить между проверкой и записью.
+    await analysisRuns.assertRunWritable(tenderId, rid, { kind: 'pipeline' }, tx);
     // Идемпотентность в пределах ПРОГОНА: чистим draft_issues только этого rid
     // (не трогаем прошлые снимки — архивация).
     await tx.queryRun(`DELETE FROM draft_issues WHERE tender_id = ? AND analysis_run_id = ?`, tenderId, rid);
@@ -280,6 +288,7 @@ async function buildDraftIssues(tenderId, runId) {
 
   return {
     summary: {
+      run_id: rid,
       signals: flat.length,
       draft_issues: drafts.length,
       by_category: drafts.reduce((acc, d) => {
@@ -292,8 +301,10 @@ async function buildDraftIssues(tenderId, runId) {
   };
 }
 
-async function listDraftIssues(tenderId) {
-  const rid = await analysisRuns.getActivePipelineRunId(tenderId);
+// runId (опц.) — читать КОНКРЕТНЫЙ прогон (например, только что собранного
+// кандидата на debug-странице). По умолчанию — актуальный снимок.
+async function listDraftIssues(tenderId, { runId = null } = {}) {
+  const rid = runId || await analysisRuns.getActivePipelineRunId(tenderId);
   if (!rid) return [];
   const rows = await db.queryAll(
     `SELECT * FROM draft_issues WHERE tender_id = ? AND analysis_run_id = ?

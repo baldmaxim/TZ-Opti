@@ -16,7 +16,12 @@ const {
   normalizeLlmFinding,
   assembleFindings,
   runHeuristics,
+  resolveSelfAnalysisOutcome,
+  QC_STATUS,
 } = require('../../services/selfAnalysis/selfAnalysisService');
+const { runSelfAnalysisLlm, segmentsForQc } = require('../../services/stageAnalysis/stage5_llm');
+const { STATUS } = require('../../services/analysis/resultStatus');
+const { installFakeLlm } = require('../helpers/fakeLlm');
 
 // Кластер в форме, которую отдаёт clustering.listClusters('full').
 function cluster(over = {}) {
@@ -171,4 +176,171 @@ test('assembleFindings убирает дубль (тип + cluster_id + нача
 test('runHeuristics не падает на пустом входе', () => {
   const stats = computeSignalStats([], []);
   assert.deepEqual(runHeuristics([], stats), []);
+});
+
+// --- Исход LLM-шага QC: 0/N · 1/N · N/N частей ТЗ -------------------------------
+//
+// Главный защищаемый дефект: полный отказ QC (ни одна часть не досчитана) больше
+// НЕ может превратиться в успешный результат на одних эвристиках. runSelfAnalysisLlm
+// не бросает — отдаёт status, а решение об исходе слоя принимает
+// resolveSelfAnalysisOutcome (usable=false → вызывающий обязан упасть).
+
+const QC_FILLER = [
+  'Подрядчик выполняет работы в объёме, определённом проектной документацией и',
+  'настоящим техническим заданием, с соблюдением требований действующих норм,',
+  'правил охраны труда и промышленной безопасности, а также графика работ.',
+].join(' ');
+
+// ТЗ, которое гарантированно режется на несколько частей (иначе 0/N и 1/N
+// неотличимы).
+function qcTzBlocks({ clauses = 12, fill = 6 } = {}) {
+  const blocks = [{ index: 0, type: 'heading', level: 1, text: '1. Раздел 1. Общие требования', section_path: [] }];
+  for (let c = 1; c <= clauses; c += 1) {
+    blocks.push({
+      index: c,
+      type: 'paragraph',
+      text: `1.${c} ${QC_FILLER} ${`Пункт 1.${c} уточняет порядок выполнения работ. `.repeat(fill)}`.trim(),
+      section_path: ['1. Раздел 1. Общие требования'],
+    });
+  }
+  return blocks;
+}
+
+const QC_BUDGET = 700;
+const QC_CLUSTERS = [
+  {
+    id: 'c1',
+    tz_clause: 'п. 1.1',
+    cluster_title: 'Влияние на стоимость — п. 1.1',
+    overall_criticality: 'high',
+    semantic_bucket: 'price|modify',
+    item_count: 2,
+    merged_basis: '• [coverage] Демонтаж не учтён в расчёте и должен быть оценён отдельной строкой',
+    merged_recommendation: '• Ограничить объём ссылкой на раздел 5',
+    items: [{ category: 'coverage', confidence: 0.8 }],
+  },
+];
+const QC_FINDING = {
+  finding_type: 'weak_cluster',
+  cluster_id: 'c1',
+  comment: 'Основание кластера не подтверждено цитатой ТЗ',
+  suggested_improvement: 'Добавить цитату п. 1.1',
+  confidence: 0.7,
+};
+
+const qcArgs = (over = {}) => ({
+  tzBlocks: qcTzBlocks(),
+  clusters: QC_CLUSTERS,
+  signalStats: computeSignalStats([{ signal_type: 'coverage' }], QC_CLUSTERS),
+  budgetTokens: QC_BUDGET,
+  llmConfigured: true,
+  ...over,
+});
+
+const qcPartsTotal = () => segmentsForQc({ tzBlocks: qcTzBlocks(), budgetTokens: QC_BUDGET }).length;
+
+test('0/N частей: LLM-QC упал целиком → failed, слой непригоден (не «успех на эвристиках»)', async (t) => {
+  const total = qcPartsTotal();
+  assert.ok(total > 1, `нужно ТЗ из нескольких частей, получено ${total}`);
+  const llm = installFakeLlm(t, () => new Error('LLM недоступен'));
+
+  const res = await runSelfAnalysisLlm(qcArgs());
+
+  assert.equal(llm.callCount, total, 'каждая часть должна быть попробована');
+  assert.equal(res.status, QC_STATUS.FAILED);
+  assert.equal(res.status, STATUS.FAILED, 'исход QC = общий контракт результата');
+  assert.deepEqual(res.findings, []);
+  assert.equal(res.segmentation.failed_parts.length, total);
+  assert.match(res.reason, /ни одна часть/i);
+
+  // Ключевой инвариант: слой НЕ пригоден — вызывающий обязан признать сбой.
+  const outcome = resolveSelfAnalysisOutcome(res);
+  assert.equal(outcome.usable, false);
+  assert.equal(outcome.status, STATUS.FAILED);
+  assert.equal(outcome.partial, false, 'полный отказ — это не «частичный результат»');
+});
+
+test('1/N частей: часть посчитана, часть упала → completed_with_warnings + failed_parts', async (t) => {
+  const total = qcPartsTotal();
+  const llm = installFakeLlm(t, (call, idx) => (idx === 0
+    ? { findings: [QC_FINDING] }
+    : new Error(`часть ${idx + 1} не ответила`)));
+
+  const res = await runSelfAnalysisLlm(qcArgs());
+
+  assert.equal(llm.callCount, total);
+  assert.equal(res.status, QC_STATUS.COMPLETED_WITH_WARNINGS);
+  assert.equal(res.findings.length, 1, 'находки посчитанной части сохраняются');
+  assert.equal(res.segmentation.failed_parts.length, total - 1);
+  assert.equal(res.segmentation.completed_parts, 1);
+  assert.deepEqual(res.segmentation.failed_parts[0], { part: 2, error: 'часть 2 не ответила' });
+
+  const outcome = resolveSelfAnalysisOutcome(res);
+  assert.equal(outcome.usable, true, 'частичный итог пригоден');
+  assert.equal(outcome.status, STATUS.COMPLETED_WITH_WARNINGS);
+  assert.equal(outcome.partial, true, 'partial → warning у стадии и шага конвейера');
+  assert.equal(outcome.failed_parts.length, total - 1);
+});
+
+test('N/N частей: все посчитаны → completed без failed_parts', async (t) => {
+  const total = qcPartsTotal();
+  const llm = installFakeLlm(t, () => ({ findings: [QC_FINDING] }));
+
+  const res = await runSelfAnalysisLlm(qcArgs());
+
+  assert.equal(llm.callCount, total);
+  assert.equal(res.status, QC_STATUS.COMPLETED);
+  assert.equal(res.segmentation.failed_parts, null);
+  assert.equal(res.segmentation.completed_parts, total);
+  // Один и тот же дефект разбора, увиденный из разных частей, не дублируется.
+  assert.equal(res.findings.length, 1);
+
+  const outcome = resolveSelfAnalysisOutcome(res);
+  assert.equal(outcome.status, STATUS.COMPLETED);
+  assert.equal(outcome.partial, false);
+  assert.equal(outcome.usable, true);
+});
+
+test('кластеров нет: not_applicable без вызова LLM — явный «проверять нечего», а не сбой', async (t) => {
+  const llm = installFakeLlm(t, () => new Error('модель не должна вызываться'));
+
+  for (const clusters of [[], null, undefined]) {
+    // eslint-disable-next-line no-await-in-loop
+    const res = await runSelfAnalysisLlm(qcArgs({ clusters }));
+    assert.equal(res.status, QC_STATUS.NOT_APPLICABLE, `пустой список кластеров (${JSON.stringify(clusters)})`);
+    assert.deepEqual(res.findings, []);
+    assert.equal(res.segmentation, null);
+    assert.match(res.reason, /кластеров нет/i);
+
+    const outcome = resolveSelfAnalysisOutcome(res);
+    assert.equal(outcome.status, STATUS.COMPLETED, 'нечего проверять — это не сбой слоя');
+    assert.equal(outcome.usable, true);
+    assert.equal(outcome.partial, false);
+    assert.equal(outcome.failed_parts, null);
+  }
+  assert.equal(llm.callCount, 0, 'без кластеров QC не должен звать модель');
+});
+
+test('LLM не настроен: skipped (QC не выполнялся) → warning, но не failed', async (t) => {
+  const llm = installFakeLlm(t, () => new Error('модель не должна вызываться'));
+
+  const res = await runSelfAnalysisLlm(qcArgs({ llmConfigured: false }));
+
+  assert.equal(llm.callCount, 0);
+  assert.equal(res.status, QC_STATUS.SKIPPED);
+  assert.match(res.reason, /OPENAI_API_KEY/);
+
+  const outcome = resolveSelfAnalysisOutcome(res);
+  assert.equal(outcome.status, STATUS.COMPLETED_WITH_WARNINGS, 'QC пропущен — зелёным это не считаем');
+  assert.equal(outcome.usable, true, 'но эвристики пригодны — не сбой');
+  assert.equal(outcome.partial, true);
+});
+
+test('resolveSelfAnalysisOutcome: неизвестный/отсутствующий исход QC → failed (fail-closed)', () => {
+  for (const llm of [null, undefined, {}, { status: 'нечто' }, { status: QC_STATUS.FAILED }]) {
+    const outcome = resolveSelfAnalysisOutcome(llm);
+    assert.equal(outcome.status, STATUS.FAILED, `исход ${JSON.stringify(llm)} обязан быть отказом`);
+    assert.equal(outcome.usable, false);
+    assert.equal(outcome.llm_status, QC_STATUS.FAILED);
+  }
 });

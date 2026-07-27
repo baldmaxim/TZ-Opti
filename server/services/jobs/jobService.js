@@ -6,7 +6,7 @@
 
 const db = require('../../db/connection');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
-const { planSteps, PIPELINE_STEPS } = require('../pipeline/analysisPipeline');
+const { planSteps, PIPELINE_STEPS, resolveMode } = require('../pipeline/analysisPipeline');
 const queue = require('./jobQueue');
 const M = require('./jobModel');
 
@@ -75,7 +75,9 @@ async function enqueuePipeline(tenderId, opts = {}) {
     configVersion,
     idempotencyKey: opts.idempotencyKey || null,
     createdBy: opts.createdBy || null,
-    payload: { with_self_analysis: opts.withSelfAnalysis !== false, steps: keys },
+    // mode пишем в payload задания: begin-задача может исполняться в другом
+    // процессе, а режим (production | debug) обязан быть тем же, что запросили.
+    payload: { with_self_analysis: opts.withSelfAnalysis !== false, steps: keys, mode: resolveMode(opts) },
     busyMessage: 'Пересборка конвейера уже выполняется. Дождитесь завершения.',
     tasks,
   });

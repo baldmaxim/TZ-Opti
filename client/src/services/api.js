@@ -161,30 +161,53 @@ export const api = {
   listSignals: (tenderId, signalType = null) =>
     request(`/tenders/${tenderId}/signals${signalType ? `?signal_type=${encodeURIComponent(signalType)}` : ''}`),
 
-  // Единый анализатор ТЗ (debug-слой: draft_issues поверх signals)
+  // Одиночные build* слоёв — ОТЛАДОЧНЫЕ: каждый собирает свой слой в НОВЫЙ
+  // прогон-кандидат и НЕ переводит указатель (действующий снимок неизменен).
+  // Ответ несёт run_id — его надо передать в list*, чтобы увидеть кандидата;
+  // без run_id list* читает актуальный снимок.
   buildDraftIssues: (tenderId) => request(`/tenders/${tenderId}/unified/build`, { method: 'POST' }),
-  listDraftIssues: (tenderId) => request(`/tenders/${tenderId}/draft-issues`),
+  listDraftIssues: (tenderId, runId = null) =>
+    request(`/tenders/${tenderId}/draft-issues${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`),
 
   // Critic (debug-слой: оценка значимости draft_issues для генподрядчика)
   buildIssueReviews: (tenderId) => request(`/tenders/${tenderId}/critic/build`, { method: 'POST' }),
-  listIssueReviews: (tenderId, mode = 'working') =>
-    request(`/tenders/${tenderId}/issue-reviews?mode=${encodeURIComponent(mode)}`),
+  listIssueReviews: (tenderId, mode = 'working', runId = null) =>
+    request(`/tenders/${tenderId}/issue-reviews?mode=${encodeURIComponent(mode)}`
+      + `${runId ? `&run_id=${encodeURIComponent(runId)}` : ''}`),
 
   // Clustering (debug-слой: объединение похожих замечаний по одному месту ТЗ)
   buildClusters: (tenderId) => request(`/tenders/${tenderId}/clustering/build`, { method: 'POST' }),
-  listClusters: (tenderId, mode = 'working') =>
-    request(`/tenders/${tenderId}/issue-clusters?mode=${encodeURIComponent(mode)}`),
+  listClusters: (tenderId, mode = 'working', runId = null) =>
+    request(`/tenders/${tenderId}/issue-clusters?mode=${encodeURIComponent(mode)}`
+      + `${runId ? `&run_id=${encodeURIComponent(runId)}` : ''}`),
 
   // Self-analysis (debug-слой: QC/полнота над итогом — кластеры + ТЗ, новая роль Стадии 5)
   buildSelfAnalysis: (tenderId) => request(`/tenders/${tenderId}/self-analysis/build`, { method: 'POST' }),
-  listSelfAnalysis: (tenderId, findingType = null) =>
-    request(`/tenders/${tenderId}/self-analysis${findingType ? `?finding_type=${encodeURIComponent(findingType)}` : ''}`),
+  listSelfAnalysis: (tenderId, findingType = null, runId = null) => {
+    const qs = [
+      findingType ? `finding_type=${encodeURIComponent(findingType)}` : null,
+      runId ? `run_id=${encodeURIComponent(runId)}` : null,
+    ].filter(Boolean).join('&');
+    return request(`/tenders/${tenderId}/self-analysis${qs ? `?${qs}` : ''}`);
+  },
 
-  // Pipeline (оркестратор конвейера: draft_issues → critic → clustering → self-analysis)
-  runPipeline: (tenderId, { withSelfAnalysis = true } = {}) =>
+  // Admin: история анализа (физическое удаление архивных снимков).
+  planPurgeHistory: (tenderId, { keepLast = 1 } = {}) =>
+    request(`/admin/tenders/${tenderId}/analysis-history/purge?keep_last=${encodeURIComponent(keepLast)}`),
+  purgeHistory: (tenderId, { keepLast = 1, olderThan = null } = {}) =>
+    request(`/admin/tenders/${tenderId}/analysis-history/purge`, {
+      method: 'POST',
+      body: { confirm: tenderId, keep_last: keepLast, older_than: olderThan },
+    }),
+
+  // Pipeline (оркестратор конвейера: draft_issues → critic → clustering → self-analysis).
+  // mode:'debug' — явная ЧАСТИЧНАЯ сборка: допускает неполный набор входов, но НЕ
+  // двигает основной указатель (портал продолжает читать прежний снимок).
+  // По умолчанию production: набор stage-прогонов проверяется до шагов и перед активацией.
+  runPipeline: (tenderId, { withSelfAnalysis = true, mode = 'production' } = {}) =>
     request(`/tenders/${tenderId}/pipeline/run`, {
       method: 'POST',
-      body: { with_self_analysis: withSelfAnalysis },
+      body: { with_self_analysis: withSelfAnalysis, mode },
     }),
   getPipelineStatus: (tenderId) => request(`/tenders/${tenderId}/pipeline/status`),
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
+import CandidateRunBanner from '../../components/debug/CandidateRunBanner';
 
 // Debug-вкладка слоя critic: оценка значимости draft_issues для генподрядчика.
 // Малозначимые замечания не удаляются — скрыты по умолчанию (show_to_engineer=0)
@@ -42,11 +43,14 @@ export default function IssueReviewsPage() {
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
 
-  const load = async (m = mode) => {
+  // Прогон, который смотрим: null — действующий снимок, иначе кандидат от build.
+  const [runId, setRunId] = useState(null);
+
+  const load = async (m = mode, rid = runId) => {
     if (!tenderId) return;
     setLoading(true);
     try {
-      const res = await api.listIssueReviews(tenderId, m);
+      const res = await api.listIssueReviews(tenderId, m, rid);
       setItems(res.items || []);
       setByPriority(res.by_priority || {});
     } catch (err) { toastError(err.message); }
@@ -55,14 +59,17 @@ export default function IssueReviewsPage() {
 
   useEffect(() => { load(mode); /* eslint-disable-next-line */ }, [tenderId, mode]);
 
+  // Одиночный build — отладочный: пишет в НОВЫЙ кандидат, указатель не переводит.
   const build = async () => {
     if (!tenderId) return;
     setBuilding(true);
     try {
       const res = await api.buildIssueReviews(tenderId);
       const s = res.summary || {};
-      toastSuccess(`Critic: оценено ${s.reviewed ?? 0}, показываем ${s.shown ?? 0}, скрыто ${s.hidden ?? 0}`);
-      await load();
+      toastSuccess(`Critic: оценено ${s.reviewed ?? 0}, показываем ${s.shown ?? 0}, скрыто ${s.hidden ?? 0} `
+        + '— в прогоне-кандидате, действующий снимок не изменён');
+      setRunId(res.run_id || null);
+      await load(mode, res.run_id || null);
     } catch (err) { toastError(err.message); }
     setBuilding(false);
   };
@@ -84,6 +91,8 @@ export default function IssueReviewsPage() {
           </button>
         </div>
       </div>
+
+      <CandidateRunBanner runId={runId} onClear={() => { setRunId(null); load(mode, null); }} />
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
         Critic оценивает каждый draft_issue по значимости для генподрядчика (цена / график /

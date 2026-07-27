@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import { toastError, toastSuccess } from '../../store/useToastStore';
+import { toastError, toastSuccess, toastWarning } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 
 // Debug-вкладка оркестратора конвейера: свежесть слоёв (signals → draft_issues →
@@ -43,14 +43,23 @@ export default function PipelinePage() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [tenderId]);
 
-  const run = async () => {
+  // mode: 'production' — полная сборка (требует валидный набор входов, переводит
+  // указатель) либо 'debug' — ЧАСТИЧНАЯ сборка: считает слои из того, что есть, но
+  // основной указатель не двигает (портал продолжает читать прежний снимок).
+  const run = async (mode = 'production') => {
     if (!tenderId) return;
     setRunning(true);
     setReport(null);
     try {
-      const res = await api.runPipeline(tenderId, { withSelfAnalysis });
+      const res = await api.runPipeline(tenderId, { withSelfAnalysis, mode });
       setReport(res);
-      if (res.ok) {
+      if (res.blocked === 'inputs') {
+        toastError(`Входы конвейера не годятся: ${res.error || 'см. отчёт'}`);
+      } else if (res.stale_inputs) {
+        toastError('Снимок не активирован: входы изменились во время сборки (stale).');
+      } else if (res.ok && res.activated === false) {
+        toastWarning(`Debug-сборка: ${res.steps_done}/${res.steps_total} шагов, указатель НЕ переведён.`);
+      } else if (res.ok) {
         toastSuccess(`Конвейер пересобран: ${res.steps_done}/${res.steps_total} шагов`);
       } else {
         toastError(`Конвейер: сбой на шаге «${res.failed_step}» (${res.steps_done}/${res.steps_total})`);
@@ -79,7 +88,15 @@ export default function PipelinePage() {
             Обновить
           </button>
           <button
-            onClick={run}
+            onClick={() => run('debug')}
+            disabled={running}
+            title="Частичная сборка из того, что есть. Основной указатель НЕ переводится."
+            className="text-sm px-3 py-1 rounded border border-amber-400 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 disabled:opacity-50"
+          >
+            Debug-сборка (без активации)
+          </button>
+          <button
+            onClick={() => run('production')}
             disabled={running}
             className="text-sm px-3 py-1 rounded bg-gray-900 text-white hover:bg-gray-700 disabled:opacity-50"
           >
@@ -92,7 +109,11 @@ export default function PipelinePage() {
         Один вызов вместо четырёх POST: draft_issues → critic → clustering → self-analysis.
         Слои зависят друг от друга (каскадная чистка при пересборке родителя), поэтому порядок
         фиксирован, а после сбоя шага остальные пропускаются. Сигналы конвейер не пересоздаёт —
-        их пишут стадии 1–4.
+        их пишут стадии 1–4. Сборка привязана к ТОЧНОМУ набору stage-прогонов (manifest: стадия +
+        run_id + ревизия документов + версия конфигурации + статус): он проверяется до шагов и
+        ещё раз перед активацией, поэтому неполный/разноревизионный набор к production-сборке не
+        допускается, а если во время сборки сдвинулся указатель стадии — снимок не активируется.
+        Debug-сборка допускает частичный набор, но основной указатель не двигает.
       </p>
 
       {/* Свежесть слоёв */}
@@ -145,6 +166,35 @@ export default function PipelinePage() {
       {report && (
         <div className="space-y-2">
           <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Отчёт прогона</h2>
+
+          {/* Входы прогона (manifest stage-прогонов) и судьба указателя */}
+          <div className="border dark:border-gray-700 rounded p-3 space-y-1 text-sm">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                режим: {report.mode || 'production'}
+              </span>
+              <span className={`text-xs px-2 py-0.5 rounded ${report.activated
+                ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                : 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300'}`}
+              >
+                {report.activated ? 'указатель переведён' : 'указатель НЕ переведён'}
+              </span>
+              {report.run_id && (
+                <span className="text-xs text-gray-400 dark:text-gray-500 font-mono">{report.run_id}</span>
+              )}
+            </div>
+            {report.error && <div className="text-red-700 dark:text-red-300">{report.error}</div>}
+            {report.inputs && report.inputs.violations && (
+              <ul className="list-disc pl-5 text-xs text-amber-800 dark:text-amber-300">
+                {report.inputs.violations.map((v, i) => (
+                  <li key={`${v.code}-${v.stage ?? 'run'}-${i}`}>
+                    <span className="font-mono">{v.code}</span>
+                    {v.stage ? ` (стадия ${v.stage})` : ''}: {v.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           {report.steps.map((s) => (
             <div key={s.step} className="border dark:border-gray-700 rounded p-3 space-y-1">
               <div className="flex items-center gap-2 flex-wrap">

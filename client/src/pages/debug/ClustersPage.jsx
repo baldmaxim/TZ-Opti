@@ -3,6 +3,7 @@ import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import ClusterList from '../../components/clusters/ClusterList';
+import CandidateRunBanner from '../../components/debug/CandidateRunBanner';
 
 // Debug-вкладка слоя clustering: объединение похожих замечаний по одному месту ТЗ.
 // Кластер = одно место ТЗ + близкий смысл; внутри — исходные draft_issues (cluster
@@ -22,12 +23,14 @@ export default function ClustersPage() {
   const [byCriticality, setByCriticality] = useState({});
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
+  // Прогон, который смотрим: null — действующий снимок, иначе кандидат от build.
+  const [runId, setRunId] = useState(null);
 
-  const load = async (m = mode) => {
+  const load = async (m = mode, rid = runId) => {
     if (!tenderId) return;
     setLoading(true);
     try {
-      const res = await api.listClusters(tenderId, m);
+      const res = await api.listClusters(tenderId, m, rid);
       setItems(res.items || []);
       setByCriticality(res.by_criticality || {});
     } catch (err) { toastError(err.message); }
@@ -36,14 +39,18 @@ export default function ClustersPage() {
 
   useEffect(() => { load(mode); /* eslint-disable-next-line */ }, [tenderId, mode]);
 
+  // Одиночный build — отладочный: кластеры пишутся в НОВЫЙ кандидат, указатель не
+  // переводится, решения инженера по действующему снимку не затрагиваются.
   const build = async () => {
     if (!tenderId) return;
     setBuilding(true);
     try {
       const res = await api.buildClusters(tenderId);
       const s = res.summary || {};
-      toastSuccess(`Кластеры: ${s.clusters ?? 0} из ${s.draft_issues ?? 0} замечаний (объединено ${s.multi_item ?? 0})`);
-      await load();
+      toastSuccess(`Кластеры: ${s.clusters ?? 0} из ${s.draft_issues ?? 0} замечаний (объединено ${s.multi_item ?? 0}) `
+        + '— в прогоне-кандидате, действующий снимок не изменён');
+      setRunId(res.run_id || null);
+      await load(mode, res.run_id || null);
     } catch (err) { toastError(err.message); }
     setBuilding(false);
   };
@@ -65,6 +72,8 @@ export default function ClustersPage() {
           </button>
         </div>
       </div>
+
+      <CandidateRunBanner runId={runId} onClear={() => { setRunId(null); load(mode, null); }} />
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
         Clustering сводит похожие замечания одного места ТЗ (общий пункт/фрагмент + близкий

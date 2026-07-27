@@ -130,12 +130,43 @@ production; небезопасная production-конфигурация рон�
 детерминированный дедуп «швов» (обязателен) + LLM-шаг (best-effort, `STAGE_CROSS_SEGMENT_REVIEW=0`
 выключает), который убирает повторы одного места ТЗ и помечает связи/противоречия разделов
 (критичность может поднять, понизить — нет).
-**Статус и результат каждой части — в `analysis_segments`** (`segments/segmentStore.js`,
-best-effort: сбой хранилища не роняет анализ). Повтор стадии переиспользует посчитанные части
-по `input_hash`; одну часть можно пересчитать точечно — `engine.retryStageSegment` →
-`POST /api/tenders/:id/stages/:n/segments/:idx/retry`, список — `GET …/segments`,
-debug-страница `/tenders/:id/debug/segments`. Офлайн-тесты — `server/test/unit/segmentation.test.js`
-(большое синтетическое ТЗ + риск на границе двух сегментов), БД-слой — `server/test/integration/segments.integration.test.js`.
+**Части ТЗ: КЭШ и ИСТОРИЯ — две таблицы, а не одна строка на обе роли**
+(`segments/segmentStore.js`, best-effort: сбой хранилища не роняет анализ).
+`analysis_segments` — **кэш результата, скоупленный ревизией документов**
+(ключ `(тендер, стадия, document_revision_id, номер части)`, ключ `ux_segments_cache`
+ставит миграция): переиспользование только при совпадении `input_hash` И `config_version`,
+новая ревизия ТЗ больше не затирает кэш прошлой (хранятся последние 3 ревизии).
+`analysis_run_segments` — **неизменяемая история выполнения**: одна строка на
+`(analysis_run_id, segment_index)`, пишет ТОЛЬКО прогон-владелец и ТОЛЬКО пока он `running`;
+статусы `pending|running|completed|failed|interrupted|skipped`, `source` = `llm` (реально
+считалось) | `cache` | `checkpoint` (переиспользовано — расчётом не считается). Прежняя
+единая строка перезаписывалась повтором стадии, и «на какой части упал вчерашний прогон»
+восстановить было нечем. Одну часть можно пересчитать точечно — `engine.retryStageSegment` →
+`POST /api/tenders/:id/stages/:n/segments/:idx/retry` (гасит КЭШ части, историю не трогает),
+список — `GET …/segments[?run_id=]` (части конкретного прогона + `runs[]` со сводкой),
+debug-страница `/tenders/:id/debug/segments`. `resetStage` чистит кэш, историю —
+никогда. Офлайн-тесты — `server/test/unit/segmentation.test.js` (большое синтетическое ТЗ +
+риск на границе двух сегментов), `stageRunLifecycle.test.js` (чистые правила),
+БД-слой — `server/test/integration/segments.integration.test.js`.
+
+**Жизненный цикл прогона стадии: прогон создаётся ДО работы и завершается САМ.**
+`analysis_run` заводится при постановке стадии в очередь (`startStageBackground` →
+`beginStageRun`) со `status='running'`, реальными `started_at` / `documents_revision_id` /
+`config_version`; его id лежит в `analysis_jobs.analysis_run_id` и уходит в КАЖДУЮ часть ТЗ.
+Одно задание = один прогон: повторная попытка задачи продолжает его (части поднимаются из
+кэша), а не заводит второй снимок. Исход пишется В НЕГО ЖЕ: успех — `activateRun`
+(`completed` + перевод указателя), неуспех — `finalizeStageRun` → `failed` | `cancelled` |
+`interrupted` с реальным `finished_at` и `error`/`failed_segment_index` в `summary`.
+**Отдельной «фиктивной» failed-строки после ошибки больше нет** (`recordFailedRun` удалён:
+он вставлял вторую строку с `started_at = finished_at`, без ревизии и версии конфигурации,
+а настоящий прогон навсегда оставался `running`). Владение: прогон задания завершает
+финализатор задания (`handlers/stageAnalysisJob.onJobSettled`), синхронный прогон — сам
+движок. Осиротевшие прогоны (процесс умер, живого задания нет) закрываются как `interrupted`
+на старте сервера и воркера — `engine.recoverOrphanedStageRuns` (прогон, который ведёт
+другой воркер, защищён живым заданием). Начало нового прогона стадии закрывает прежний
+`running` этой же стадии (`interruptStaleStageRuns`). Тесты —
+`server/test/integration/stageRunLifecycle.integration.test.js` (сбой в середине документа,
+рестарт воркера, точечный retry, история двух последовательных прогонов).
 
 **ВОР — структурный импорт xls/xlsx, а не «самая длинная ячейка строки».**
 `server/services/vor/`: `vorParser.js` (чистый разбор «сетки»: строка заголовков,

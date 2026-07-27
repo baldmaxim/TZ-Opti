@@ -542,22 +542,28 @@ CREATE INDEX IF NOT EXISTS idx_tasks_job ON analysis_tasks(job_id, seq);
 CREATE INDEX IF NOT EXISTS idx_tasks_lease ON analysis_tasks(status, lease_expires_at);
 
 -- Сегменты анализа ТЗ (иерархическая token-aware сегментация, shared/segmentation.js).
--- Большое ТЗ анализируется ПО ЧАСТЯМ: каждая часть — строка здесь, со своим
--- статусом, попытками, оценкой размера и СОХРАНЁННЫМ результатом (findings_json).
--- Зачем таблица, а не только checkpoint задачи очереди:
---   • статус каждого сегмента виден инженеру (какая часть ТЗ не досчиталась);
---   • результат переживает завершение задания → повтор стадии не переспрашивает
---     LLM про уже посчитанные части (сверка по input_hash);
---   • можно перезапустить ОДИН сегмент (status='pending' + очистка findings),
---     не гоняя заново весь документ.
--- Ключ идентичности — (тендер, стадия, номер сегмента); input_hash защищает от
--- переиспользования результата, если текст ТЗ или справочники изменились.
+-- Большое ТЗ анализируется ПО ЧАСТЯМ, и у частей ДВЕ РАЗНЫЕ роли, которые
+-- раньше жили в одной строке и мешали друг другу:
+--   1) КЭШ результата части — чтобы повтор стадии не переспрашивал LLM про уже
+--      посчитанное (перезаписываемый по своей природе);
+--   2) ИСТОРИЯ ВЫПОЛНЕНИЯ части в конкретном прогоне — чтобы было видно, где
+--      именно упал прогон №1 и что успел прогон №2 (неизменяемая по своей природе).
+-- Пока это была одна строка на (тендер, стадия, номер части), повтор стадии
+-- ЗАТИРАЛ историю предыдущего прогона: «какая часть уронила вчерашний анализ»
+-- восстановить было нечем, а analysis_run_id показывал лишь последнего писателя.
+--
+-- analysis_segments — РОЛЬ 1: кэш, скоупленный РЕВИЗИЕЙ документов.
+-- Ключ — (тендер, стадия, ревизия, номер части). Смена ревизии больше не
+-- затирает кэш прошлой (возврат к прежней версии ТЗ снова переиспользует части).
+-- Переиспользование дополнительно защищено input_hash (текст части + справочники)
+-- и config_version (модель + вариант промта): не совпало — часть считается заново.
+-- Строк на прогон здесь НЕТ и analysis_run_id здесь НЕТ — это кэш, а не история.
 CREATE TABLE IF NOT EXISTS analysis_segments (
   id                    TEXT PRIMARY KEY,
   tender_id             TEXT NOT NULL,
   analysis_stage        INTEGER NOT NULL,
-  analysis_run_id       TEXT,               -- прогон, в котором сегмент посчитан (последний)
-  document_revision_id  TEXT,               -- ревизия ТЗ, под которую нарезаны сегменты
+  document_revision_id  TEXT NOT NULL DEFAULT '', -- ревизия ТЗ, под которую нарезаны части
+  config_version        TEXT,               -- версия конфигурации анализа (промты + модель)
   segment_index         INTEGER NOT NULL,   -- 0-based номер части
   segment_total         INTEGER,            -- всего частей в этой нарезке
   segment_key           TEXT,               -- детерминированный ключ содержимого части
@@ -567,21 +573,65 @@ CREATE TABLE IF NOT EXISTS analysis_segments (
   chars                 INTEGER,
   tokens_estimate       INTEGER,
   input_hash            TEXT,               -- хэш user-сообщения (ТЗ-часть + справочники)
-  status                TEXT NOT NULL DEFAULT 'pending', -- pending|running|completed|failed
-  attempts              INTEGER NOT NULL DEFAULT 0,
+  status                TEXT NOT NULL DEFAULT 'pending', -- pending|completed (наличие результата)
   findings_count        INTEGER DEFAULT 0,
   findings_json         TEXT,               -- сырые находки части (переиспользуются при повторе)
+  computed_run_id       TEXT,               -- прогон, ПОСЧИТАВШИЙ этот результат (справочно)
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+-- Ключ кэша (ux_segments_cache) создаётся в migrate.js, а НЕ здесь: на
+-- существующих БД у таблицы уже есть прежний UNIQUE (тендер, стадия, часть) без
+-- ревизии, а CREATE TABLE IF NOT EXISTS его не меняет. Миграция снимает старый
+-- ключ и ставит новый — одно место, одинаковое для новой и обновляемой базы.
+
+CREATE INDEX IF NOT EXISTS idx_segments_stage ON analysis_segments(tender_id, analysis_stage, segment_index);
+CREATE INDEX IF NOT EXISTS idx_segments_status ON analysis_segments(tender_id, status);
+
+-- analysis_run_segments — РОЛЬ 2: НЕИЗМЕНЯЕМАЯ история выполнения частей.
+-- Одна строка = одна часть ТЗ в ОДНОМ прогоне (UNIQUE (analysis_run_id,
+-- segment_index)). Пишет её ТОЛЬКО прогон-владелец и ТОЛЬКО пока он running;
+-- завершённый прогон свои строки не меняет — история двух последовательных
+-- прогонов лежит рядом и не перетирается.
+--   status: pending (не дошли) | running | completed | failed | interrupted | skipped
+--   source: llm (часть реально посчитана) | cache (взята из analysis_segments)
+--           | checkpoint (взята из чекпойнта задачи очереди)
+-- Сами находки части здесь НЕ дублируются: результат прогона материализован в
+-- issues (run-scoped), сырые находки части — в кэше. Здесь — факты выполнения:
+-- что считалось, сколько попыток, чем кончилось, когда и с какой ошибкой.
+CREATE TABLE IF NOT EXISTS analysis_run_segments (
+  id                    TEXT PRIMARY KEY,
+  analysis_run_id       TEXT NOT NULL,
+  tender_id             TEXT NOT NULL,
+  analysis_stage        INTEGER NOT NULL,
+  segment_index         INTEGER NOT NULL,
+  segment_total         INTEGER,
+  segment_key           TEXT,
+  heading_path          TEXT,
+  first_block_index     INTEGER,
+  last_block_index      INTEGER,
+  chars                 INTEGER,
+  tokens_estimate       INTEGER,
+  document_revision_id  TEXT,
+  config_version        TEXT,
+  input_hash            TEXT,
+  status                TEXT NOT NULL DEFAULT 'pending',
+  source                TEXT,
+  attempts              INTEGER NOT NULL DEFAULT 0,
+  findings_count        INTEGER DEFAULT 0,
   error                 TEXT,
   created_at            TEXT NOT NULL,
   started_at            TEXT,
   finished_at           TEXT,
   updated_at            TEXT NOT NULL,
-  UNIQUE (tender_id, analysis_stage, segment_index),
+  UNIQUE (analysis_run_id, segment_index),
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_segments_stage ON analysis_segments(tender_id, analysis_stage, segment_index);
-CREATE INDEX IF NOT EXISTS idx_segments_status ON analysis_segments(tender_id, status);
+CREATE INDEX IF NOT EXISTS idx_run_segments_run ON analysis_run_segments(analysis_run_id, segment_index);
+CREATE INDEX IF NOT EXISTS idx_run_segments_stage ON analysis_run_segments(tender_id, analysis_stage, analysis_run_id);
 
 -- ============================================================================
 -- Безопасность: тенанты (изоляция организаций) и журнал аудита.

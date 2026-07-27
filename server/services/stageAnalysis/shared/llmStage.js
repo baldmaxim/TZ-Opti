@@ -287,15 +287,20 @@ async function runLlmStage(ctx, cfg) {
     const wave = [];
     for (let i = start; i < Math.min(start + concurrency, prepared.length); i += 1) {
       const { idx, hash } = prepared[i];
-      // Кэш части: сначала долговременное хранилище, затем чекпойнт задачи.
+      // Кэш части: сначала долговременное хранилище (кэш ревизии), затем
+      // чекпойнт задачи. Источник важен для истории прогона: часть, поднятая из
+      // кэша, засчитана, но модели НЕ показывалась — в analysis_run_segments это
+      // видно как source='cache'/'checkpoint', а не как выполненный расчёт.
       // eslint-disable-next-line no-await-in-loop
-      const cached = (store ? await store.getCompleted(idx, hash) : null)
-        || control?.getSegment?.(idx, hash)
-        || null;
+      const fromStore = store ? await store.getCompleted(idx, hash) : null;
+      const cached = fromStore || control?.getSegment?.(idx, hash) || null;
       if (cached) {
         results[idx] = cached;
         reused += 1;
-        wave.push(Promise.resolve(ctx.progress?.tick()));
+        wave.push(
+          Promise.resolve(store?.markReused(idx, cached.length, fromStore ? 'cache' : 'checkpoint'))
+            .then(() => ctx.progress?.tick()),
+        );
         continue;
       }
       wave.push(

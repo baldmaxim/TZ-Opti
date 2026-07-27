@@ -340,6 +340,15 @@ async function buildSelfAnalysis(tenderId, runId) {
   // не бросает: «не досчитана ни одна часть» приходит как status=failed. Неожидан-
   // ное исключение (баг/инфраструктура) тоже трактуем как отказ слоя, а НЕ как
   // «пропустим обогащение и отрапортуем успех на эвристиках».
+  const qcSegmentStore = makeStageSegmentStore({
+    tenderId,
+    stage: 5,
+    revisionId: tzRevisionId,
+    configVersion: analysisRuns.currentConfigVersion(),
+    runId: rid,
+    logTag: 'selfAnalysis',
+  });
+
   let qc;
   try {
     qc = await runSelfAnalysisLlm({
@@ -347,15 +356,18 @@ async function buildSelfAnalysis(tenderId, runId) {
       tzBlocks,
       clusters,
       signalStats,
-      // Статус/результат каждой части QC — в analysis_segments (стадия 5):
-      // видно, какая часть не досчиталась, и её можно перезапустить точечно.
-      segmentStore: makeStageSegmentStore({
-        tenderId, stage: 5, revisionId: tzRevisionId, runId: rid, logTag: 'selfAnalysis',
-      }),
+      // Части QC: результат — в кэш ревизии (analysis_segments), история
+      // выполнения — в прогон rid (analysis_run_segments). Видно, какая часть не
+      // досчиталась, и её можно перезапустить точечно; летопись прошлого прогона
+      // при этом не затирается.
+      segmentStore: qcSegmentStore,
     });
   } catch (e) {
     qc = { status: QC_STATUS.FAILED, findings: [], segmentation: null, reason: e.message };
   }
+  // Живых (pending/running) частей у отработавшего QC остаться не должно:
+  // «не дошли» → skipped, «считалась в момент обрыва» → interrupted.
+  await qcSegmentStore.finalize({ reason: 'QC-шаг самоанализа завершён' });
   const outcome = resolveSelfAnalysisOutcome(qc);
   if (outcome.llm_status !== QC_STATUS.COMPLETED) {
     // eslint-disable-next-line no-console

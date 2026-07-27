@@ -233,6 +233,10 @@ async function runSelfAnalysisLlm({
     const cached = segmentStore ? await segmentStore.getCompleted(p.idx, hash) : null;
     if (cached) {
       all.push(...cached);
+      // Часть засчитана из кэша ревизии — в истории прогона это отдельный
+      // source, а не «модель отработала».
+      // eslint-disable-next-line no-await-in-loop
+      await segmentStore?.markReused(p.idx, cached.length, 'cache');
       continue;
     }
     // eslint-disable-next-line no-await-in-loop

@@ -383,6 +383,116 @@ async function failRun(runId, summary, tx) {
   );
 }
 
+// ЗАВЕРШИТЬ ТОТ ЖЕ ПРОГОН неуспешно — вместо отдельной «фиктивной» строки.
+//
+// Прогон создаётся ДО работы (status='running', реальные started_at / ревизия /
+// версия конфигурации), поэтому его исход обязан быть записан В НЕГО ЖЕ: провал,
+// отмена или обрыв — это состояние начатого прогона, а не новый прогон.
+// Раньше движок стадий вставлял после ошибки ВТОРУЮ строку analysis_runs с
+// started_at = finished_at = «сейчас», без ревизии и версии конфигурации: по
+// такой записи нельзя было ни узнать, сколько шёл анализ, ни на каких входах он
+// упал, а настоящий прогон (если он всё же создавался) навсегда оставался
+// 'running'.
+//
+// Условие `status = 'running'` делает вызов идемпотентным и безопасным при гонке
+// «финализатор задания против самого прогона»: побеждает тот, кто пришёл первым,
+// второй ничего не перезаписывает. Возвращает true, если статус реально изменён.
+const TERMINAL_RUN_STATUS = new Set(['failed', 'cancelled', 'interrupted']);
+
+async function finalizeRun(runId, { status = 'failed', summary = null, finishedAt = null } = {}, tx) {
+  if (!runId) return false;
+  if (!TERMINAL_RUN_STATUS.has(status)) {
+    throw new Error(`finalizeRun: недопустимый терминальный статус «${status}»`);
+  }
+  const res = await exec(tx).queryRun(
+    `UPDATE analysis_runs
+        SET status = ?, finished_at = ?, summary = COALESCE(?, summary)
+      WHERE id = ? AND status = 'running'`,
+    status, finishedAt || nowIso(),
+    summary == null ? null : (typeof summary === 'string' ? summary : JSON.stringify(summary)),
+    runId,
+  );
+  return Boolean((res && (res.changes ?? res.rowCount)) || 0);
+}
+
+// Осиротевшие прогоны стадии: у (тендер + стадия) начат НОВЫЙ прогон, а прежний
+// так и остался 'running' (процесс умер между попытками задачи). Оставлять их
+// «вечно бегущими» нельзя — история стадии должна состоять из завершённых
+// прогонов. Закрываем их как interrupted с реальными временами.
+async function interruptStaleStageRuns(tenderId, stage, { exceptRunId = null, reason = null } = {}, tx) {
+  const res = await exec(tx).queryRun(
+    `UPDATE analysis_runs
+        SET status = 'interrupted', finished_at = ?,
+            summary = json_build_object(
+              'stage', stage, 'status', 'interrupted', 'error', ?::text,
+              'started_at', started_at, 'finished_at', ?::text)::text
+      WHERE tender_id = ? AND kind = 'stage' AND stage = ? AND status = 'running'
+        AND id <> COALESCE(?::text, '')
+      RETURNING id`,
+    nowIso(),
+    reason || 'прогон оборван: у стадии начат новый прогон',
+    nowIso(), tenderId, stage, exceptRunId,
+  );
+  return ((res && res.rows) || []).map((r) => r.id);
+}
+
+// Глобальное восстановление после падения/рестарта (зовётся на старте сервера и
+// воркера, рядом с recoverOrphanedRunningStages). Прогон стадии в статусе
+// 'running', за которым НЕ стоит ни одного живого задания очереди, — оборванный:
+// его никто не досчитает и никто не завершит. Живое задание (queued|running)
+// защищает прогон, который прямо сейчас ведёт воркер в другом процессе.
+// tenderId (опц.) — ограничить восстановление одним тендером (тесты, ручная
+// починка). По умолчанию — вся база: это старт процесса.
+async function recoverOrphanedStageRuns({ tenderId = null } = {}) {
+  const res = await db.queryRun(
+    `UPDATE analysis_runs r
+        SET status = 'interrupted', finished_at = ?,
+            summary = json_build_object(
+              'stage', r.stage, 'status', 'interrupted',
+              'error', 'прогон оборван (рестарт сервера / потеря воркера)',
+              'started_at', r.started_at, 'finished_at', ?::text)::text
+      WHERE r.kind = 'stage' AND r.status = 'running' AND r.stage IS NOT NULL
+        AND (?::text IS NULL OR r.tender_id = ?::text)
+        AND NOT EXISTS (
+          SELECT 1 FROM analysis_jobs j
+           WHERE j.tender_id = r.tender_id
+             AND j.scope_key = 'stage:' || r.stage
+             AND j.status IN ('queued', 'running'))
+      RETURNING id`,
+    nowIso(), nowIso(), tenderId, tenderId,
+  );
+  const ids = ((res && res.rows) || []).map((r) => r.id);
+  if (ids.length) {
+    // eslint-disable-next-line no-console
+    console.log(`[analysisRuns] оборванных прогонов стадий закрыто: ${ids.length} → interrupted`);
+  }
+  return ids;
+}
+
+// Последний по времени прогон стадии — независимо от указателя и статуса.
+// Карточка стадии показывает исход ПОСЛЕДНЕЙ попытки, а не последнего успеха.
+async function getLatestStageRun(tenderId, stage, tx) {
+  return exec(tx).queryOne(
+    `SELECT id, tender_id, stage, kind, documents_revision_id, config_version,
+            started_at, finished_at, status, summary, superseded_at
+       FROM analysis_runs
+      WHERE tender_id = ? AND kind = 'stage' AND stage = ?
+      ORDER BY started_at DESC, id DESC LIMIT 1`,
+    tenderId, stage,
+  );
+}
+
+// Прогоны стадии (новые сверху) — история попыток для debug-страницы частей ТЗ.
+async function listStageRuns(tenderId, stage, { limit = 10 } = {}) {
+  return db.queryAll(
+    `SELECT id, stage, status, started_at, finished_at, documents_revision_id, config_version, superseded_at
+       FROM analysis_runs
+      WHERE tender_id = ? AND kind = 'stage' AND stage = ?
+      ORDER BY started_at DESC, id DESC LIMIT ?`,
+    tenderId, stage, Math.min(50, Math.max(1, Number(limit) || 10)),
+  );
+}
+
 async function getActiveRunId(tenderId, scope, tx) {
   const row = await exec(tx).queryOne(
     `SELECT analysis_run_id FROM analysis_active_runs WHERE tender_id = ? AND scope = ?`,
@@ -572,8 +682,13 @@ module.exports = {
   activateRun,
   completeRunWithoutActivation,
   failRun,
+  finalizeRun,
+  interruptStaleStageRuns,
+  recoverOrphanedStageRuns,
   getRunInputsManifest,
   getRun,
+  getLatestStageRun,
+  listStageRuns,
   getLatestPipelineRun,
   collectStageInputs,
   archiveStageRunsFrom,

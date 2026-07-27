@@ -2,23 +2,32 @@
 
 // Обработчик задачи «прогнать стадию N» + финализатор задания стадии.
 //
-// Задача = весь прогон стадии. Внутри неё чекпойнт по сегментам ТЗ: каждый
-// посчитанный сегмент сразу кладётся в analysis_tasks.checkpoint_json, поэтому
-// повтор после падения/рестарта НЕ переспрашивает LLM про уже сделанное.
-// Чекпойнт привязан к хэшу входа сегмента: сменился текст ТЗ — старые части
-// не подхватятся (лучше пересчитать, чем собрать снимок из разных ревизий).
+// ОДНО ЗАДАНИЕ = ОДИН ПРОГОН (analysis_run). Прогон создаётся при постановке в
+// очередь (engine.startStageBackground → beginStageRun), его id лежит в
+// analysis_jobs.analysis_run_id, и обе попытки задачи пишут в НЕГО ЖЕ. Поэтому:
+//   • части ТЗ с самого начала пишут историю в свой прогон, а не в «ничей»;
+//   • неуспех задания завершает ТОТ ЖЕ прогон (failed | cancelled | interrupted)
+//     с реальными started_at/finished_at, ревизией документов и версией
+//     конфигурации — отдельной фиктивной failed-строки больше нет.
+//
+// Внутри задачи чекпойнт по сегментам ТЗ: посчитанный сегмент кладётся в
+// analysis_tasks.checkpoint_json, поэтому повтор после падения/рестарта НЕ
+// переспрашивает LLM про уже сделанное. Чекпойнт привязан к хэшу входа сегмента:
+// сменился текст ТЗ — старые части не подхватятся.
 
-const db = require('../../../db/connection');
 const engine = require('../../stageAnalysis/stageAnalysisEngine');
 const { STATUS } = require('../../analysis/resultStatus');
 
 const CHECKPOINT_KIND = 'stage_segments';
 
 // Мост между задачей очереди и движком стадий (ctx.progress / ctx.jobControl).
-function makeStageControl(ctx) {
+// runId — прогон ЗАДАНИЯ: движок в него пишет, но его НЕ завершает (задача может
+// быть повторена); терминальный статус ставит onJobSettled ниже.
+function makeStageControl(ctx, runId = null) {
   const cp = ctx.checkpoint && ctx.checkpoint.kind === CHECKPOINT_KIND ? ctx.checkpoint : null;
   const segments = { ...((cp && cp.segments) || {}) };
   return {
+    runId: runId || (ctx.job && ctx.job.analysis_run_id) || null,
     guard: () => ctx.guard(),
     setTotal: (n) => ctx.setTotal(n),
     tick: () => ctx.tick(),
@@ -38,19 +47,29 @@ function makeStageControl(ctx) {
 async function runTask(ctx) {
   const stage = Number(ctx.payload && ctx.payload.stage);
   const tenderId = ctx.job.tender_id;
-  const control = makeStageControl(ctx);
+  const runId = await ensureRunId(ctx, stage);
+  const control = makeStageControl(ctx, runId);
 
-  const { runId, summary } = await engine.runStageInner(tenderId, stage, control);
-
-  // Связь задания со снимком анализа (для «какой прогон собрало это задание»).
-  await db.queryRun('UPDATE analysis_jobs SET analysis_run_id = ? WHERE id = ?', runId, ctx.job.id);
-  return { run_id: runId, summary };
+  const result = await engine.runStageInner(tenderId, stage, control);
+  return { run_id: result.runId, summary: result.summary };
 }
 
-// Финализатор задания: статус стадии в tender_stage_state — производная от
-// исхода. Успех переводит стадию в 'reviewing' сам движок; любой другой исход
-// обязан вернуть её из 'running' в исходный статус, иначе портал навсегда
-// покажет крутящееся кольцо.
+// Прогон задания. Обычно он уже создан при постановке в очередь; страховка на
+// случай задания, поставленного до этой версии (или созданного в обход движка),
+// и на гонку «воркер забрал задачу раньше, чем постановка записала прогон»:
+// закрепление условно (attachStageRunToJob), лишний пустой прогон не остаётся.
+async function ensureRunId(ctx, stage) {
+  const job = await ctx.store.getJob(ctx.job.id);
+  if (job && job.analysis_run_id) return job.analysis_run_id;
+  const { runId } = await engine.beginStageRun(ctx.job.tender_id, stage, {
+    reason: `stage.run job=${ctx.job.id} (worker)`,
+  });
+  return engine.attachStageRunToJob(ctx.job.id, ctx.job.tender_id, stage, runId);
+}
+
+// Финализатор задания: неуспешный исход завершает ТОТ ЖЕ прогон и возвращает
+// стадию из 'running' в исходный статус (иначе портал навсегда покажет
+// крутящееся кольцо). Успех движок фиксирует сам (activateRun → 'reviewing').
 async function onJobSettled({ job }) {
   if (job.status === 'completed') return;
   const payload = safeParse(job.payload_json) || {};
@@ -61,12 +80,12 @@ async function onJobSettled({ job }) {
     cancelled: STATUS.CANCELLED,
     interrupted: STATUS.INTERRUPTED,
   }[job.status] || STATUS.FAILED;
-  await engine.recordFailedRun(
+  await engine.finalizeStageRun(
     job.tender_id,
     stage,
-    prevStatus,
+    job.analysis_run_id || null,
     new Error(job.error || messageFor(job.status, stage)),
-    status,
+    { status, prevStatus },
   );
 }
 

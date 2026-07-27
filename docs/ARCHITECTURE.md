@@ -183,8 +183,8 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 **C1a. resetStage и admin-purge.** Сброс стадии — операция указателей и workflow-состояния:
 снимает указатели стадий ≥ N (+ архивирует их прогоны), снимает указатель pipeline,
 возвращает статусы стадий и пишет `stage.reset` в `audit_log`; `analysis_runs`, `issues`,
-`analysis_signals`, `review_decisions` НЕ удаляются (чистятся только проекции —
-`tz_excluded_ranges`, `analysis_segments`). Физическое удаление — единственная точка:
+`analysis_signals`, `review_decisions`, `analysis_run_segments` (история выполнения частей)
+НЕ удаляются — чистятся только проекции: `tz_excluded_ranges` и `analysis_segments` (кэш частей). Физическое удаление — единственная точка:
 `services/admin/purgeService.js` (CLI `npm run purge`, `GET|POST
 /api/admin/tenders/:id/analysis-history/purge`, право `admin.system`); dry-run по умолчанию,
 удаление по `confirm === tenderId`, актуальный и `running` прогон неудаляемы, `keep_last`
@@ -256,9 +256,35 @@ HTTP POST …/stages/:n/run          analysis_jobs        analysis_tasks        
 | Где правила | `jobs/jobModel.js` — чистые функции (готовность задачи, порядок выборки, retry/recovery, свод статуса). Их же использует офлайн-стор тестов, поэтому SQL и тесты проверяют ОДНИ правила |
 
 Связь со снимками: задание хранит `analysis_run_id` — прогон, который оно
-собрало. Каждая попытка стадии начинает свой `analysis_runs`-прогон и
-активирует его только по успеху, поэтому повтор после сбоя не «дописывает» в
-уже опубликованный снимок.
+собрало. **Прогон стадии создаётся ПРИ ПОСТАНОВКЕ задания в очередь**, до запуска
+LLM-оркестратора (`engine.startStageBackground` → `beginStageRun`): `status='running'`,
+реальные `started_at` / `documents_revision_id` / `config_version`. Один прогон на
+задание — повторная попытка задачи продолжает его (части ТЗ поднимаются из кэша), а не
+заводит второй снимок; активируется он только по успеху, поэтому повтор после сбоя не
+«дописывает» в уже опубликованный снимок.
+
+**Терминальный исход пишется в ТОТ ЖЕ прогон.** Успех — `activateRun` (`completed` +
+перевод указателя). Неуспех — `engine.finalizeStageRun`: `failed` | `cancelled` |
+`interrupted` (исходы не схлопываются в общий failed), реальный `finished_at`, а в
+`summary` — `error` и `failed_segment_index` (часть ТЗ, на которой встал прогон).
+Отдельной «фиктивной» failed-строки не создаётся: прежний `recordFailedRun` вставлял
+вторую строку с `started_at = finished_at`, без ревизии и версии конфигурации, а
+настоящий прогон навсегда оставался `running`. Владелец финализации — тот, кто прогон
+создал: задание завершает `handlers/stageAnalysisJob.onJobSettled`, синхронный вызов —
+сам движок. Прогон, оставшийся `running` без единого живого задания (процесс умер),
+закрывается как `interrupted` на старте сервера и воркера
+(`engine.recoverOrphanedStageRuns`; прогон, который ведёт другой воркер, защищён живым
+заданием), а начало нового прогона стадии закрывает прежний `running` этой же стадии.
+
+**Части ТЗ: кэш ↔ история.** `analysis_segments` — кэш результата части, скоупленный
+ревизией документов (переиспользование при совпадении `input_hash` + `config_version`);
+`analysis_run_segments` — неизменяемая история выполнения, одна строка на
+`(analysis_run_id, segment_index)`, пишет только прогон-владелец и только пока он
+`running`. Поэтому два последовательных прогона видны рядом: где встал первый и что
+переиспользовал второй (`source` = `llm` | `cache` | `checkpoint`). Точечный retry гасит
+кэш ОДНОЙ части и историю не трогает. Сценарии — `server/test/integration/
+stageRunLifecycle.integration.test.js` (сбой в середине документа, рестарт воркера,
+пересчёт одной части, история двух прогонов).
 
 ---
 

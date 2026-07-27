@@ -153,7 +153,10 @@ export const api = {
 
   // Части ТЗ (иерархическая token-aware сегментация): статус каждой части и
   // точечный пересчёт одной части вместо повтора всего документа.
-  listStageSegments: (tenderId, n) => request(`/tenders/${tenderId}/stages/${n}/segments`),
+  // runId — части КОНКРЕТНОГО прогона (история прогонов неизменяема и
+  // сохраняется целиком); без него — последний прогон стадии.
+  listStageSegments: (tenderId, n, runId = null) =>
+    request(`/tenders/${tenderId}/stages/${n}/segments${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`),
   retryStageSegment: (tenderId, n, idx) =>
     request(`/tenders/${tenderId}/stages/${n}/segments/${idx}/retry`, { method: 'POST' }),
 

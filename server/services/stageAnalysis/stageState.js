@@ -45,7 +45,8 @@ function classifyStageRun(run) {
 
 // Завершать (finish) стадию можно ТОЛЬКО из 'reviewing' — этот статус выставляет
 // лишь успешный runStageInner. Сбойный прогон возвращает статус в 'open'
-// (recordFailedRun), поэтому провалившуюся стадию завершить нельзя.
+// (releaseRunningStage в finalizeStageRun), поэтому провалившуюся стадию
+// завершить нельзя.
 function canFinishStage(status) {
   return status === 'reviewing';
 }

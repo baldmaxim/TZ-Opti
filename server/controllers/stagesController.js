@@ -58,11 +58,16 @@ exports.reset = async (req, res) => {
 };
 
 // Части ТЗ этой стадии со статусом каждой (иерархическая сегментация):
-// что посчитано, что упало и почему, сколько находок дала часть.
+// что посчитано, что взято из кэша, что упало и почему.
+// ?run_id= — части КОНКРЕТНОГО прогона (история неизменяема, прогоны не
+// затирают друг друга); без него — последний прогон. runs[] в ответе — список
+// прогонов стадии со сводкой, чтобы можно было сравнить два подряд.
 exports.listSegments = async (req, res) => {
   const stage = Number(req.params.n);
   if (![1, 2, 3, 4, 5].includes(stage)) throw badRequest('Допустимы стадии 1..5');
-  const result = await engine.listStageSegments(req.params.id, stage);
+  const result = await engine.listStageSegments(req.params.id, stage, {
+    runId: req.query.run_id || null,
+  });
   res.json(result);
 };
 

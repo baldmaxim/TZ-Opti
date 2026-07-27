@@ -15,9 +15,15 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const { createWorker, workerOptionsFromEnv } = require('./services/jobs/worker');
+const stageEngine = require('./services/stageAnalysis/stageAnalysisEngine');
 const db = require('./db/connection');
 
 async function start(opts = {}) {
+  // Прогоны, оставшиеся 'running' после смерти прошлого воркера (за ними нет ни
+  // одного живого задания), закрываем как interrupted: у прогона обязан быть
+  // терминальный статус и реальный finished_at, иначе история стадии врёт.
+  // Прогон, который прямо сейчас ведёт ДРУГОЙ воркер, защищён живым заданием.
+  await stageEngine.recoverOrphanedStageRuns();
   const worker = createWorker({ ...workerOptionsFromEnv(), ...opts });
   await worker.start();
   return worker;

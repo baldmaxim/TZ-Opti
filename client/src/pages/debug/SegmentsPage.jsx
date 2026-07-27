@@ -14,10 +14,12 @@ import { stageTitle } from '../../utils/labels';
 const STAGES = [1, 2, 3, 4, 5];
 
 const STATUS_LABEL = {
-  pending: 'В очереди',
+  pending: 'Не дошли',
   running: 'Считается',
   completed: 'Готово',
   failed: 'Ошибка',
+  interrupted: 'Оборвано',
+  skipped: 'Пропущено',
 };
 
 const STATUS_CLASS = {
@@ -25,28 +27,44 @@ const STATUS_CLASS = {
   running: 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300',
   completed: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300',
   failed: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300',
+  interrupted: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300',
+  skipped: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
 };
+
+// Откуда взят результат части: расчёт моделью или переиспользование.
+const SOURCE_LABEL = {
+  llm: 'модель',
+  cache: 'из кэша',
+  checkpoint: 'из чекпойнта',
+};
+
+const shortTime = (iso) => (iso ? new Date(iso).toLocaleString('ru-RU') : '—');
 
 export default function SegmentsPage() {
   const tenderId = useTenderStore((s) => s.tenderId);
   const [stage, setStage] = useState(1);
   const [items, setItems] = useState([]);
+  const [runs, setRuns] = useState([]);
+  const [runId, setRunId] = useState(null);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(null);
 
-  const load = async () => {
+  const load = async (targetRunId = runId) => {
     if (!tenderId) return;
     setLoading(true);
     try {
-      const res = await api.listStageSegments(tenderId, stage);
+      const res = await api.listStageSegments(tenderId, stage, targetRunId);
       setItems(res.items || []);
+      setRuns(res.runs || []);
+      setRunId(res.run_id || null);
       setSummary(res.summary || null);
     } catch (err) { toastError(err.message); }
     setLoading(false);
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [tenderId, stage]);
+  // Смена стадии сбрасывает выбранный прогон — показываем последний.
+  useEffect(() => { setRunId(null); load(null); /* eslint-disable-next-line */ }, [tenderId, stage]);
 
   const retry = async (idx) => {
     setRetrying(idx);
@@ -70,8 +88,11 @@ export default function SegmentsPage() {
       <p className="text-sm text-gray-500 dark:text-gray-400">
         Большое ТЗ анализируется по частям: деление идёт по разделам и пунктам, соседние
         части перекрываются (пункт на стыке читается целиком), слишком большой пункт
-        дробится отдельно. Результат каждой части сохраняется — повтор стадии не
-        переспрашивает модель про уже посчитанное, а упавшую часть можно пересчитать точечно.
+        дробится отдельно. Результат каждой части кэшируется в разрезе ревизии ТЗ — повтор
+        стадии не переспрашивает модель про уже посчитанное (в колонке «Источник» такая
+        часть помечена «из кэша»), а упавшую часть можно пересчитать точечно. Таблица
+        показывает ИСТОРИЮ ВЫПОЛНЕНИЯ выбранного прогона: прогоны не затирают друг друга,
+        поэтому видно, на какой части встал предыдущий.
       </p>
 
       <div className="flex gap-2 flex-wrap">
@@ -89,6 +110,31 @@ export default function SegmentsPage() {
         ))}
       </div>
 
+      {!!runs.length && (
+        <div className="space-y-1">
+          <div className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Прогоны стадии (история сохраняется целиком)
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {runs.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => { setRunId(r.id); load(r.id); }}
+                title={`${r.id} · ${shortTime(r.started_at)} → ${shortTime(r.finished_at)}`}
+                className={clsx(
+                  'text-xs px-2 py-1 rounded border dark:border-gray-700 text-left',
+                  runId === r.id ? 'bg-gray-900 text-white border-gray-900' : 'hover:bg-gray-50 dark:hover:bg-gray-800',
+                )}
+              >
+                {shortTime(r.started_at)} · {r.status} · {r.completed}/{r.segments} частей
+                {r.failed ? ` · ошибок ${r.failed}` : ''}
+                {r.reused ? ` · из кэша ${r.reused}` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {loading && <div className="text-gray-500 dark:text-gray-400">Загрузка…</div>}
 
       {!loading && !items.length && (
@@ -99,8 +145,9 @@ export default function SegmentsPage() {
 
       {!loading && !!summary && !!items.length && (
         <div className="text-sm text-gray-600 dark:text-gray-400">
-          Частей: {summary.total} · готово: {summary.completed} · с ошибкой: {summary.failed} ·
-          {' '}находок: {summary.findings}
+          Прогон {runId || '—'} · частей: {summary.total} · готово: {summary.completed} ·
+          {' '}с ошибкой: {summary.failed} · посчитано моделью: {summary.computed} ·
+          {' '}переиспользовано: {summary.reused} · находок: {summary.findings}
         </div>
       )}
 
@@ -114,6 +161,7 @@ export default function SegmentsPage() {
                 <th className="py-2 pr-3">Блоки</th>
                 <th className="py-2 pr-3">Размер</th>
                 <th className="py-2 pr-3">Статус</th>
+                <th className="py-2 pr-3">Источник</th>
                 <th className="py-2 pr-3">Попыток</th>
                 <th className="py-2 pr-3">Находок</th>
                 <th className="py-2 pr-3" />
@@ -142,6 +190,9 @@ export default function SegmentsPage() {
                     <span className={clsx('text-xs px-2 py-0.5 rounded whitespace-nowrap', STATUS_CLASS[s.status] || STATUS_CLASS.pending)}>
                       {STATUS_LABEL[s.status] || s.status}
                     </span>
+                  </td>
+                  <td className="py-2 pr-3 whitespace-nowrap text-gray-500 dark:text-gray-400">
+                    {SOURCE_LABEL[s.source] || '—'}
                   </td>
                   <td className="py-2 pr-3">{s.attempts}</td>
                   <td className="py-2 pr-3">{s.findings_count}</td>

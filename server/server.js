@@ -50,9 +50,12 @@ async function start({ port = PORT, migrate = true, seed = true, worker = worker
   if (migrate) await runMigration();
   if (seed) await runSeedIfEmpty();
   // Задачи, осиротевшие при прошлом падении/рестарте: их подберёт reaper воркера
-  // (продолжит с чекпойнта либо пометит interrupted). Здесь — только «зомби»
-  // статусы стадий, за которыми не стоит ни одного живого задания.
+  // (продолжит с чекпойнта либо пометит interrupted). Здесь — «зомби» статусы
+  // стадий и «вечно бегущие» прогоны, за которыми не стоит ни одного живого
+  // задания: прогон обязан кончаться терминальным статусом с реальным
+  // finished_at, а не оставаться running после смерти процесса.
   await stageEngine.recoverOrphanedRunningStages();
+  await stageEngine.recoverOrphanedStageRuns();
 
   let queueWorker = null;
   if (worker) {

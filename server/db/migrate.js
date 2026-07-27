@@ -294,6 +294,51 @@ async function runMigration() {
   await ensureIndex('idx_self_analysis_run', 'self_analysis_results', 'tender_id, analysis_run_id');
   await ensureIndex('idx_decisions_run', 'review_decisions', 'analysis_run_id');
 
+  // --- Части ТЗ: КЭШ отдельно, ИСТОРИЯ ВЫПОЛНЕНИЯ отдельно -------------------
+  //
+  // Раньше analysis_segments была одной строкой на (тендер, стадия, часть) и
+  // играла обе роли сразу: и кэш результата, и «статус части». Повтор стадии
+  // перезаписывал строку, поэтому история прошлого прогона (где именно он упал)
+  // исчезала, а analysis_run_id показывал лишь ПОСЛЕДНЕГО писателя.
+  // Теперь analysis_segments — кэш, скоупленный РЕВИЗИЕЙ документов, а история
+  // выполнения живёт в analysis_run_segments (UNIQUE (analysis_run_id,
+  // segment_index), пишет только прогон-владелец, пока он running).
+  await ensureColumn('analysis_segments', 'config_version', 'TEXT');
+  await ensureColumn('analysis_segments', 'computed_run_id', 'TEXT');
+  if (await columnExists('analysis_segments', 'analysis_run_id')) {
+    // Кто посчитал результат — переносим в справочное поле кэша (истории из этой
+    // колонки не восстановить: она хранила лишь последнего писателя).
+    await db.queryRun(
+      'UPDATE analysis_segments SET computed_run_id = analysis_run_id WHERE computed_run_id IS NULL',
+    );
+  }
+  // Кэш без ревизии не адресуем (переиспользовать его для другой версии ТЗ
+  // нельзя) — такие строки удаляем: это кэш, а не история.
+  await db.queryRun('DELETE FROM analysis_segments WHERE document_revision_id IS NULL');
+  await db.exec("ALTER TABLE analysis_segments ALTER COLUMN document_revision_id SET DEFAULT '';");
+  await db.exec('ALTER TABLE analysis_segments ALTER COLUMN document_revision_id SET NOT NULL;');
+  // Статус кэша теперь двузначный: есть сохранённый результат или нет.
+  // Прежние 'running'/'failed' — это состояния ВЫПОЛНЕНИЯ, они уехали в историю.
+  await db.queryRun("UPDATE analysis_segments SET status = 'pending' WHERE status NOT IN ('pending', 'completed')");
+  // Ключ кэша: прежний (тендер, стадия, часть) снимаем, новый включает ревизию.
+  await db.exec(
+    'ALTER TABLE analysis_segments DROP CONSTRAINT IF EXISTS analysis_segments_tender_id_analysis_stage_segment_index_key;',
+  );
+  await execTolerant(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ux_segments_cache
+       ON analysis_segments(tender_id, analysis_stage, document_revision_id, segment_index);`,
+  );
+  // Колонки состояния выполнения в кэше больше не нужны — их роль забрала
+  // analysis_run_segments (там они неизменяемы и привязаны к своему прогону).
+  for (const col of ['analysis_run_id', 'attempts', 'error', 'started_at', 'finished_at']) {
+    // eslint-disable-next-line no-await-in-loop
+    if (await columnExists('analysis_segments', col)) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.exec(`ALTER TABLE analysis_segments DROP COLUMN IF EXISTS ${col};`);
+      console.log(`[migrate] analysis_segments.${col} dropped (уехало в analysis_run_segments)`);
+    }
+  }
+
   // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
   // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,
   // 3 = locked (новая пустая стадия).

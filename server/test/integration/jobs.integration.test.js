@@ -443,6 +443,14 @@ test('стадия не остаётся в «running» навсегда: фин
     payload: { stage: 1, prev_status: 'open' },
     tasks: [{ taskKey: 'stage:1', taskType: 'stage_analysis', maxAttempts: 1 }],
   });
+  // Как в production: прогон заводится ПРИ ПОСТАНОВКЕ в очередь (status='running',
+  // реальные started_at / ревизия / версия конфигурации), его id — в задании.
+  // Финализатор обязан завершить ИМЕННО ЕГО, а не создавать вторую строку.
+  const { runId } = await engine.beginStageRun(TENDER, 1, { reason: 'it:job' });
+  await db.queryRun('UPDATE analysis_jobs SET analysis_run_id = ? WHERE id = ?', runId, job.id);
+  const runsBefore = await db.queryOne(
+    'SELECT COUNT(*) AS c FROM analysis_runs WHERE tender_id = ? AND stage = 1', TENDER,
+  );
 
   // Прогон оборван рестартом: аренда истекла, попытки исчерпаны → interrupted.
   const claimed = await queue.claimTask({ workerId: 'w-stage-dead', leaseMs: 1, taskTypes: ['stage_analysis'] });
@@ -457,8 +465,14 @@ test('стадия не остаётся в «running» навсегда: фин
   const state = await engine.getStageState(TENDER);
   assert.equal(state.stage1_status, 'open', 'стадия снова запускаема, кольцо прогресса не крутится вечно');
   const run = await engine.getStageRunSummary(TENDER, 1);
+  assert.equal(run.id, runId, 'завершён ТОТ ЖЕ прогон — отдельной фиктивной строки не появляется');
   assert.equal(engine.classifyStageRun(run), 'interrupted', 'исход виден как «оборван», а не «успех»');
   assert.match(run.summary.error, /прерван|оборван/i, 'в сводке видно, почему прогон не досчитан');
+  assert.ok(run.started_at && run.finished_at, 'у прогона реальные времена начала и конца');
+  const runsAfter = await db.queryOne(
+    'SELECT COUNT(*) AS c FROM analysis_runs WHERE tender_id = ? AND stage = 1', TENDER,
+  );
+  assert.equal(Number(runsAfter.c), Number(runsBefore.c), 'число прогонов не выросло: исход записан в начатый');
 
   // Живого задания на область больше нет — «зомби»-починка на старте сервера
   // такую стадию уже не трогает (её и так починил финализатор).

@@ -55,7 +55,11 @@ after(async () => {
 
 test('нет активного прогона → issuesRunFilter даёт заведомо пустой скоуп (0 находок)', OPTS, async () => {
   const db = getDb();
-  await addIssue(db, 'rs-orphan', null); // issue без прогона (легаси/сирота)
+  // Находка есть, но её прогон не активирован — указателя на стадию нет.
+  // (Строку БЕЗ analysis_run_id здесь брать нельзя: backfill миграции такие
+  // строки как раз восстанавливает — см. migrationPopulated.integration.test.js.)
+  const candidate = await analysisRuns.beginRun(TENDER_ID, analysisRuns.stageScope(1), { stage: 1 });
+  await addIssue(db, 'rs-orphan', candidate);
   assert.equal(await countActive(db), 0, 'без активного stage-прогона находки не считаются');
 });
 

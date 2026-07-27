@@ -78,6 +78,142 @@ async function dropNotNull(table, column) {
   return true;
 }
 
+// --- Backfill снимков анализа (analysis_run_id + указатели) ------------------
+//
+// Раньше здесь стоял ГЛОБАЛЬНЫЙ guard `SELECT COUNT(*) FROM analysis_active_runs`:
+// backfill выполнялся, только пока в базе НЕТ НИ ОДНОГО указателя. На пустой базе
+// это работало, на населённой — нет. Достаточно одному тендеру получить указатель
+// (первый же реальный анализ после обновления) — и backfill молча пропускался
+// НАВСЕГДА: все прочие тендеры оставались с legacy-строками (analysis_run_id IS
+// NULL), а их находки исчезали из счётчиков и выгрузок, потому что issuesRunFilter
+// скоупит issues по указателям, и строка без прогона не входит ни в один снимок.
+// Смешанная база (часть тендеров размечена, часть нет) — нормальное состояние
+// обновляемого стенда, а не исключение.
+//
+// Guard'а больше нет. Backfill идемпотентен САМ ПО СЕБЕ и выполняется ОТДЕЛЬНО
+// для каждого тендера и каждой стадии — по факту наличия legacy-строк, а не по
+// состоянию базы в целом:
+//   • id синтетических прогонов детерминированы (тендер + стадия) → повтор
+//     миграции переиспользует их (ON CONFLICT (id) DO NOTHING), дублей нет;
+//   • строки размечаются только WHERE analysis_run_id IS NULL → уже размеченная
+//     строка (она принадлежит ЧУЖОМУ снимку) не трогается;
+//   • указатели ставятся только ON CONFLICT (tender_id, scope) DO NOTHING →
+//     существующий корректный указатель не перебивается.
+// Имя pipeline-прогона ('runbf_' || tender_id) сохранено от прежней версии
+// backfill'а: база, мигрированная ею, не получает ВТОРОЙ синтетический прогон.
+
+// ISO-строка «сейчас» на стороне БД (формат как у new Date().toISOString()).
+const BF_NOW = `to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
+// (тендер + стадия), где есть строки БЕЗ прогона. issues.analysis_stage — NOT NULL;
+// у сигнала стадия может быть пустой, такой сигнал относим к стадии 1 (иначе он не
+// попадёт вообще ни в один снимок — чтения сигналов идут по id stage-прогонов).
+const STAGE_ORPHANS = `
+  SELECT DISTINCT tender_id, analysis_stage AS stage
+    FROM issues
+   WHERE analysis_run_id IS NULL AND analysis_stage IS NOT NULL
+  UNION
+  SELECT DISTINCT tender_id, COALESCE(analysis_stage, 1) AS stage
+    FROM analysis_signals
+   WHERE analysis_run_id IS NULL`;
+
+// Тендеры, у которых есть legacy-строки производных слоёв конвейера.
+const PIPELINE_ORPHANS = `
+  SELECT tender_id FROM draft_issues          WHERE analysis_run_id IS NULL
+  UNION SELECT tender_id FROM issue_reviews         WHERE analysis_run_id IS NULL
+  UNION SELECT tender_id FROM issue_clusters        WHERE analysis_run_id IS NULL
+  UNION SELECT tender_id FROM self_analysis_results WHERE analysis_run_id IS NULL`;
+
+const DERIVED_TABLES = ['draft_issues', 'issue_reviews', 'issue_clusters', 'self_analysis_results'];
+
+async function backfillAnalysisSnapshots() {
+  const stats = await db.transaction(async (tx) => {
+    const s = {};
+    const count = async (sql) => Number((await tx.queryRun(sql)).changes || 0);
+
+    // 1. Указатель стадии по РЕАЛЬНОМУ прогону — там, где указателя ещё нет. Это
+    //    база, обновлённая с версии, где issues.analysis_run_id уже был, а
+    //    analysis_active_runs ещё не было: снимки есть, «актуального» среди них
+    //    нет. Берём последний completed и НЕ архивированный прогон стадии;
+    //    архивные (resetStage, debug-сборка) пропускаем сознательно — иначе
+    //    миграция воскрешала бы снятый инженером указатель.
+    s.stage_pointers_from_runs = await count(`
+      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
+      SELECT tender_id, 'stage:' || stage, documents_revision_id, config_version, id, COALESCE(finished_at, started_at)
+        FROM (
+          SELECT id, tender_id, stage, documents_revision_id, config_version, started_at, finished_at,
+                 ROW_NUMBER() OVER (PARTITION BY tender_id, stage ORDER BY started_at DESC, id DESC) AS rn
+            FROM analysis_runs
+           WHERE kind = 'stage' AND stage IS NOT NULL AND status = 'completed' AND superseded_at IS NULL
+        ) t
+       WHERE rn = 1
+      ON CONFLICT (tender_id, scope) DO NOTHING`);
+
+    // 2. Синтетический completed stage-прогон на каждую (тендер + стадию) с
+    //    legacy-строками. documents_revision_id / config_version остаются NULL:
+    //    ревизия legacy-прогона неизвестна, и pipelineManifest честно пометит
+    //    такую стадию stage_revision_unknown (её надо пересчитать), а не выдаст
+    //    восстановленный снимок за полноценный вход конвейера.
+    s.stage_runs = await count(`
+      INSERT INTO analysis_runs (id, tender_id, stage, kind, started_at, finished_at, status, summary)
+      SELECT 'runbf_s' || stage || '_' || tender_id, tender_id, stage, 'stage', ${BF_NOW}, ${BF_NOW}, 'completed',
+             '{"backfill":true,"kind":"stage"}'
+        FROM (${STAGE_ORPHANS}) o
+      ON CONFLICT (id) DO NOTHING`);
+
+    // 3. Недостающий указатель стадии — на этот синтетический прогон. Идёт ДО
+    //    разметки строк (шаг 4), потому что драйвер считается по IS NULL. Если у
+    //    стадии указатель уже есть (шаг 1 или реальный анализ), он остаётся, а
+    //    legacy-строки лежат в своём синтетическом прогоне вне активного снимка —
+    //    подмешивать их в чужой актуальный снимок нельзя.
+    s.stage_pointers_synthetic = await count(`
+      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
+      SELECT tender_id, 'stage:' || stage, NULL, NULL, 'runbf_s' || stage || '_' || tender_id, ${BF_NOW}
+        FROM (${STAGE_ORPHANS}) o
+      ON CONFLICT (tender_id, scope) DO NOTHING`);
+
+    // 4. Разметка legacy-строк стадий (issues + signals) своим stage-прогоном.
+    s.issues = await count(`
+      UPDATE issues SET analysis_run_id = 'runbf_s' || analysis_stage || '_' || tender_id
+       WHERE analysis_run_id IS NULL AND analysis_stage IS NOT NULL`);
+    s.signals = await count(`
+      UPDATE analysis_signals SET analysis_run_id = 'runbf_s' || COALESCE(analysis_stage, 1) || '_' || tender_id
+       WHERE analysis_run_id IS NULL`);
+
+    // 5. Производные слои конвейера: синтетический pipeline-прогон + указатель.
+    s.pipeline_runs = await count(`
+      INSERT INTO analysis_runs (id, tender_id, stage, kind, started_at, finished_at, status, summary)
+      SELECT 'runbf_' || tender_id, tender_id, NULL, 'pipeline', ${BF_NOW}, ${BF_NOW}, 'completed',
+             '{"backfill":true,"kind":"pipeline"}'
+        FROM (${PIPELINE_ORPHANS}) o
+      ON CONFLICT (id) DO NOTHING`);
+    s.pipeline_pointers = await count(`
+      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
+      SELECT tender_id, 'pipeline', NULL, NULL, 'runbf_' || tender_id, ${BF_NOW}
+        FROM (${PIPELINE_ORPHANS}) o
+      ON CONFLICT (tender_id, scope) DO NOTHING`);
+    for (const table of DERIVED_TABLES) {
+      s[table] = await count(
+        `UPDATE ${table} SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL`,
+      );
+    }
+
+    // 6. Решения кластерного пути: run_id + cluster_key берём из кластера.
+    s.decisions = await count(`
+      UPDATE review_decisions AS rd
+         SET analysis_run_id = c.analysis_run_id,
+             cluster_key = COALESCE(rd.cluster_key, c.cluster_key)
+        FROM issue_clusters AS c
+       WHERE rd.cluster_id = c.id AND rd.analysis_run_id IS NULL`);
+    return s;
+  });
+
+  const touched = Object.entries(stats).filter(([, n]) => n > 0);
+  if (touched.length) {
+    console.log(`[migrate] analysis snapshots backfilled: ${touched.map(([k, n]) => `${k}=${n}`).join(', ')}`);
+  }
+}
+
 async function runMigration() {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
@@ -158,70 +294,6 @@ async function runMigration() {
   await ensureIndex('idx_self_analysis_run', 'self_analysis_results', 'tender_id, analysis_run_id');
   await ensureIndex('idx_decisions_run', 'review_decisions', 'analysis_run_id');
 
-  // Backfill — один раз: пока нет ни одного указателя. Идемпотентен и по guard'у
-  // (после первого реального activateRun указатели есть → пропуск), и по WHERE
-  // IS NULL / ON CONFLICT внутри. НЕ трогает уже размеченные строки.
-  const ptr = await db.queryOne('SELECT COUNT(*) AS c FROM analysis_active_runs');
-  if (Number(ptr && ptr.c) === 0) {
-    // ISO-строка «сейчас» на стороне БД (формат как у new Date().toISOString()).
-    const NOW = `to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
-    // Указатели stage:N = последний completed прогон каждой стадии.
-    await db.exec(`
-      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
-      SELECT tender_id, 'stage:' || stage, NULL, NULL, id, COALESCE(finished_at, started_at)
-        FROM (
-          SELECT id, tender_id, stage, started_at, finished_at,
-                 ROW_NUMBER() OVER (PARTITION BY tender_id, stage ORDER BY started_at DESC) AS rn
-            FROM analysis_runs
-           WHERE kind = 'stage' AND stage IS NOT NULL AND status = 'completed'
-        ) t
-       WHERE rn = 1
-      ON CONFLICT (tender_id, scope) DO NOTHING;
-    `);
-    // Все прочие stage-прогоны архивируем (актуальные — из указателей выше).
-    await db.exec(`
-      UPDATE analysis_runs SET superseded_at = COALESCE(finished_at, started_at)
-       WHERE kind = 'stage' AND superseded_at IS NULL
-         AND id NOT IN (SELECT analysis_run_id FROM analysis_active_runs WHERE scope LIKE 'stage:%');
-    `);
-    // Синтетический pipeline-прогон на каждый тендер с производными строками.
-    await db.exec(`
-      INSERT INTO analysis_runs (id, tender_id, stage, kind, started_at, finished_at, status)
-      SELECT 'runbf_' || tender_id, tender_id, NULL, 'pipeline', ${NOW}, ${NOW}, 'completed'
-        FROM (
-          SELECT tender_id FROM draft_issues
-          UNION SELECT tender_id FROM issue_reviews
-          UNION SELECT tender_id FROM issue_clusters
-          UNION SELECT tender_id FROM self_analysis_results
-        ) t
-      ON CONFLICT (id) DO NOTHING;
-    `);
-    // Разметка производных строк pipeline-прогоном.
-    await db.exec(`UPDATE draft_issues          SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
-    await db.exec(`UPDATE issue_reviews         SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
-    await db.exec(`UPDATE issue_clusters        SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
-    await db.exec(`UPDATE self_analysis_results SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL;`);
-    // Решения кластерного пути: run_id + cluster_key берём из кластера.
-    await db.exec(`
-      UPDATE review_decisions AS rd
-         SET analysis_run_id = c.analysis_run_id,
-             cluster_key = COALESCE(rd.cluster_key, c.cluster_key)
-        FROM issue_clusters AS c
-       WHERE rd.cluster_id = c.id AND rd.analysis_run_id IS NULL;
-    `);
-    // Указатель pipeline на синтетический прогон.
-    await db.exec(`
-      INSERT INTO analysis_active_runs (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
-      SELECT DISTINCT tender_id, 'pipeline', NULL, NULL, 'runbf_' || tender_id, ${NOW}
-        FROM (
-          SELECT tender_id FROM draft_issues
-          UNION SELECT tender_id FROM issue_clusters
-        ) t
-      ON CONFLICT (tender_id, scope) DO NOTHING;
-    `);
-    console.log('[migrate] analysis snapshots backfilled (runs/pointers/derived layers)');
-  }
-
   // Стадия 5 (Самоанализ ТЗ) — добавлена при введении новой Стадии 3
   // (Существенные условия). Старые данные нужно сдвинуть: 4→5, 3→4,
   // 3 = locked (новая пустая стадия).
@@ -246,6 +318,11 @@ async function runMigration() {
     await db.exec(`UPDATE tz_excluded_ranges SET after_stage = 4 WHERE after_stage = 3;`);
     console.log('[migrate] stages renumbered: 3=conditions(new), 4=risks(was 3), 5=selfAnalysis(was 4)');
   }
+
+  // Backfill снимков анализа — отдельно по каждому тендеру и каждой стадии.
+  // Строго ПОСЛЕ перенумерации стадий: иначе синтетические прогоны получили бы id
+  // и scope указателя по старому номеру стадии, а сам номер уехал бы на +1.
+  await backfillAnalysisSnapshots();
 
   // --- Безопасность: изоляция тенантов и происхождение файлов ---------------
   // tenders.tenant_id — ключ изоляции. Существующие тендеры уходят в тенант по

@@ -427,6 +427,16 @@ async function runMigration() {
   await ensureIndex('idx_issue_clusters_verdict', 'issue_clusters', 'tender_id, analysis_run_id, verdict');
   await backfillMateriality();
 
+  // Precision-критик (services/critic/precision/): исход проверки, кто его принял
+  // и полная карта из 9 измерений. Старые строки остаются с NULL — это честно:
+  // их никакой критик не проверял, и выдумывать ему решение задним числом нельзя.
+  // Вердикт таких строк уже перенесён backfillMateriality, поэтому из выборок
+  // они не выпадают.
+  await ensureColumn('issue_reviews', 'critic_outcome', 'TEXT');
+  await ensureColumn('issue_reviews', 'critic_source', 'TEXT');
+  await ensureColumn('issue_reviews', 'critic_assessment', 'TEXT');
+  await ensureIndex('idx_issue_reviews_outcome', 'issue_reviews', 'tender_id, analysis_run_id, critic_outcome');
+
   // --- Части ТЗ: КЭШ отдельно, ИСТОРИЯ ВЫПОЛНЕНИЯ отдельно -------------------
   //
   // Раньше analysis_segments была одной строкой на (тендер, стадия, часть) и

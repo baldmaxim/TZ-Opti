@@ -240,6 +240,44 @@ payload → `draft_issues` хранит мнение агентов (`impact_lev
 `server/test/integration/materiality.integration.test.js` (матрица через Postgres, режимы
 выборки, свёртка на кластер, безопасность переноса).
 
+**PRECISION-КРИТИК: публикацию решает НЕЗАВИСИМАЯ двухуровневая проверка, а не
+эвристические баллы.** `server/services/critic/precision/` — последнее слово о том,
+увидит ли инженер замечание. Прежний critic начислял баллы и публиковал почти всё, что
+набрало «medium»; теперь оценка разложена на **9 измерений** (`precision/assessment.js`):
+`evidence_strength` (strong|medium|weak|none), `business_consequence`
+(critical|high|medium|low|none), `actionability` (actionable|conditional|none),
+`novelty` (novel|partial_duplicate|duplicate) и пять каналов влияния —
+`scope_impact` / `cost_impact` / `schedule_impact` / `contract_impact` /
+`responsibility_impact`. Каждая ось может САМА заблокировать публикацию.
+**Уровень 1 — детерминированные жёсткие фильтры** (`precision/hardFilters.js`, чистые,
+одно правило = одна названная причина, порядок значим): `no_anchor` / `duplicate` /
+`no_evidence` → `reject_invalid`; `editorial` / `standard_requirement` / `no_consequence` /
+`weak_assumption` / `not_actionable` / `low_consequence` → `hide_informational`;
+`coverage_conflict` (пробел покрытия ВОР/КП — машинный факт) / `scope_expansion` /
+`strong_critical` / `strong_high` → публикация. Не решённое правилами — **спорное**.
+**Уровень 2 — отдельная LLM-проверка ТОЛЬКО спорных** (`precision/llmCritic.js`): промт
+требует ИСКАТЬ ОСНОВАНИЯ НЕ ПОКАЗЫВАТЬ, сомнение трактуется в пользу скрытия, модель
+обязана вернуть `reasons_against`. Критику НЕ показывают confidence и criticality агента —
+высокая уверенность нашедшего не является основанием публикации. Решение модели
+СОГЛАСУЕТСЯ с инвариантами (`reconcile`): она может только ужесточить — не опубликует
+`low`/`none`, не отменит детерминированный повтор, не поднимет доказательность выше
+структурной. Исходы: **`publish_critical` | `publish_working` | `hide_informational` |
+`reject_invalid`** → `issue_reviews.critic_outcome` (+ `critic_source`
+hard_filter|llm|escalation|unresolved и полная карта в `critic_assessment`), а
+`mergePrecisionDecision` превращает их в `verdict` (publish / suppress). **FAIL-CLOSED:**
+при полном сбое или выключенном критике (`PRECISION_CRITIC=0`) спорные замечания НЕ
+публикуются автоматически — `critic_outcome=NULL`, `verdict='verify'` (полка «На
+проверку», ничего не потеряно). Единственное исключение — эскалация: спорное со
+`strong`-доказательствами и последствием critical/high показывается с пометкой «критик
+недоступен» (цена пропуска дорогого риска выше цены лишней строки); medium/low в
+эскалацию не попадают никогда. Предел спорных на прогон — `PRECISION_CRITIC_MAX`,
+остаток НЕ маскируется (`summary.precision.over_limit`). Скоринг материальности вынесен в
+`critic/criticScoring.js` (конвенция ≤600 строк): «как считаем» отдельно от «как
+сохраняем и фильтруем». Тесты — `server/test/unit/precisionCritic.test.js` (стилистическая
+правка / нет последствия / противоречие ВОР / расширение объёма / дубликат / слабое
+предположение + fail-closed + границы полномочий модели) и
+`server/test/integration/materiality.integration.test.js` (исходы и карта в колонках).
+
 **Исход прогона конвейера ХРАНИТСЯ в `analysis_runs.summary`, а не выводится заново.**
 `buildRunOutcome` (чистая) собирает ОДИН отчёт и для ответа API, и для записи в БД:
 `status` (контракт `resultStatus`), `warnings`, причины частичного результата (`partial`),

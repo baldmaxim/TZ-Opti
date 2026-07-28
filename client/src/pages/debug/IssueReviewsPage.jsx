@@ -171,6 +171,15 @@ export default function IssueReviewsPage() {
                   → {r.required_action}
                 </span>
               )}
+              {/* Precision-критик: исход, кто его принял и по какому правилу. */}
+              <span
+                className="text-xs px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300"
+                title="Исход precision-критика (правило / модель)"
+              >
+                {r.critic_outcome || 'не решено'}
+                {r.critic_source ? ` · ${r.critic_source}` : ''}
+                {r.critic_assessment?.rule ? ` · ${r.critic_assessment.rule}` : ''}
+              </span>
               <span className={`text-xs px-2 py-0.5 rounded font-medium ${PRIORITY_CLASS[r.display_priority] || ''}`} title="Легаси-приоритет сортировки">
                 {r.display_priority}
               </span>
@@ -186,6 +195,19 @@ export default function IssueReviewsPage() {
               <div className="text-sm text-gray-800 dark:text-gray-100 whitespace-pre-wrap line-clamp-2">«{r.source_fragment}»</div>
             )}
             <div className="text-sm text-gray-700 dark:text-gray-300">{r.critic_comment}</div>
+            {/* Доводы ПРОТИВ публикации — критик обязан их назвать даже когда публикует. */}
+            {Array.isArray(r.critic_assessment?.reasons_against) && r.critic_assessment.reasons_against.length > 0 && (
+              <ul className="text-xs text-gray-500 dark:text-gray-400 list-disc pl-5">
+                {r.critic_assessment.reasons_against.map((x, i) => <li key={i}>{x}</li>)}
+              </ul>
+            )}
+            {r.critic_assessment && (
+              <div className="text-xs text-gray-400 dark:text-gray-500 font-mono">
+                {['evidence_strength', 'business_consequence', 'actionability', 'novelty',
+                  'scope_impact', 'cost_impact', 'schedule_impact', 'contract_impact', 'responsibility_impact']
+                  .map((k) => `${k}=${r.critic_assessment[k]}`).join(' · ')}
+              </div>
+            )}
             {Array.isArray(r.criteria) && r.criteria.length > 0 && (
               <div className="text-xs text-gray-400 dark:text-gray-500 font-mono">критерии: {r.criteria.join(', ')}</div>
             )}

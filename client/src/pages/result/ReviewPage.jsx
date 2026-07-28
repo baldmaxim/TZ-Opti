@@ -12,6 +12,8 @@ import {
   verdictClass,
   impactClass,
   formatDimensions,
+  CRITIC_OUTCOMES,
+  CRITIC_SOURCES,
 } from '../../utils/labels';
 import { formatTzClause, clusterTopic, humanizeNote } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
@@ -268,6 +270,13 @@ function ClusterCard({ index, cluster, onDecide }) {
                         <span className="text-gray-500 dark:text-gray-400">
                           {IMPACT_LEVELS[it.impact_level] || it.impact_level}
                           {it.evidence_level ? `, ${(EVIDENCE_LEVELS[it.evidence_level] || it.evidence_level).toLowerCase()}` : ''}
+                        </span>
+                      )}
+                      {/* Исход precision-критика: кто и почему решил судьбу замечания. */}
+                      {(it.critic_outcome || it.critic_source) && (
+                        <span className="text-gray-400 dark:text-gray-500">
+                          {CRITIC_OUTCOMES[it.critic_outcome] || 'Критиком не решено'}
+                          {it.critic_source ? ` (${CRITIC_SOURCES[it.critic_source] || it.critic_source})` : ''}
                         </span>
                       )}
                     </div>

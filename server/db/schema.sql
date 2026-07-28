@@ -306,6 +306,12 @@ CREATE TABLE IF NOT EXISTS issue_reviews (
   publication_reason     TEXT,               -- почему публикуется (только для publish)
   suppression_reason     TEXT,               -- почему скрыто (только для suppress)
   required_action        TEXT,               -- amend_tz|exclude_scope|ask_customer|add_assumption|recalculate|none
+  -- PRECISION-КРИТИК (services/critic/precision/) — независимая проверка перед
+  -- публикацией: уровень 1 детерминированные жёсткие фильтры, уровень 2 отдельная
+  -- LLM-проверка спорных с установкой «искать основания НЕ показывать».
+  critic_outcome         TEXT,               -- publish_critical|publish_working|hide_informational|reject_invalid; NULL = критик не решил (verdict='verify')
+  critic_source          TEXT,               -- hard_filter|llm|escalation|unresolved (кто принял решение)
+  critic_assessment      TEXT,               -- JSON: карта из 9 измерений + доводы против + сработавшее правило
   created_at             TEXT NOT NULL,
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE,
   FOREIGN KEY (draft_issue_id) REFERENCES draft_issues(id) ON DELETE CASCADE

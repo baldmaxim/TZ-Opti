@@ -210,6 +210,23 @@ export const REQUIRED_ACTIONS = {
   none: 'Действий не требуется',
 };
 
+// Исход precision-критика (server/services/critic/precision/): независимая
+// проверка замечания перед публикацией. NULL/отсутствие = критик не решил
+// (замечание на полке «На проверку»).
+export const CRITIC_OUTCOMES = {
+  publish_critical: 'Показать в первую очередь',
+  publish_working: 'Показать в рабочем списке',
+  hide_informational: 'Скрыто: инженеру не нужно',
+  reject_invalid: 'Отклонено: замечание невалидно',
+};
+
+export const CRITIC_SOURCES = {
+  hard_filter: 'решено правилом',
+  llm: 'проверено критиком',
+  escalation: 'критик недоступен, показано по правилу эскалации',
+  unresolved: 'критиком не проверено',
+};
+
 export const verdictClass = (v) => {
   if (v === 'publish') return 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300';
   if (v === 'verify') return 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300';

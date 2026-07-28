@@ -52,20 +52,40 @@ const IMPACT_RECIPE = {
   critical: { baseCategory: 'condition', problem_type: 'условие_противоречит', fragment: 'Стороны действуют по правилам приложения 5.' },
 };
 
-// Ожидаемая матрица — выписана независимо от реализации (как в юнит-тесте).
-const EXPECTED = {
-  critical: { strong: 'publish', medium: 'publish', weak: 'verify' },
-  high: { strong: 'publish', medium: 'publish', weak: 'verify' },
-  medium: { strong: 'publish', medium: 'verify', weak: 'verify' },
-  low: { strong: 'suppress', medium: 'suppress', weak: 'suppress' },
-  none: { strong: 'suppress', medium: 'suppress', weak: 'suppress' },
+// ИСХОД PRECISION-КРИТИКА при ВЫКЛЮЧЕННОМ LLM-уровне (в тестовом процессе ключа
+// модели нет). Выписан независимо от реализации — тест обязан падать, если
+// правила поедут:
+//   • публикуются только надёжно доказанные существенные последствия;
+//   • low/none скрываются жёстким правилом, без модели;
+//   • ВСЁ medium и всё слабо доказанное — спорное: критик не отработал, значит
+//     замечание НЕ публикуется автоматически (verdict='verify'), но и не теряется.
+// Это и есть требование «не публиковать спорные medium/low при сбое критика».
+const EXPECTED_OUTCOME = {
+  critical: { strong: 'publish_critical', medium: null, weak: null },
+  high: { strong: 'publish_working', medium: null, weak: null },
+  medium: { strong: null, medium: null, weak: null },
+  low: { strong: 'hide_informational', medium: 'hide_informational', weak: 'hide_informational' },
+  none: { strong: 'hide_informational', medium: 'hide_informational', weak: 'hide_informational' },
 };
 
-const caseId = (impact, evidence) => `mat-${impact}-${evidence}`;
+// Исход критика → вердикт строки (services/critic/criticService.mergePrecisionDecision).
+const VERDICT_BY_OUTCOME = {
+  publish_critical: 'publish',
+  publish_working: 'publish',
+  hide_informational: 'suppress',
+  reject_invalid: 'suppress',
+};
+const expectedVerdict = (outcome) => (outcome == null ? 'verify' : VERDICT_BY_OUTCOME[outcome]);
 
-// Один draft_issue под клетку матрицы. Обоснование НЕЙТРАЛЬНОЕ: оно не должно
-// добавлять материальных признаков, иначе рецепт влияния поплывёт.
-async function insertMatrixDraft(db, runId, impact, evidence) {
+const caseId = (impact, evidence, prefix = 'mat') => `${prefix}-${impact}-${evidence}`;
+
+// Один draft_issue под клетку матрицы. Требования к фикстуре:
+//   • обоснование НЕЙТРАЛЬНОЕ — не добавляет материальных признаков;
+//   • место и цитата УНИКАЛЬНЫ для клетки — иначе клетки станут повторами друг
+//     друга и precision-критик отклонит их как дубликаты (что он и должен делать);
+//   • suggested_action='replace' — у замечания есть выход (actionability),
+//     иначе всё скрывалось бы правилом «нечего делать» и матрица не проверялась бы.
+async function insertMatrixDraft(db, runId, impact, evidence, index, prefix = 'mat') {
   const recipe = IMPACT_RECIPE[impact];
   const category = evidence === 'strong' ? `${recipe.baseCategory}+risk` : recipe.baseCategory;
   const basis = evidence === 'weak' ? null : 'Замечание зафиксировано агентом стадии.';
@@ -73,9 +93,11 @@ async function insertMatrixDraft(db, runId, impact, evidence) {
     `INSERT INTO draft_issues (id, tender_id, analysis_run_id, tz_clause, source_fragment,
        problem_type, category, basis, suggested_action, confidence, paragraph_index, created_at,
        verdict, evidence_level, impact_dimensions, required_action)
-     VALUES (?, ?, ?, 'п. 2.1', ?, ?, ?, ?, 'comment', 0.8, 7, ?, 'verify', 'weak', '[]', 'ask_customer')`,
-    caseId(impact, evidence), TENDER_ID, runId, recipe.fragment,
-    recipe.problem_type, category, basis, nowIso(),
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'replace', 0.8, ?, ?, 'verify', 'weak', '[]', 'ask_customer')`,
+    caseId(impact, evidence, prefix), TENDER_ID, runId,
+    `п. 2.${index + 1}`,
+    `${recipe.fragment} (клетка ${impact}/${evidence})`,
+    recipe.problem_type, category, basis, index, nowIso(),
   );
 }
 
@@ -130,19 +152,28 @@ test('матрица impact × evidence: 15 клеток проходят critic
   const db = getDb();
   matrixRunId = await analysisRuns.beginCandidateRun(TENDER_ID, { reason: 'materiality.test' });
 
+  let index = 0;
   for (const impact of m.IMPACT_LEVELS) {
     for (const evidence of m.EVIDENCE_LEVELS) {
       // eslint-disable-next-line no-await-in-loop
-      await insertMatrixDraft(db, matrixRunId, impact, evidence);
+      await insertMatrixDraft(db, matrixRunId, impact, evidence, index);
+      index += 1;
     }
   }
 
   const res = await critic.buildIssueReviews(TENDER_ID, matrixRunId);
   assert.equal(res.summary.reviewed, 15, 'оценены все 15 замечаний');
+  // Отчёт precision-критика обязан быть в summary: сколько решено правилами,
+  // сколько осталось спорным. «Молча решили всё» — недопустимо.
+  assert.ok(res.summary.precision, 'в отчёте должен быть блок precision-критика');
+  assert.equal(res.summary.precision.total, 15);
+  assert.equal(res.summary.precision.llm_enabled, false, 'в тестовом процессе LLM-уровень выключен');
+  assert.ok(res.summary.precision.contested > 0, 'часть замечаний обязана попасть в спорные');
 
   const rows = await db.queryAll(
     `SELECT draft_issue_id, impact_level, evidence_level, verdict, impact_dimensions,
-            publication_reason, suppression_reason, required_action, show_to_engineer
+            publication_reason, suppression_reason, required_action, show_to_engineer,
+            critic_outcome, critic_source, critic_assessment
        FROM issue_reviews WHERE tender_id = ? AND analysis_run_id = ?`,
     TENDER_ID, matrixRunId,
   );
@@ -152,14 +183,35 @@ test('матрица impact × evidence: 15 клеток проходят critic
   for (const impact of m.IMPACT_LEVELS) {
     for (const evidence of m.EVIDENCE_LEVELS) {
       const row = byId.get(caseId(impact, evidence));
+      const expectedOutcome = EXPECTED_OUTCOME[impact][evidence];
       assert.ok(row, `нет строки для ${impact}/${evidence}`);
       assert.equal(row.impact_level, impact, `impact для ${impact}/${evidence}`);
       assert.equal(row.evidence_level, evidence, `evidence для ${impact}/${evidence}`);
       assert.equal(
-        row.verdict,
-        EXPECTED[impact][evidence],
-        `вердикт для ${impact}/${evidence}: ожидался ${EXPECTED[impact][evidence]}, в БД ${row.verdict}`,
+        row.critic_outcome,
+        expectedOutcome,
+        `исход критика для ${impact}/${evidence}: ожидался ${expectedOutcome}, в БД ${row.critic_outcome}`,
       );
+      assert.equal(
+        row.verdict,
+        expectedVerdict(expectedOutcome),
+        `вердикт для ${impact}/${evidence}: в БД ${row.verdict}`,
+      );
+      assert.equal(
+        row.critic_source,
+        expectedOutcome == null ? 'unresolved' : 'hard_filter',
+        `кто принял решение по ${impact}/${evidence}`,
+      );
+
+      // Карта из 9 измерений сохраняется целиком — по ней видно, ПОЧЕМУ так решено.
+      const card = JSON.parse(row.critic_assessment);
+      for (const field of ['evidence_strength', 'business_consequence', 'actionability', 'novelty',
+        'scope_impact', 'cost_impact', 'schedule_impact', 'contract_impact', 'responsibility_impact']) {
+        assert.ok(card[field], `${impact}/${evidence}: в карте нет измерения ${field}`);
+      }
+      assert.equal(card.business_consequence, impact, 'последствие = уровень влияния клетки');
+      assert.ok(card.rule, 'сработавшее правило названо');
+
       // show_to_engineer в БД обязан совпадать с вердиктом: колонку читают
       // клиент и выгрузки.
       assert.equal(
@@ -184,6 +236,12 @@ test('матрица impact × evidence: 15 клеток проходят critic
       for (const d of dims) assert.ok(m.IMPACT_DIMENSIONS.includes(d), `измерение вне словаря: ${d}`);
     }
   }
+
+  // Главный инвариант: замечание с низким/нулевым последствием не публикуется
+  // никогда, а спорное — не публикуется без критика.
+  const published = rows.filter((r) => r.verdict === 'publish');
+  assert.ok(published.every((r) => ['critical', 'high'].includes(r.impact_level)));
+  assert.ok(published.every((r) => r.evidence_level === 'strong'));
 });
 
 // --- 2. Режимы выборки — это SQL --------------------------------------------
@@ -194,7 +252,7 @@ test('режимы выборки: working = только опубликован
   const suppressedExpected = [];
   for (const impact of m.IMPACT_LEVELS) {
     for (const evidence of m.EVIDENCE_LEVELS) {
-      const bucket = EXPECTED[impact][evidence];
+      const bucket = expectedVerdict(EXPECTED_OUTCOME[impact][evidence]);
       const id = caseId(impact, evidence);
       if (bucket === 'publish') publishedExpected.push(id);
       else if (bucket === 'verify') verifyExpected.push(id);
@@ -218,7 +276,11 @@ test('режимы выборки: working = только опубликован
     important.every((r) => r.verdict === 'publish' && ['critical', 'high'].includes(r.impact_level)),
     'important — только опубликованные с высоким влиянием',
   );
-  assert.ok(important.length > 0 && important.length < working.length);
+  // important — подмножество working (после precision-критика публикуется только
+  // доказанное существенное, поэтому наборы могут и совпадать).
+  assert.ok(important.length > 0 && important.length <= working.length);
+  const workingIds = new Set(working.map((r) => r.draft_issue_id));
+  assert.ok(important.every((r) => workingIds.has(r.draft_issue_id)));
 
   const full = await critic.listIssueReviews(TENDER_ID, 'full', { runId: matrixRunId });
   assert.equal(full.length, 15, 'ничего не удалено: скрытое и «на проверку» остаются в базе');
@@ -264,6 +326,77 @@ test('кластер (объект рецензии) получает верди
   const full = await clustering.listClusters(TENDER_ID, 'full', matrixRunId);
   assert.equal(full.length, rows.length, 'полный режим показывает все кластеры снимка');
   assert.ok(full.length >= working.length + toVerify.length);
+});
+
+// --- 3a. Уровень 2 критика: решение модели доезжает до колонок ---------------
+
+test('LLM-уровень критика: решение по спорному замечанию сохраняется в issue_reviews', OPTS, async (t) => {
+  const db = getDb();
+  const { installFakeLlm } = require('../helpers/fakeLlm');
+  // Спорные клетки прошлого прогона (medium/*, critical|high + medium|weak) —
+  // ровно те, что уровень 1 решить не смог. Модель отвечает на все: половину
+  // публикует, половину скрывает.
+  const llm = installFakeLlm(t, (call) => {
+    const ids = [...String(call.user).matchAll(/id: (\S+)/g)].map((mm) => mm[1]);
+    return {
+      decisions: ids.map((id, i) => ({
+        id,
+        evidence_strength: 'medium',
+        business_consequence: i % 2 === 0 ? 'high' : 'medium',
+        actionability: 'actionable',
+        novelty: 'novel',
+        scope_impact: 'none',
+        cost_impact: i % 2 === 0 ? 'high' : 'medium',
+        schedule_impact: 'none',
+        contract_impact: 'none',
+        responsibility_impact: 'none',
+        outcome: i % 2 === 0 ? 'publish_working' : 'hide_informational',
+        reasons_against: i % 2 === 0 ? ['доказательства неполные'] : ['последствие не доказано'],
+        reason: i % 2 === 0 ? 'Существенное последствие подтверждено цитатой.' : 'Последствие не доказано.',
+      })),
+    };
+  });
+
+  const runId = await analysisRuns.beginCandidateRun(TENDER_ID, { reason: 'materiality.llm' });
+  let index = 0;
+  for (const impact of m.IMPACT_LEVELS) {
+    for (const evidence of m.EVIDENCE_LEVELS) {
+      // eslint-disable-next-line no-await-in-loop
+      await insertMatrixDraft(db, runId, impact, evidence, index, 'llm');
+      index += 1;
+    }
+  }
+
+  const res = await critic.buildIssueReviews(TENDER_ID, runId, { llmEnabled: true });
+  assert.ok(llm.callCount > 0, 'спорные замечания обязаны уйти в критика');
+  assert.equal(res.summary.precision.llm_enabled, true);
+  assert.ok(res.summary.precision.llm_checked > 0, 'решения модели учтены');
+  assert.equal(res.summary.precision.unresolved, 0, 'после ответа критика нерешённых не остаётся');
+
+  const rows = await db.queryAll(
+    `SELECT draft_issue_id, verdict, critic_outcome, critic_source, publication_reason, suppression_reason
+       FROM issue_reviews WHERE tender_id = ? AND analysis_run_id = ? AND critic_source = 'llm'`,
+    TENDER_ID, runId,
+  );
+  assert.ok(rows.length > 0, 'в БД должны быть строки, решённые моделью');
+  for (const row of rows) {
+    assert.ok(['publish_working', 'hide_informational'].includes(row.critic_outcome));
+    assert.equal(row.verdict, row.critic_outcome === 'publish_working' ? 'publish' : 'suppress');
+    if (row.verdict === 'publish') {
+      // Доводы против сохраняются даже у опубликованного — инженер видит, чего не хватает.
+      assert.ok(/Доводы против/.test(row.publication_reason), row.publication_reason);
+    } else {
+      assert.ok(row.suppression_reason);
+    }
+  }
+
+  // Ни одна строка не осталась без вердикта.
+  const unresolved = await db.queryOne(
+    `SELECT COUNT(*) AS c FROM issue_reviews
+      WHERE tender_id = ? AND analysis_run_id = ? AND verdict = 'verify'`,
+    TENDER_ID, runId,
+  );
+  assert.equal(Number(unresolved.c), 0);
 });
 
 // --- 4. Перенос старых данных (правило 7) -----------------------------------

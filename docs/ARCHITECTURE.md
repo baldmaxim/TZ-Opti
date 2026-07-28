@@ -88,7 +88,8 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 | Экран «Итог» / финальная «Рецензия» | `review/clusterReviewService.js` `listReviewClusters(tenderId)` поверх `issue_clusters` | consolidation.js — legacy-fallback |
 | Исключение фрагментов из активного текста для следующих стадий | `tz_excluded_ranges` (пишется в `finishStage` по `delete`/`remove_from_scope` issue-level решений стадий 1–4) | — |
 | Ранжирование/группировка/полнота находок (аналитика) | конвейер: `analysis_signals` → … → `self_analysis_results` | — |
-| **Показывать ли замечание инженеру** (материальность) | `review/materiality.js` (матрица `impact_level` × `evidence_level` → `verdict`), считает `critic/criticService.js`; свёртка на кластер — `clustering/clusteringService.js` | `criticality` агента и `confidence` модели — легаси-сортировка (`score`, `display_priority`), на публикацию НЕ влияют |
+| **Показывать ли замечание инженеру** (материальность) | `review/materiality.js` (матрица `impact_level` × `evidence_level` → `verdict`), считает `critic/criticScoring.js`; свёртка на кластер — `clustering/clusteringService.js` | `criticality` агента и `confidence` модели — легаси-сортировка (`score`, `display_priority`), на публикацию НЕ влияют |
+| **Последнее слово о публикации** (фильтрация draft_issues) | `critic/precision/` — precision-критик: уровень 1 детерминированные жёсткие фильтры (`hardFilters.js`), уровень 2 отдельная LLM-проверка спорных (`llmCritic.js`). Исход в `issue_reviews.critic_outcome`, карта из 9 измерений в `critic_assessment` | оценка материальности — только ВХОД критика; при сбое критика спорные medium/low не публикуются (`verdict='verify'`) |
 | Названия стадий | сервер `STAGE_LABELS` (`stageAnalysisEngine.js`), клиент `STAGE_META` (`client/src/utils/labels.js`) — тексты должны совпадать | не хардкодить в других местах |
 | Зоны ответственности агентов (`problem_type` по стадии) | `review/stageDomains.js` | — |
 | «Вид решения» (delete vs вынести vs правка vs примечание) в docx/preview/md | `review/decisionModel.js` (`decisionVisual` + `resolveRedaction`) | — |
@@ -119,6 +120,17 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 > свёртка на объект рецензии) вместе с `impact_dimensions`, `publication_reason`,
 > `suppression_reason` и `required_action`. Ничего не удаляется: режимы выборки
 > `working` (publish) / `verify` / `important` / `full` — это SQL по `verdict`.
+
+> **Публикацию решает PRECISION-КРИТИК — независимая двухуровневая проверка**
+> (`critic/precision/`). Уровень 1: детерминированные жёсткие фильтры (редактура,
+> повтор, нет последствия, пробел покрытия ВОР, расширение объёма) — решают большинство
+> случаев без модели. Уровень 2: отдельная LLM-проверка ТОЛЬКО спорных, с установкой
+> «искать основания НЕ показывать»; ей не показывают ни `confidence`, ни `criticality`
+> агента, и она может лишь ужесточить решение (`low`/`none` не публикуются, повтор не
+> отменяется). Исходы `publish_critical` / `publish_working` / `hide_informational` /
+> `reject_invalid` ложатся в `issue_reviews.critic_outcome`, оценка по 9 измерениям — в
+> `critic_assessment`. При сбое или выключении критика спорные medium/low НЕ публикуются
+> автоматически: `verdict='verify'`, полка «На проверку».
 
 ---
 

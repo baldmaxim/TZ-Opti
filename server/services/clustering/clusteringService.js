@@ -426,7 +426,8 @@ async function listClusters(tenderId, mode = 'working', runId) {
             d.basis, d.suggested_action, d.confidence,
             r.display_priority, r.show_to_engineer,
             r.impact_level, r.evidence_level, r.verdict, r.impact_dimensions,
-            r.publication_reason, r.suppression_reason, r.required_action
+            r.publication_reason, r.suppression_reason, r.required_action,
+            r.critic_outcome, r.critic_source
        FROM issue_cluster_items ci
        JOIN draft_issues d ON d.id = ci.draft_issue_id
        LEFT JOIN issue_reviews r ON r.draft_issue_id = d.id

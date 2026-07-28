@@ -166,6 +166,63 @@ export const RISK_CATEGORIES = {
   график: 'График',
 };
 
+// --- Модель материальности замечания ----------------------------------------
+// Зеркало server/services/review/materiality.js. Публикацию замечания решают
+// ДВЕ оси: impact (насколько дорого ГП) и evidence (насколько подтверждено);
+// criticality/confidence на это больше не влияют. Значения словарей должны
+// совпадать с серверными — не хардкодить подписи в других местах.
+
+export const VERDICTS = {
+  publish: 'Материальное',
+  verify: 'На проверку',
+  suppress: 'Скрыто',
+};
+
+export const IMPACT_LEVELS = {
+  critical: 'Влияние критическое',
+  high: 'Влияние высокое',
+  medium: 'Влияние умеренное',
+  low: 'Влияние низкое',
+  none: 'Влияния нет',
+};
+
+export const EVIDENCE_LEVELS = {
+  strong: 'Подтверждено надёжно',
+  medium: 'Подтверждено частично',
+  weak: 'Подтверждено слабо',
+};
+
+export const IMPACT_DIMENSIONS = {
+  price: 'Стоимость',
+  schedule: 'Срок',
+  payment: 'Приёмка и оплата',
+  contract: 'Договор',
+  responsibility: 'Ответственность ГП',
+  scope: 'Объём работ',
+};
+
+export const REQUIRED_ACTIONS = {
+  amend_tz: 'Изменить формулировку ТЗ',
+  exclude_scope: 'Вынести из объёма ГП',
+  ask_customer: 'Запросить у заказчика',
+  add_assumption: 'Зафиксировать допущение в КП',
+  recalculate: 'Пересчитать объём/стоимость',
+  none: 'Действий не требуется',
+};
+
+export const verdictClass = (v) => {
+  if (v === 'publish') return 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300';
+  if (v === 'verify') return 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300';
+  return 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400';
+};
+
+export const impactClass = (level) => criticalityClass(level);
+
+export const formatDimensions = (dims) => {
+  const list = Array.isArray(dims) ? dims : [];
+  return list.map((d) => IMPACT_DIMENSIONS[d] || d);
+};
+
 export const formatProblemType = (raw) => {
   if (!raw) return '—';
   return PROBLEM_TYPES[raw] || raw.replace(/_/g, ' ');

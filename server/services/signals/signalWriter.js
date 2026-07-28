@@ -42,6 +42,14 @@ function buildSignal({ tenderId, runId, stage, issueId, issue }) {
     context_text: issue.context_text || null,
     section_path: issue.section_path || null,
     source_clause: issue.source_clause || null,
+    // Оценка материальности от агента стадии (llmStage.buildIssue): impact/
+    // evidence/измерения/флаг «не материально». В таблице issues колонок под них
+    // нет — путь в конвейер идёт ЧЕРЕЗ payload сигнала, поэтому backfill из
+    // issues их не несёт (сервер тогда считает всё сам, fail-closed).
+    impact_level: issue.impact_level || null,
+    evidence_level: issue.evidence_level || null,
+    impact_dimensions: Array.isArray(issue.impact_dimensions) ? issue.impact_dimensions : [],
+    materiality_flags: Array.isArray(issue.materiality_flags) ? issue.materiality_flags : [],
   };
   return {
     id: newId(),

@@ -22,6 +22,7 @@ const {
   buildIssue,
   locateInBlocks,
 } = require('./shared/llmStage');
+const { attachMateriality } = require('./shared/materialityFields');
 const { ALL_ACTIONS } = require('../analysis/actions');
 const {
   buildCatalog,
@@ -32,7 +33,7 @@ const {
 } = require('../vor/vorCatalog');
 const { buildMatchIndex, selectCandidates, crossReference } = require('../vor/vorMatchIndex');
 
-const RESPONSE_SCHEMA = {
+const RESPONSE_SCHEMA = attachMateriality({
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -91,7 +92,7 @@ const RESPONSE_SCHEMA = {
     },
   },
   required: ['findings'],
-};
+});
 
 function formatChecklist(checklist) {
   if (!checklist || !checklist.length) return '(чек-лист пуст)';

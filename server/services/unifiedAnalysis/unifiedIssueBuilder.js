@@ -22,6 +22,7 @@ const { getActiveTzText } = require('../tzActiveTextService');
 const { backfillSignalsFromIssues } = require('../signals/signalWriter');
 const { actionFamily } = require('../analysis/actions');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
+const materiality = require('../review/materiality');
 
 const CRIT_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 function critRank(s) { return CRIT_RANK[s && s.criticality] || 0; }
@@ -29,6 +30,12 @@ function critRank(s) { return CRIT_RANK[s && s.criticality] || 0; }
 function safeParse(s) {
   if (!s) return {};
   try { return JSON.parse(s) || {}; } catch (_e) { return {}; }
+}
+
+// JSON-массив из колонки: не-массив (NULL, объект, битая строка) → пустой массив.
+function parseArray(s) {
+  const v = safeParse(s);
+  return Array.isArray(v) ? v : [];
 }
 
 function normalizeFragment(s) {
@@ -56,6 +63,12 @@ function flattenSignal(row) {
     char_start: p.char_start ?? null,
     char_end: p.char_end ?? null,
     context_text: p.context_text || null,
+    // Оценка материальности, заявленная агентом стадии (может отсутствовать —
+    // старый сигнал, backfill из issues, стадия проигнорировала поля).
+    impact_level: materiality.normalizeImpactLevel(p.impact_level, null),
+    evidence_level: materiality.normalizeEvidenceLevel(p.evidence_level, null),
+    impact_dimensions: materiality.normalizeDimensions(p.impact_dimensions),
+    materiality_flags: materiality.normalizeSuppressionFlags(p.materiality_flags),
   };
 }
 
@@ -179,6 +192,8 @@ function buildDraftFromGroup(members, tenderId, tzBlockText) {
     || (paragraphIndex != null && tzBlockText ? tzBlockText(paragraphIndex) : null)
     || null;
 
+  const mat = draftMateriality(members, { primary, fragment, paragraphIndex, distinctTypes });
+
   return {
     id: newId(),
     tender_id: tenderId,
@@ -194,6 +209,77 @@ function buildDraftFromGroup(members, tenderId, tzBlockText) {
     confidence,
     created_from_signal_ids: members.map((m) => m.id),
     paragraph_index: paragraphIndex,
+    // Материальность УРОВНЯ ЗАМЕЧАНИЯ (мнение агентов + структурные факты).
+    // Итоговый, авторитетный вердикт считает critic по материальным критериям
+    // компании — здесь видно, что об этом думали сами агенты стадий.
+    impact_level: mat.impact_level,
+    evidence_level: mat.evidence_level,
+    verdict: mat.verdict,
+    impact_dimensions: mat.impact_dimensions,
+    publication_reason: mat.publication_reason,
+    suppression_reason: mat.suppression_reason,
+    required_action: mat.required_action,
+  };
+}
+
+// Материальность draft_issue из его сигналов.
+//
+// Две оси считаются РАЗНЫМИ способами, и ни одна не берёт criticality/confidence
+// (правило 4 модели материальности):
+//   impact_level   — максимум ЗАЯВЛЕННОГО агентами влияния. Если не заявил ни
+//                    один агент (старый сигнал / backfill из issues), уровень
+//                    остаётся ПУСТЫМ, а вердикт — verify: «не оценено» это не
+//                    «влияния нет», иначе легаси-замечания молча пропали бы.
+//   evidence_level — структурные факты (привязка к тексту ТЗ + обоснование +
+//                    число независимых типов сигналов); заявленное агентом
+//                    значение может только ПОНИЗИТЬ (materiality.resolveEvidence).
+// Флаг «не материально» применяется только если ВСЕ сигналы группы объявили себя
+// не материальными: один материальный сигнал сохраняет замечание живым.
+function draftMateriality(members, { primary, fragment, paragraphIndex, distinctTypes }) {
+  const declaredImpacts = members.map((m) => m.impact_level).filter(Boolean);
+  const declaredEvidence = members.map((m) => m.evidence_level).filter(Boolean);
+  const dims = materiality.mergeDimensions(...members.map((m) => m.impact_dimensions || []));
+
+  const anchored = paragraphIndex != null && primary.char_start != null && Boolean(fragment);
+  // Обоснование берём СЫРОЕ (из сигналов): служебная пометка «сведено из N
+  // сигналов», которую buildDraftFromGroup дописывает в basis, доказательством
+  // не является и не должна поднимать evidence.
+  const evidence = materiality.resolveEvidence({
+    anchored,
+    hasBasis: members.some((m) => Boolean(m.basis)),
+    corroboration: distinctTypes,
+    declared: declaredEvidence.length ? materiality.maxEvidence(declaredEvidence) : null,
+  });
+
+  const allFlagged = members.length > 0
+    && members.every((m) => (m.materiality_flags || []).length > 0);
+  const flags = allFlagged ? (primary.materiality_flags || []) : [];
+
+  if (!declaredImpacts.length && !flags.length) {
+    return {
+      impact_level: null,
+      evidence_level: evidence,
+      impact_dimensions: dims,
+      verdict: 'verify',
+      publication_reason: null,
+      suppression_reason: null,
+      required_action: materiality.resolveRequiredAction({ verdict: 'verify' }),
+    };
+  }
+
+  const resolved = materiality.resolveVerdict({
+    impactLevel: materiality.maxImpact(declaredImpacts),
+    evidenceLevel: evidence,
+    dimensions: dims,
+    suppressionFlags: flags,
+  });
+  return {
+    ...resolved,
+    required_action: materiality.resolveRequiredAction({
+      verdict: resolved.verdict,
+      suggestedAction: primary.suggested_action,
+      dimensions: resolved.impact_dimensions,
+    }),
   };
 }
 
@@ -277,11 +363,15 @@ async function buildDraftIssues(tenderId, runId) {
         `INSERT INTO draft_issues (
            id, tender_id, analysis_run_id, tz_clause, source_fragment, problem_type, category,
            basis, suggested_action, suggested_redaction, review_comment,
-           confidence, created_from_signal_ids, paragraph_index, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           confidence, created_from_signal_ids, paragraph_index, created_at,
+           impact_level, evidence_level, verdict, impact_dimensions,
+           publication_reason, suppression_reason, required_action
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         d.id, d.tender_id, rid, d.tz_clause, d.source_fragment, d.problem_type, d.category,
         d.basis, d.suggested_action, d.suggested_redaction, d.review_comment,
         d.confidence, JSON.stringify(d.created_from_signal_ids), d.paragraph_index, createdAt,
+        d.impact_level, d.evidence_level, d.verdict, JSON.stringify(d.impact_dimensions || []),
+        d.publication_reason, d.suppression_reason, d.required_action,
       );
     }
   });
@@ -296,6 +386,11 @@ async function buildDraftIssues(tenderId, runId) {
         return acc;
       }, {}),
       multi_signal: drafts.filter((d) => d.created_from_signal_ids.length > 1).length,
+      // Материальность по мнению агентов стадий (авторитетный вердикт — у critic).
+      by_verdict: drafts.reduce((acc, d) => {
+        acc[d.verdict] = (acc[d.verdict] || 0) + 1;
+        return acc;
+      }, {}),
     },
     items: drafts,
   };
@@ -313,7 +408,8 @@ async function listDraftIssues(tenderId, { runId = null } = {}) {
   );
   return rows.map((r) => ({
     ...r,
-    created_from_signal_ids: safeParse(r.created_from_signal_ids) || [],
+    created_from_signal_ids: parseArray(r.created_from_signal_ids),
+    impact_dimensions: parseArray(r.impact_dimensions),
   }));
 }
 
@@ -324,5 +420,6 @@ module.exports = {
   flattenSignal,
   groupSignals,
   buildDraftFromGroup,
+  draftMateriality,
   assembleDrafts,
 };

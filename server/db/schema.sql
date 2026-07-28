@@ -258,6 +258,15 @@ CREATE TABLE IF NOT EXISTS draft_issues (
   confidence              REAL DEFAULT 0.6,
   created_from_signal_ids TEXT,             -- JSON-массив id сигналов-источников
   paragraph_index         INTEGER,          -- для стабильного порядка/дебага
+  -- Модель МАТЕРИАЛЬНОСТИ (services/review/materiality.js) — мнение АГЕНТОВ стадий,
+  -- сведённое по сигналам группы. Авторитетный вердикт конвейера — в issue_reviews.
+  impact_level            TEXT,             -- critical|high|medium|low|none (NULL = агент не оценил)
+  evidence_level          TEXT,             -- strong|medium|weak
+  verdict                 TEXT,             -- publish|verify|suppress
+  impact_dimensions       TEXT,             -- JSON-массив: price|schedule|payment|contract|responsibility|scope
+  publication_reason      TEXT,             -- почему публикуется (только для publish)
+  suppression_reason      TEXT,             -- почему скрыто (только для suppress)
+  required_action         TEXT,             -- amend_tz|exclude_scope|ask_customer|add_assumption|recalculate|none
   created_at              TEXT NOT NULL,
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );
@@ -281,11 +290,22 @@ CREATE TABLE IF NOT EXISTS issue_reviews (
   schedule_impact        TEXT,               -- сроки / график
   contract_impact        TEXT,               -- договор / существенные условия
   responsibility_impact  TEXT,               -- обязанности / ответственность / гарантия
-  display_priority       TEXT,               -- critical|high|medium|low
-  show_to_engineer       INTEGER DEFAULT 1,  -- 1=показывать, 0=хранить, но скрывать по умолчанию
+  display_priority       TEXT,               -- ЛЕГАСИ-приоритет сортировки: critical|high|medium|low
+  show_to_engineer       INTEGER DEFAULT 1,  -- 1=показывать (verdict='publish'), 0=скрыто по умолчанию
   critic_comment         TEXT,               -- человекочитаемое объяснение вердикта
   criteria_json          TEXT,               -- JSON сработавших критериев (прозрачность/дебаг)
-  score                  REAL,               -- числовой суммарный балл (дебаг/тай-брейк)
+  score                  REAL,               -- ЛЕГАСИ-балл (в нём есть criticality/confidence) — дебаг/тай-брейк
+  -- Модель МАТЕРИАЛЬНОСТИ (services/review/materiality.js) — АВТОРИТЕТНОЕ решение
+  -- о публикации. impact_level считается ТОЛЬКО по материальным критериям компании,
+  -- evidence_level — по структурным фактам находки; criticality и confidence в них
+  -- НЕ входят (иначе «модель уверена» снова подменяло бы «ГП дорого»).
+  impact_level           TEXT,               -- critical|high|medium|low|none
+  evidence_level         TEXT,               -- strong|medium|weak
+  verdict                TEXT,               -- publish|verify|suppress (матрица impact × evidence)
+  impact_dimensions      TEXT,               -- JSON-массив: price|schedule|payment|contract|responsibility|scope
+  publication_reason     TEXT,               -- почему публикуется (только для publish)
+  suppression_reason     TEXT,               -- почему скрыто (только для suppress)
+  required_action        TEXT,               -- amend_tz|exclude_scope|ask_customer|add_assumption|recalculate|none
   created_at             TEXT NOT NULL,
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE,
   FOREIGN KEY (draft_issue_id) REFERENCES draft_issues(id) ON DELETE CASCADE
@@ -307,9 +327,19 @@ CREATE TABLE IF NOT EXISTS issue_clusters (
   cluster_title          TEXT,              -- краткий заголовок проблемы кластера
   merged_basis           TEXT,              -- объединённые основания разных стадий (по пунктам)
   merged_recommendation  TEXT,              -- объединённая рекомендация/действие
-  overall_criticality    TEXT,              -- critical|high|medium|low (макс. по элементам)
-  show_to_engineer       INTEGER DEFAULT 1, -- 1=показывать (любой элемент значим), 0=скрыт
+  overall_criticality    TEXT,              -- ЛЕГАСИ: critical|high|medium|low (макс. по элементам)
+  show_to_engineer       INTEGER DEFAULT 1, -- 1=показывать (verdict='publish'), 0=скрыт
   final_problem_type     TEXT,              -- problem_type первичного (наиболее значимого) элемента
+  -- Модель МАТЕРИАЛЬНОСТИ на уровне кластера (одно решение инженера = один вердикт).
+  -- Свёртка по элементам: вердикт — сильнейший (publish > verify > suppress),
+  -- влияние/доказательность — максимум, измерения — объединение.
+  verdict                TEXT,              -- publish|verify|suppress
+  overall_impact_level   TEXT,              -- critical|high|medium|low|none
+  overall_evidence_level TEXT,              -- strong|medium|weak
+  impact_dimensions      TEXT,              -- JSON-массив измерений влияния
+  publication_reason     TEXT,              -- почему публикуется (от решающего элемента)
+  suppression_reason     TEXT,              -- почему скрыто (от решающего элемента)
+  required_action        TEXT,              -- что делать инженеру
   -- доп. прозрачность (сверх спеки):
   semantic_bucket        TEXT,              -- ключ смысловой группы (домен значимости + действие)
   cluster_key            TEXT,              -- стабильная сигнатура (placeKey::semanticBucket) — основа детерминированного id

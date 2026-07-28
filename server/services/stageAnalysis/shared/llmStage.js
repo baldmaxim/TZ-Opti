@@ -20,6 +20,12 @@ const { findInParagraphs } = require('./fragmentMatcher');
 const { chatJson } = require('../llm/openaiClient');
 const { coerceAction, ACTIONS } = require('../../analysis/actions');
 const {
+  normalizeImpactLevel,
+  normalizeEvidenceLevel,
+  normalizeDimensions,
+  normalizeSuppressionFlags,
+} = require('../../review/materiality');
+const {
   segmentDocument,
   renderBlocks,
   renderSegmentText,
@@ -149,6 +155,15 @@ function buildIssue({ sourceDocumentId, finding, located, riskCategory, defaults
         ? finding.confidence
         : (typeof defaults.confidence === 'number' ? defaults.confidence : 0.7),
     section_path: sectionPath || null,
+    // Оценка МАТЕРИАЛЬНОСТИ, заявленная агентом (shared/materialityFields).
+    // Нормализуем fail-closed, но НЕ подставляем дефолтов: «не заявлено» должно
+    // остаться пустым, иначе сервер не отличит «агент промолчал» от «агент
+    // сказал none». Итоговый вердикт считают unified/critic
+    // (services/review/materiality.js) — criticality/confidence в него не входят.
+    impact_level: normalizeImpactLevel(finding.impact_level, null),
+    evidence_level: normalizeEvidenceLevel(finding.evidence_level, null),
+    impact_dimensions: normalizeDimensions(finding.impact_dimensions),
+    materiality_flags: normalizeSuppressionFlags(finding.materiality_flag),
   };
 }
 

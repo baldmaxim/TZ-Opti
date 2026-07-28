@@ -1,5 +1,7 @@
 'use strict';
 
+const { withMaterialityPrompt } = require('./shared/materialityFields');
+
 // Системные промты Стадии 1 — роль ГП + ключевые критерии + 3 режима.
 //
 // Цель Стадии 1: агент в роли Руководителя строительства Генподрядчика
@@ -130,7 +132,8 @@ function buildSystemPrompt(variant) {
   const v = Object.prototype.hasOwnProperty.call(VARIANTS, variant)
     ? variant
     : DEFAULT_VARIANT;
-  return `${SHARED}\n\n${VARIANTS[v]}`;
+  // Блок оценки материальности — общий для стадий 1–4 (shared/materialityFields).
+  return withMaterialityPrompt(`${SHARED}\n\n${VARIANTS[v]}`);
 }
 
 module.exports = { buildSystemPrompt, resolveVariant, DEFAULT_VARIANT };

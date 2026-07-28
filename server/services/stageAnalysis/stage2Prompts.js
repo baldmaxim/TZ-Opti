@@ -1,5 +1,7 @@
 'use strict';
 
+const { withMaterialityPrompt } = require('./shared/materialityFields');
+
 // Системные промты Стадии 2 — сверка ТЗ с принятым компанией: решения Q&A
 // (СУ-10) + таблица характеристик. Структура как у stage1Prompts.js: общий блок
 // SHARED + блок РЕЖИМА (structural|strict|full), выбор через env
@@ -120,7 +122,8 @@ function resolveVariant() {
 
 function buildSystemPrompt(variant) {
   const v = Object.prototype.hasOwnProperty.call(VARIANTS, variant) ? variant : DEFAULT_VARIANT;
-  return `${SHARED}\n\n${VARIANTS[v]}`;
+  // Блок оценки материальности — общий для стадий 1–4 (shared/materialityFields).
+  return withMaterialityPrompt(`${SHARED}\n\n${VARIANTS[v]}`);
 }
 
 module.exports = { buildSystemPrompt, resolveVariant, DEFAULT_VARIANT };

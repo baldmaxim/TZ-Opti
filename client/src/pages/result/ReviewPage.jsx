@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../services/api';
-import { criticalityClass, CRITICALITY, DECISIONS, formatProblemType } from '../../utils/labels';
+import {
+  criticalityClass,
+  CRITICALITY,
+  DECISIONS,
+  formatProblemType,
+  VERDICTS,
+  IMPACT_LEVELS,
+  EVIDENCE_LEVELS,
+  REQUIRED_ACTIONS,
+  verdictClass,
+  impactClass,
+  formatDimensions,
+} from '../../utils/labels';
 import { formatTzClause, clusterTopic, humanizeNote } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
@@ -16,6 +28,35 @@ const EXPORT_HINT = {
   delete: 'Удаление — Track Changes (w:del)',
   remove_from_scope: 'Удаление + метка «Вынесено из объёма ГП»',
   reject: 'Не экспортируется',
+};
+
+// Полки рецензии (зеркало MODE_WHERE в clusteringService): инженер по умолчанию
+// видит ТОЛЬКО материальные коммерческие и договорные риски. «На проверку» и
+// «Все» — те же кластеры, ничего не удалено.
+const MODES = [
+  { key: 'working', label: 'Материальные', hint: 'Существенный риск + достаточные доказательства' },
+  { key: 'verify', label: 'На проверку', hint: 'Риск может быть существенным, доказательств недостаточно' },
+  { key: 'full', label: 'Все', hint: 'Включая скрытые (редактура, дубли, стандартные требования)' },
+];
+
+const MODE_HINT = {
+  working: 'Материальные коммерческие и договорные риски — то, что влияет на цену, срок, оплату, договор, ответственность или объём работ ГП.',
+  verify: 'Замечания, где риск может быть существенным, но доказательств для публикации недостаточно.',
+  full: 'Все кластеры снимка, включая скрытые — у каждого видна причина.',
+};
+
+// Пусто в режиме ≠ «нет результата»: в «Материальные» может быть пусто просто
+// потому, что материальных рисков не нашлось — тогда смотреть надо на других полках.
+const EMPTY_TITLE = {
+  working: 'Материальных замечаний нет',
+  verify: 'Замечаний на проверку нет',
+  full: 'Кластеры ещё не собраны',
+};
+
+const EMPTY_HINT = {
+  working: 'Конвейер не нашёл замечаний с существенным влиянием и достаточными доказательствами. Проверьте полки «На проверку» и «Все» — там видно, что и почему не опубликовано. Если анализ ещё не собирался — соберите итог.',
+  verify: 'Нет замечаний, где риск может быть существенным, но доказательств недостаточно.',
+  full: 'Соберите итог из находок стадий 1–4 — конвейер сгруппирует замечания по местам ТЗ.',
 };
 
 const FINDING_LABEL = {
@@ -64,25 +105,51 @@ function ClusterCard({ index, cluster, onDecide }) {
   const aiVariant = humanizeNote(cluster.merged_recommendation || '');
   const shortDescription = humanizeNote((primary && primary.basis) || clusterTopic(cluster) || '—');
   const clause = formatTzClause(cluster.tz_clause);
+  const dimensions = formatDimensions(cluster.impact_dimensions);
+  // Одна из причин заполнена всегда, кроме «на проверку» (там нечего объяснять,
+  // кроме нехватки доказательств — это уже видно по метке evidence).
+  const reason = cluster.publication_reason || cluster.suppression_reason || '';
 
   return (
     <div className="card p-4 space-y-3">
-      {/* 1. Шапка: номер + критичность + краткая тема + статус решения. */}
+      {/* 1. Шапка: номер + вердикт материальности + краткая тема + статус решения. */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-base font-bold text-gray-900 dark:text-gray-100">№{index}</span>
-        <span className={`tag ${criticalityClass(cluster.overall_criticality)}`}>
-          {CRITICALITY[cluster.overall_criticality] || cluster.overall_criticality}
+        {cluster.verdict && (
+          <span className={`tag ${verdictClass(cluster.verdict)}`}>
+            {VERDICTS[cluster.verdict] || cluster.verdict}
+          </span>
+        )}
+        <span className={`tag ${impactClass(cluster.overall_impact_level || cluster.overall_criticality)}`}>
+          {IMPACT_LEVELS[cluster.overall_impact_level]
+            || CRITICALITY[cluster.overall_criticality]
+            || cluster.overall_criticality}
         </span>
         <span className="font-semibold text-sm">{clusterTopic(cluster)}</span>
-        {!cluster.show_to_engineer && (
-          <span className="tag bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 text-xs">малозначимо</span>
-        )}
         {decided && (
           <span className="tag bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 text-xs">
             Решение: {DECISIONS[decided.decision] || decided.decision}
           </span>
         )}
       </div>
+
+      {/* 1a. Почему замечание здесь: на что влияет, чем подтверждено, что делать. */}
+      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+        {dimensions.map((d) => (
+          <span key={d} className="tag bg-brand-50 dark:bg-brand-900/30 text-brand-800 dark:text-brand-200">{d}</span>
+        ))}
+        {cluster.overall_evidence_level && (
+          <span>{EVIDENCE_LEVELS[cluster.overall_evidence_level] || cluster.overall_evidence_level}</span>
+        )}
+        {cluster.required_action && cluster.required_action !== 'none' && (
+          <span className="font-medium text-gray-700 dark:text-gray-300">
+            → {REQUIRED_ACTIONS[cluster.required_action] || cluster.required_action}
+          </span>
+        )}
+      </div>
+      {reason && (
+        <div className="text-xs text-gray-500 dark:text-gray-400 italic">{reason}</div>
+      )}
 
       {/* 2. Место в ТЗ: компактная локация + дословный отрывок (главный ориентир). */}
       <div>
@@ -192,7 +259,23 @@ function ClusterCard({ index, cluster, onDecide }) {
                       </span>
                       {it.category && <span className="text-gray-500 dark:text-gray-400">[{it.category}]</span>}
                       {it.problem_type && <span className="text-gray-600 dark:text-gray-400">{formatProblemType(it.problem_type)}</span>}
+                      {it.verdict && (
+                        <span className={`tag text-[10px] ${verdictClass(it.verdict)}`}>
+                          {VERDICTS[it.verdict] || it.verdict}
+                        </span>
+                      )}
+                      {it.impact_level && (
+                        <span className="text-gray-500 dark:text-gray-400">
+                          {IMPACT_LEVELS[it.impact_level] || it.impact_level}
+                          {it.evidence_level ? `, ${(EVIDENCE_LEVELS[it.evidence_level] || it.evidence_level).toLowerCase()}` : ''}
+                        </span>
+                      )}
                     </div>
+                    {(it.publication_reason || it.suppression_reason) && (
+                      <div className="text-gray-500 dark:text-gray-400 mb-1 italic">
+                        {it.publication_reason || it.suppression_reason}
+                      </div>
+                    )}
                     {it.basis && <div className="text-gray-700 dark:text-gray-300">{it.basis}</div>}
                     {it.source_fragment && (
                       <div className="text-gray-500 dark:text-gray-400 mt-1 italic">«{it.source_fragment}»</div>
@@ -291,16 +374,27 @@ export default function ReviewPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm text-gray-600 dark:text-gray-400">
-            Рецензия по сгруппированным замечаниям (кластерам). Одно решение на кластер — оно и попадёт в экспорт.
+            {MODE_HINT[mode] || MODE_HINT.working} Одно решение на кластер — оно и попадёт в экспорт.
           </div>
           {clusters.length > 0 && (
             <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Обработано: {decidedCount} из {clusters.length}</div>
           )}
         </div>
         <div className="flex items-center gap-2">
+          {/* Полки модели материальности: по умолчанию — только материальные
+              коммерческие и договорные риски. Остальное не удалено, а лежит на
+              полках «На проверку» и «Все» с причиной. */}
           <div className="flex rounded border dark:border-gray-700 overflow-hidden text-xs">
-            <button className={`px-2 py-1 ${mode === 'working' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`} onClick={() => switchMode('working')}>Значимые</button>
-            <button className={`px-2 py-1 ${mode === 'full' ? 'bg-brand-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`} onClick={() => switchMode('full')}>Все</button>
+            {MODES.map((mo) => (
+              <button
+                key={mo.key}
+                title={mo.hint}
+                className={`px-2 py-1 ${mode === mo.key ? 'bg-brand-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`}
+                onClick={() => switchMode(mo.key)}
+              >
+                {mo.label}
+              </button>
+            ))}
           </div>
           <button className="btn btn-secondary text-xs" disabled={building} onClick={build}>
             {building ? 'Собираю…' : 'Пересобрать итог'}
@@ -317,8 +411,8 @@ export default function ReviewPage() {
 
       {clusters.length === 0 ? (
         <EmptyState
-          title={loaded ? 'Кластеры ещё не собраны' : 'Загрузка…'}
-          description={loaded ? 'Соберите итог из находок стадий 1–4 — конвейер сгруппирует замечания по местам ТЗ.' : ''}
+          title={loaded ? EMPTY_TITLE[mode] || EMPTY_TITLE.working : 'Загрузка…'}
+          description={loaded ? EMPTY_HINT[mode] || EMPTY_HINT.working : ''}
           action={loaded ? <button className="btn btn-primary" disabled={building} onClick={build}>{building ? 'Собираю…' : 'Собрать итог'}</button> : null}
         />
       ) : (

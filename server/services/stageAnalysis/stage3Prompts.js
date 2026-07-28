@@ -1,5 +1,7 @@
 'use strict';
 
+const { withMaterialityPrompt } = require('./shared/materialityFields');
+
 // Системные промты Стадии 3 — сверка ТЗ Заказчика с СУЩЕСТВЕННЫМИ УСЛОВИЯМИ
 // компании ГП (стандартные договорные позиции: гарантия и удержания, аванс,
 // сроки и порядок оплаты, эскалация/индексация цен, сроки выполнения, порядок
@@ -114,7 +116,8 @@ function resolveVariant() {
 // Собирает системный промт: общий блок + блок выбранного режима.
 function buildSystemPrompt(variant) {
   const v = Object.prototype.hasOwnProperty.call(VARIANTS, variant) ? variant : DEFAULT_VARIANT;
-  return `${SHARED}\n\n${VARIANTS[v]}`;
+  // Блок оценки материальности — общий для стадий 1–4 (shared/materialityFields).
+  return withMaterialityPrompt(`${SHARED}\n\n${VARIANTS[v]}`);
 }
 
 module.exports = { buildSystemPrompt, resolveVariant, DEFAULT_VARIANT };

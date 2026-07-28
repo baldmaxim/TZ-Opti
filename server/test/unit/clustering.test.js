@@ -18,10 +18,16 @@ function pair(draft, review) {
       category: null, basis: null, suggested_action: null, suggested_redaction: null,
       review_comment: null, paragraph_index: 0, ...draft,
     },
+    // verdict/impact_level/evidence_level — модель материальности (critic);
+    // именно по ним кластер попадает в основной список инженера.
     review: review === null ? null : {
       display_priority: 'medium', show_to_engineer: true, score: 4,
       price_impact: 'none', schedule_impact: 'none', contract_impact: 'none',
-      responsibility_impact: 'none', ...review,
+      responsibility_impact: 'none',
+      verdict: 'publish', impact_level: 'high', evidence_level: 'medium',
+      impact_dimensions: ['price'], required_action: 'amend_tz',
+      publication_reason: 'Материальный риск для ГП.', suppression_reason: null,
+      ...review,
     },
   };
 }
@@ -157,24 +163,50 @@ test('место по фрагменту, когда нет tz_clause', () => {
 test('кластер показывается, если значим хотя бы один элемент', () => {
   const pairs = [
     pair({ id: 's1', tz_clause: 'п. 9', category: 'coverage', suggested_action: 'replace' },
-      { display_priority: 'low', show_to_engineer: false, price_impact: 'high' }),
+      { display_priority: 'low', show_to_engineer: false, price_impact: 'high',
+        verdict: 'suppress', impact_level: 'low', evidence_level: 'medium',
+        publication_reason: null, suppression_reason: 'нет материального влияния' }),
     pair({ id: 's2', tz_clause: 'п. 9', category: 'coverage', suggested_action: 'replace' },
-      { display_priority: 'high', show_to_engineer: true, price_impact: 'high' }),
+      { display_priority: 'high', show_to_engineer: true, price_impact: 'high',
+        verdict: 'publish', impact_level: 'high', evidence_level: 'strong' }),
   ];
   const clusters = clusterPairs(pairs, T);
   assert.equal(clusters.length, 1);
+  assert.equal(clusters[0].verdict, 'publish', 'сильнейший вердикт набора');
   assert.equal(clusters[0].show_to_engineer, true);
   assert.equal(clusters[0].overall_criticality, 'high');
+  assert.equal(clusters[0].overall_impact_level, 'high');
+  assert.equal(clusters[0].overall_evidence_level, 'strong');
+  // Причина — от РЕШАЮЩЕГО (опубликованного) элемента, а не от скрытого.
+  assert.equal(clusters[0].suppression_reason, null);
+  assert.ok(clusters[0].publication_reason);
 });
 
-test('кластер из одних малозначимых -> скрыт', () => {
+test('кластер из одних малозначимых -> скрыт, причина сохранена', () => {
   const pairs = [
     pair({ id: 'w1', tz_clause: 'п. 12', category: 'decision', suggested_action: 'comment' },
-      { display_priority: 'low', show_to_engineer: false }),
+      { display_priority: 'low', show_to_engineer: false, verdict: 'suppress',
+        impact_level: 'low', evidence_level: 'weak',
+        publication_reason: null, suppression_reason: 'редактура', required_action: 'none' }),
   ];
   const clusters = clusterPairs(pairs, T);
+  assert.equal(clusters[0].verdict, 'suppress');
   assert.equal(clusters[0].show_to_engineer, false);
   assert.equal(clusters[0].overall_criticality, 'low');
+  assert.equal(clusters[0].suppression_reason, 'редактура');
+  assert.equal(clusters[0].required_action, 'none');
+});
+
+test('кластер только из «на проверку» -> verify, из основного списка скрыт', () => {
+  const pairs = [
+    pair({ id: 'v1', tz_clause: 'п. 14', category: 'risk', suggested_action: 'clarify' },
+      { verdict: 'verify', impact_level: 'high', evidence_level: 'weak',
+        publication_reason: null, suppression_reason: null, required_action: 'ask_customer' }),
+  ];
+  const clusters = clusterPairs(pairs, T);
+  assert.equal(clusters[0].verdict, 'verify');
+  assert.equal(clusters[0].show_to_engineer, false, 'verify не публикуется по умолчанию');
+  assert.equal(clusters[0].required_action, 'ask_customer');
 });
 
 test('без critic-вердикта (review=null) кластеризация не падает', () => {

@@ -120,8 +120,15 @@ test('скрыто #3: слабое одиночное замечание (не�
 
 test('reviewDrafts оценивает ВСЕ драфты (скрытые не выпадают из набора)', () => {
   const drafts = [
-    draft({ id: 'a', category: 'condition', problem_type: 'условие_противоречит', source_fragment: 'противоречит договору', created_from_signal_ids: ['sa'] }),
-    draft({ id: 'b', source_fragment: 'опечатка в нумерации', created_from_signal_ids: ['sb'] }),
+    draft({
+      id: 'a', category: 'condition', problem_type: 'условие_противоречит',
+      source_fragment: 'противоречит договору',
+      // basis обязателен: без обоснования доказательность не выше weak, и
+      // замечание уходит в verify, а не в основной список (правило 6).
+      basis: 'Условие ТЗ противоречит существенным условиям компании.',
+      created_from_signal_ids: ['sa'],
+    }),
+    draft({ id: 'b', source_fragment: 'опечатка в нумерации', basis: 'Редакционная неточность.', created_from_signal_ids: ['sb'] }),
   ];
   const signalsById = new Map([
     ['sa', signal('critical', { id: 'sa', risk_category: 'договорной' })],
@@ -134,18 +141,32 @@ test('reviewDrafts оценивает ВСЕ драфты (скрытые не �
   assert.ok(out.every((o) => typeof o.review.display_priority === 'string'));
 });
 
-// --- Режим показа: working скрывает low, full показывает всё ------------------
+// --- Режимы показа: working = только опубликованное, full = всё ---------------
 // (MODE_WHERE — SQL; здесь проверяем семантику предиката на оценённых драфтах.)
 
-test('предикат режимов: important=critical|high, working=скрыт low, full=всё', () => {
+test('предикат режимов: important=publish+critical|high, working=publish, full=всё', () => {
   const evals = [
-    evaluateDraft(draft({ category: 'condition', problem_type: 'условие_противоречит', source_fragment: 'противоречит договору компании' }), [signal('critical', { risk_category: 'договорной' })]),
-    evaluateDraft(draft({ source_fragment: 'опечатка в нумерации пунктов' }), [signal('low')]),
+    evaluateDraft(
+      draft({
+        category: 'condition', problem_type: 'условие_противоречит',
+        source_fragment: 'противоречит договору компании',
+        basis: 'ТЗ задаёт условие, несовместимое со стандартом компании.',
+      }),
+      [signal('critical', { risk_category: 'договорной' })],
+    ),
+    evaluateDraft(
+      draft({ source_fragment: 'опечатка в нумерации пунктов', basis: 'Оформительская мелочь.' }),
+      [signal('low')],
+    ),
   ];
-  const important = evals.filter((e) => ['critical', 'high'].includes(e.display_priority));
-  const working = evals.filter((e) => e.show_to_engineer);
+  const important = evals.filter((e) => e.verdict === 'publish' && ['critical', 'high'].includes(e.impact_level));
+  const working = evals.filter((e) => e.verdict === 'publish');
   const full = evals;
   assert.equal(important.length, 1);
   assert.equal(working.length, 1);
   assert.equal(full.length, 2);
+  // Скрытое замечание сохраняет причину — инженер видит, ПОЧЕМУ оно скрыто.
+  const hidden = evals.find((e) => e.verdict === 'suppress');
+  assert.ok(hidden.suppression_reason, 'у скрытого должна быть причина');
+  assert.equal(hidden.publication_reason, null);
 });

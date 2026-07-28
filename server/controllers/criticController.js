@@ -18,8 +18,9 @@ exports.build = async (req, res) => {
   res.json({ ...result, run_id: result.summary.run_id, activated: false });
 };
 
-// GET /api/tenders/:id/issue-reviews?mode=important|working|full
-// Режим по умолчанию — working (скрывает малозначимые: show_to_engineer=0).
+// GET /api/tenders/:id/issue-reviews?mode=important|working|verify|full
+// Режим по умолчанию — working: только МАТЕРИАЛЬНЫЕ замечания (verdict='publish',
+// модель impact × evidence, см. services/review/materiality.js).
 exports.list = async (req, res) => {
   await ensureTender(req.params.id);
   const mode = req.query.mode || 'working';
@@ -28,5 +29,9 @@ exports.list = async (req, res) => {
     acc[r.display_priority] = (acc[r.display_priority] || 0) + 1;
     return acc;
   }, {});
-  res.json({ items, count: items.length, mode, by_priority: byPriority });
+  const byVerdict = items.reduce((acc, r) => {
+    if (r.verdict) acc[r.verdict] = (acc[r.verdict] || 0) + 1;
+    return acc;
+  }, {});
+  res.json({ items, count: items.length, mode, by_priority: byPriority, by_verdict: byVerdict });
 };

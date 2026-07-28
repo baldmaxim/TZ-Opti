@@ -14,6 +14,7 @@
 const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage2Prompts');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
+const { attachMateriality } = require('./shared/materialityFields');
 const { ALL_ACTIONS } = require('../analysis/actions');
 
 const PROBLEM_TYPES = [
@@ -27,7 +28,7 @@ const PROBLEM_TYPES = [
   'char_не_отражена',
 ];
 
-const RESPONSE_SCHEMA = {
+const RESPONSE_SCHEMA = attachMateriality({
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -80,7 +81,7 @@ const RESPONSE_SCHEMA = {
     },
   },
   required: ['findings'],
-};
+});
 
 const CHAR_BUDGET = Number(process.env.STAGE_LLM_CHAR_BUDGET) || 400000;
 const SCAFFOLD_OVERHEAD = 600;

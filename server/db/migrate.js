@@ -214,6 +214,105 @@ async function backfillAnalysisSnapshots() {
   }
 }
 
+// --- Backfill модели материальности (impact × evidence → verdict) ------------
+//
+// Старые строки конвейера оценивались прежней моделью: публикацию решал
+// display_priority (в нём смешаны criticality агента и confidence сборки).
+// Перенос БЕЗОПАСНЫЙ в трёх смыслах:
+//   1. ничего не удаляется и не пересчитывается заново — заполняются только
+//      пустые колонки (WHERE verdict IS NULL), поэтому миграция идемпотентна и
+//      НЕ затирает вердикты, уже посчитанные новым кодом;
+//   2. то, что инженер видел как важное (display_priority critical|high при
+//      show_to_engineer=1), остаётся видимым: high + evidence medium → publish.
+//      Прежнее medium уходит в «На проверку», прежнее low/скрытое — в скрытые
+//      с причиной. Инженер не теряет ни одной строки — меняется только полка;
+//   3. вердикт считает ТА ЖЕ матрица (materiality.fromLegacyPriority →
+//      resolveVerdict), исключений из правил миграция не создаёт. В причине
+//      стоит пометка LEGACY_REASON_PREFIX — видно, что уровень перенесён, а не
+//      рассчитан по материальным критериям (пересборка конвейера уточнит).
+//
+// draft_issues переносятся иначе: у них нет приоритета вообще, поэтому
+// impact_level остаётся ПУСТЫМ («агент не оценил» ≠ «влияния нет»), вердикт —
+// verify, а доказательность выводится из привязки к тексту ТЗ и наличия
+// обоснования — ровно как это делает unifiedIssueBuilder для новых строк.
+async function backfillMateriality() {
+  const {
+    fromLegacyPriority,
+    IMPACT_LEVELS,
+  } = require('../services/review/materiality');
+
+  const stats = { draft_issues: 0, issue_reviews: 0, issue_clusters: 0 };
+
+  // 1) draft_issues — мнение агента отсутствует, ставим verify.
+  const drafts = await db.queryRun(
+    `UPDATE draft_issues
+        SET verdict = 'verify',
+            evidence_level = CASE
+              WHEN paragraph_index IS NOT NULL AND source_fragment IS NOT NULL AND basis IS NOT NULL
+                THEN 'medium' ELSE 'weak' END,
+            impact_dimensions = COALESCE(impact_dimensions, '[]'),
+            required_action = COALESCE(required_action, 'ask_customer')
+      WHERE verdict IS NULL`,
+  );
+  stats.draft_issues = (drafts && (drafts.changes ?? drafts.rowCount)) || 0;
+
+  // 2) issue_reviews / issue_clusters — по прежнему приоритету. Комбинаций
+  // немного (приоритет × показывался/нет), поэтому вердикт считается ОДИН раз
+  // чистой функцией на комбинацию, а в БД уходит по одному UPDATE на неё.
+  const priorities = [...IMPACT_LEVELS, null];
+  const targets = [
+    {
+      table: 'issue_reviews',
+      priorityCol: 'display_priority',
+      impactCol: 'impact_level',
+      evidenceCol: 'evidence_level',
+    },
+    {
+      table: 'issue_clusters',
+      priorityCol: 'overall_criticality',
+      impactCol: 'overall_impact_level',
+      evidenceCol: 'overall_evidence_level',
+    },
+  ];
+  for (const t of targets) {
+    for (const priority of priorities) {
+      for (const shown of [true, false]) {
+        const m = fromLegacyPriority({ displayPriority: priority, shownToEngineer: shown });
+        const priorityCond = priority === null ? `${t.priorityCol} IS NULL` : `${t.priorityCol} = ?`;
+        // show_to_engineer NULL считаем «показывалось» (колонка DEFAULT 1).
+        const shownCond = `COALESCE(show_to_engineer, 1) = ${shown ? 1 : 0}`;
+        // eslint-disable-next-line no-await-in-loop
+        const res = await db.queryRun(
+          // show_to_engineer приводим к новому вердикту: колонку читают клиент и
+          // выгрузки, и «показывать» обязано означать ровно verdict='publish' —
+          // иначе прежнее medium осталось бы помеченным как видимое, хотя новый
+          // режим «Значимые» его уже не показывает.
+          `UPDATE ${t.table}
+              SET verdict = ?, ${t.impactCol} = ?, ${t.evidenceCol} = ?,
+                  publication_reason = ?, suppression_reason = ?, required_action = ?,
+                  show_to_engineer = ?,
+                  impact_dimensions = COALESCE(impact_dimensions, '[]')
+            WHERE verdict IS NULL AND ${priorityCond} AND ${shownCond}`,
+          m.verdict, m.impact_level, m.evidence_level,
+          m.publication_reason, m.suppression_reason, m.required_action,
+          m.verdict === 'publish' ? 1 : 0,
+          ...(priority === null ? [] : [priority]),
+        );
+        stats[t.table] += (res && (res.changes ?? res.rowCount)) || 0;
+      }
+    }
+  }
+
+  const total = stats.draft_issues + stats.issue_reviews + stats.issue_clusters;
+  if (total > 0) {
+    console.log(
+      `[migrate] материальность: перенесено строк — draft_issues ${stats.draft_issues}, ` +
+        `issue_reviews ${stats.issue_reviews}, issue_clusters ${stats.issue_clusters}`,
+    );
+  }
+  return stats;
+}
+
 async function runMigration() {
   const schemaPath = path.join(__dirname, 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
@@ -293,6 +392,40 @@ async function runMigration() {
   await ensureIndex('idx_issue_clusters_run', 'issue_clusters', 'tender_id, analysis_run_id');
   await ensureIndex('idx_self_analysis_run', 'self_analysis_results', 'tender_id, analysis_run_id');
   await ensureIndex('idx_decisions_run', 'review_decisions', 'analysis_run_id');
+
+  // --- Модель материальности замечания (impact × evidence → verdict) ----------
+  //
+  // Публикацию замечания решают impact_level (насколько дорого ГП) и
+  // evidence_level (насколько подтверждено), а НЕ criticality/confidence —
+  // см. services/review/materiality.js. Колонки добавляются во все три слоя
+  // конвейера: draft_issues (мнение агентов), issue_reviews (авторитетный
+  // вердикт critic), issue_clusters (свёртка на объект рецензии).
+  for (const table of ['draft_issues', 'issue_reviews']) {
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'impact_level', 'TEXT');
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'evidence_level', 'TEXT');
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'verdict', 'TEXT');
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'impact_dimensions', 'TEXT');
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'publication_reason', 'TEXT');
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'suppression_reason', 'TEXT');
+    // eslint-disable-next-line no-await-in-loop
+    await ensureColumn(table, 'required_action', 'TEXT');
+  }
+  await ensureColumn('issue_clusters', 'verdict', 'TEXT');
+  await ensureColumn('issue_clusters', 'overall_impact_level', 'TEXT');
+  await ensureColumn('issue_clusters', 'overall_evidence_level', 'TEXT');
+  await ensureColumn('issue_clusters', 'impact_dimensions', 'TEXT');
+  await ensureColumn('issue_clusters', 'publication_reason', 'TEXT');
+  await ensureColumn('issue_clusters', 'suppression_reason', 'TEXT');
+  await ensureColumn('issue_clusters', 'required_action', 'TEXT');
+  await ensureIndex('idx_issue_reviews_verdict', 'issue_reviews', 'tender_id, analysis_run_id, verdict');
+  await ensureIndex('idx_issue_clusters_verdict', 'issue_clusters', 'tender_id, analysis_run_id, verdict');
+  await backfillMateriality();
 
   // --- Части ТЗ: КЭШ отдельно, ИСТОРИЯ ВЫПОЛНЕНИЯ отдельно -------------------
   //
@@ -436,4 +569,6 @@ if (require.main === module) {
     });
 }
 
-module.exports = { runMigration };
+// backfillMateriality экспортируется для integration-теста переноса старых
+// данных: он должен проверяться отдельно от полного runMigration.
+module.exports = { runMigration, backfillMateriality };

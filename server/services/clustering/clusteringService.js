@@ -25,6 +25,7 @@ const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { actionFamily } = require('../analysis/actions');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
+const materiality = require('../review/materiality');
 
 // Детерминированный id кластера от (tenderId + clusterKey). Этап 6: решения инженера
 // привязываются к cluster_id, а buildClusters пересобирает кластеры (DELETE+INSERT) —
@@ -124,6 +125,52 @@ function uniqueJoin(values, sep) {
   return out.join(sep);
 }
 
+// Свёртка материальности кластера по его элементам.
+//   verdict  — СИЛЬНЕЙШИЙ по набору (publish > verify > suppress): кластер значим,
+//              если значим хотя бы один его элемент, и уходит в скрытые только
+//              когда все элементы скрыты.
+//   impact / evidence — максимум по элементам.
+//   dimensions — объединение измерений всех элементов.
+//   причины и required_action — от РЕШАЮЩЕГО элемента (того, чей вердикт стал
+//              вердиктом кластера), иначе инженер читал бы причину скрытой
+//              редактуры рядом с опубликованным риском.
+// Элементы без вердикта (critic не прогонялся) не считаются нематериальными:
+// вердикт кластера тогда verify — «не оценено» это не «влияния нет».
+function clusterMateriality(pairs) {
+  const withVerdict = pairs.filter((p) => p.review && p.review.verdict);
+  const dims = materiality.mergeDimensions(
+    ...pairs.map((p) => (p.review && p.review.impact_dimensions) || []),
+  );
+  if (!withVerdict.length) {
+    return {
+      verdict: 'verify',
+      impact_level: materiality.maxImpact(pairs.map((p) => p.review && p.review.impact_level)),
+      evidence_level: materiality.maxEvidence(pairs.map((p) => p.review && p.review.evidence_level)),
+      impact_dimensions: dims,
+      publication_reason: null,
+      suppression_reason: null,
+      required_action: 'ask_customer',
+    };
+  }
+  const verdict = materiality.strongestVerdict(withVerdict.map((p) => p.review.verdict));
+  const decisive = withVerdict
+    .filter((p) => p.review.verdict === verdict)
+    .sort(
+      (a, b) =>
+        materiality.impactRank(b.review.impact_level) - materiality.impactRank(a.review.impact_level)
+        || materiality.evidenceRank(b.review.evidence_level) - materiality.evidenceRank(a.review.evidence_level),
+    )[0];
+  return {
+    verdict,
+    impact_level: materiality.maxImpact(withVerdict.map((p) => p.review.impact_level)),
+    evidence_level: materiality.maxEvidence(withVerdict.map((p) => p.review.evidence_level)),
+    impact_dimensions: dims,
+    publication_reason: decisive.review.publication_reason || null,
+    suppression_reason: decisive.review.suppression_reason || null,
+    required_action: materiality.normalizeRequiredAction(decisive.review.required_action, 'none'),
+  };
+}
+
 function buildCluster(tenderId, pairs) {
   const primary = pickPrimary(pairs);
   const pd = primary.draft;
@@ -149,8 +196,13 @@ function buildCluster(tenderId, pairs) {
     .map((p) => p.review && p.review.display_priority)
     .sort((a, b) => (CRIT_RANK[b] || 0) - (CRIT_RANK[a] || 0))[0] || 'low';
 
-  // Кластер показываем, если значим ХОТЯ БЫ один элемент (иначе всё малозначимо).
-  const show_to_engineer = pairs.some((p) => p.review && p.review.show_to_engineer);
+  // Материальность кластера — свёртка по элементам (модель impact × evidence).
+  const mat = clusterMateriality(pairs);
+
+  // Кластер показываем, только если он ОПУБЛИКОВАН: инженер по умолчанию видит
+  // материальные коммерческие и договорные риски, остальное — в режимах
+  // «На проверку» и «Все» (ничего не удаляется).
+  const show_to_engineer = mat.verdict === 'publish';
 
   const tz_clause = pairs.map((p) => p.draft.tz_clause).find(Boolean) || null;
   const cluster_title = `${DIM_LABEL[dim] || DIM_LABEL.general}${tz_clause ? ` — ${tz_clause}` : ''}`;
@@ -177,6 +229,14 @@ function buildCluster(tenderId, pairs) {
     semantic_bucket: semanticBucket(pd, primary.review),
     item_count: pairs.length,
     paragraph_index: pd.paragraph_index ?? null,
+    // Модель материальности на уровне кластера (одно решение — один вердикт).
+    verdict: mat.verdict,
+    overall_impact_level: mat.impact_level,
+    overall_evidence_level: mat.evidence_level,
+    impact_dimensions: mat.impact_dimensions,
+    publication_reason: mat.publication_reason,
+    suppression_reason: mat.suppression_reason,
+    required_action: mat.required_action,
     items: itemsSorted.map((p) => ({
       draft_issue_id: p.draft.id,
       item_role: p.draft.id === pd.id ? 'primary' : 'related',
@@ -208,13 +268,21 @@ function safeParse(s, fallback) {
   try { const v = JSON.parse(s); return v == null ? fallback : v; } catch (_e) { return fallback; }
 }
 
+// JSON-массив измерений из колонки: не-массив (NULL/битая строка) → [].
+function parseDimensions(s) {
+  const v = safeParse(s, []);
+  return Array.isArray(v) ? v : [];
+}
+
 // Грузит draft_issues тендера вместе с вердиктом critic (LEFT JOIN — кластеризуем
 // даже без прогона critic: тогда review пуст и сработает дефолтный bucket).
 async function loadPairs(tenderId, runId) {
   const rows = await db.queryAll(
     `SELECT d.*,
             r.display_priority, r.show_to_engineer, r.score,
-            r.price_impact, r.schedule_impact, r.contract_impact, r.responsibility_impact
+            r.price_impact, r.schedule_impact, r.contract_impact, r.responsibility_impact,
+            r.impact_level, r.evidence_level, r.verdict, r.impact_dimensions,
+            r.publication_reason, r.suppression_reason, r.required_action
        FROM draft_issues d
        LEFT JOIN issue_reviews r ON r.draft_issue_id = d.id
       WHERE d.tender_id = ? AND d.analysis_run_id = ?
@@ -242,6 +310,16 @@ async function loadPairs(tenderId, runId) {
       schedule_impact: r.schedule_impact,
       contract_impact: r.contract_impact,
       responsibility_impact: r.responsibility_impact,
+      impact_level: r.impact_level,
+      evidence_level: r.evidence_level,
+      verdict: r.verdict,
+      impact_dimensions: (() => {
+        const v = safeParse(r.impact_dimensions, []);
+        return Array.isArray(v) ? v : [];
+      })(),
+      publication_reason: r.publication_reason,
+      suppression_reason: r.suppression_reason,
+      required_action: r.required_action,
     } : null,
   }));
 }
@@ -268,11 +346,16 @@ async function buildClusters(tenderId, runId) {
         `INSERT INTO issue_clusters (
            id, tender_id, analysis_run_id, tz_clause, cluster_title, merged_basis, merged_recommendation,
            overall_criticality, show_to_engineer, final_problem_type,
-           semantic_bucket, cluster_key, item_count, paragraph_index, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           semantic_bucket, cluster_key, item_count, paragraph_index, created_at,
+           verdict, overall_impact_level, overall_evidence_level, impact_dimensions,
+           publication_reason, suppression_reason, required_action
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         cid, c.tender_id, rid, c.tz_clause, c.cluster_title, c.merged_basis, c.merged_recommendation,
         c.overall_criticality, c.show_to_engineer ? 1 : 0, c.final_problem_type,
         c.semantic_bucket, c.cluster_key, c.item_count, c.paragraph_index, createdAt,
+        c.verdict, c.overall_impact_level, c.overall_evidence_level,
+        JSON.stringify(c.impact_dimensions || []),
+        c.publication_reason, c.suppression_reason, c.required_action,
       );
       for (const it of c.items) {
         await tx.queryRun(
@@ -298,15 +381,26 @@ async function buildClusters(tenderId, runId) {
       shown: clusters.filter((c) => c.show_to_engineer).length,
       hidden: clusters.filter((c) => !c.show_to_engineer).length,
       by_criticality: byCriticality,
+      by_verdict: clusters.reduce((acc, c) => {
+        acc[c.verdict] = (acc[c.verdict] || 0) + 1;
+        return acc;
+      }, {}),
+      published: clusters.filter((c) => c.verdict === 'publish').length,
+      to_verify: clusters.filter((c) => c.verdict === 'verify').length,
+      suppressed: clusters.filter((c) => c.verdict === 'suppress').length,
     },
   };
 }
 
-// Режимы показа (как в critic): important — critical|high; working — show_to_engineer=1;
-// full — всё.
+// Режимы показа (как в critic — по вердикту модели материальности):
+//   important — опубликованные с высоким влиянием;
+//   working   — опубликованные (материальные) — ПО УМОЛЧАНИЮ;
+//   verify    — требуют проверки;
+//   full      — всё, включая скрытое.
 const MODE_WHERE = {
-  important: `AND c.overall_criticality IN ('critical','high')`,
-  working: `AND c.show_to_engineer = 1`,
+  important: `AND c.verdict = 'publish' AND c.overall_impact_level IN ('critical','high')`,
+  working: `AND c.verdict = 'publish'`,
+  verify: `AND c.verdict = 'verify'`,
   full: ``,
 };
 
@@ -330,7 +424,9 @@ async function listClusters(tenderId, mode = 'working', runId) {
     `SELECT ci.cluster_id, ci.item_role,
             d.id AS draft_issue_id, d.category, d.problem_type, d.source_fragment,
             d.basis, d.suggested_action, d.confidence,
-            r.display_priority, r.show_to_engineer
+            r.display_priority, r.show_to_engineer,
+            r.impact_level, r.evidence_level, r.verdict, r.impact_dimensions,
+            r.publication_reason, r.suppression_reason, r.required_action
        FROM issue_cluster_items ci
        JOIN draft_issues d ON d.id = ci.draft_issue_id
        LEFT JOIN issue_reviews r ON r.draft_issue_id = d.id
@@ -344,12 +440,14 @@ async function listClusters(tenderId, mode = 'working', runId) {
     itemsByCluster.get(it.cluster_id).push({
       ...it,
       show_to_engineer: Number(it.show_to_engineer) === 1,
+      impact_dimensions: parseDimensions(it.impact_dimensions),
     });
   }
 
   return clusters.map((c) => ({
     ...c,
     show_to_engineer: Number(c.show_to_engineer) === 1,
+    impact_dimensions: parseDimensions(c.impact_dimensions),
     items: itemsByCluster.get(c.id) || [],
   }));
 }
@@ -359,6 +457,8 @@ module.exports = {
   clusterId,
   placeKey,
   dominantDimension,
+  clusterMateriality,
+  MODE_WHERE,
   actionFamily,
   semanticBucket,
   clusterKey,

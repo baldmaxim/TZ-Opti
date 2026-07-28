@@ -205,6 +205,41 @@ Excel-number → number; единицы «кв.м»/«м²»/«куб.м»/«п.
 
 **Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis).** Поверх стадий работает основной аналитический конвейер: стадии 1–4 добывают находки → движок пишет их сигналами (`signals/signalWriter.js`, авто, best-effort) → `unifiedAnalysis/unifiedIssueBuilder.js` (draft_issues) → `critic/criticService.js` (значимость) → `clustering/clusteringService.js` (кластеры) → `selfAnalysis/selfAnalysisService.js` (QC, Стадия 5). Каждый слой — таблица + сервис + контроллер + роут + debug-страница + офлайн-тест чистых функций. Оркестратор `pipeline/analysisPipeline.js` пересобирает слои 2–5 одним вызовом (`POST /api/tenders/:id/pipeline/run`, `{with_self_analysis:false}` — без LLM-шага; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}` — сбой ≠ HTTP-ошибка); debug-страница `/tenders/:id/debug/pipeline`, тест `server/test/unit/pipeline.test.js`.
 
+**Публикацию замечания решают impact × evidence, а НЕ criticality/confidence.**
+Единый источник модели — `server/services/review/materiality.js` (чистый, без БД).
+Две независимые оси: **`impact_level`** (`critical|high|medium|low|none` — насколько дорого
+ГП) и **`evidence_level`** (`strong|medium|weak` — насколько подтверждено). Их пересечение
+даёт **`verdict`** (`publish|verify|suppress`, `VERDICT_MATRIX`): `low`/`none` не публикуются
+НИКОГДА (даже при strong evidence и confidence 0.99), `critical|high` + `weak` уходят в
+`verify`, `medium` публикуется только при `strong`. Жёсткие причины подавления (редактура,
+дубль, стандартное требование, нет влияния, неподтверждённое предположение) перебивают
+матрицу; если агент пометил нематериальным то, что материально по критериям компании, —
+это `contested`: не скрываем, а отправляем в `verify`. Ещё поля: `impact_dimensions`
+(`price|schedule|payment|contract|responsibility|scope`), `publication_reason`,
+`suppression_reason`, `required_action`
+(`amend_tz|exclude_scope|ask_customer|add_assumption|recalculate|none`).
+**Где что считается:** агент стадии 1–4 ЗАЯВЛЯЕТ оценку (общий блок схемы и промта —
+`stageAnalysis/shared/materialityFields.js`, поля необязательные) → сигнал несёт её в
+payload → `draft_issues` хранит мнение агентов (`impact_level=NULL` = «агент не оценил», это
+НЕ «влияния нет», вердикт тогда `verify`) → **авторитетный вердикт считает critic**:
+`impact_level` — ТОЛЬКО по весам материальных критериев компании (`CRITERIA`),
+`evidence_level` — по структуре находки (привязка к тексту ТЗ + обоснование + число
+независимых типов сигналов); заявленное агентом может лишь ПОНИЗИТЬ доказательность
+(fail-closed) → `issue_clusters` получает свёртку (вердикт — сильнейший по элементам,
+влияние/доказательность — максимум, измерения — объединение, причины и `required_action` —
+от решающего элемента). `criticality` и `confidence` в новый расчёт не входят вовсе и
+остались легаси-полями сортировки (`score`, `display_priority`, `overall_criticality`).
+Режимы выборки (critic и clustering): `working` = `publish` (**по умолчанию — инженер видит
+только материальные коммерческие и договорные риски**), `verify`, `important` (publish +
+влияние critical|high), `full` = всё. Ничего не удаляется: `verify` и `suppress` лежат в БД
+с причиной, `show_to_engineer` = `verdict === 'publish'`. Старые строки миграция переносит
+ТОЙ ЖЕ матрицей (`fromLegacyPriority` + `backfillMateriality` в `db/migrate.js`, только
+`WHERE verdict IS NULL`, идемпотентно): прежние critical/high → `publish`, medium →
+`verify`, low/скрытое → `suppress`, в причине — пометка о переносе. Тесты —
+`server/test/unit/materiality.test.js` (все 15 клеток матрицы + правила 1–7) и
+`server/test/integration/materiality.integration.test.js` (матрица через Postgres, режимы
+выборки, свёртка на кластер, безопасность переноса).
+
 **Исход прогона конвейера ХРАНИТСЯ в `analysis_runs.summary`, а не выводится заново.**
 `buildRunOutcome` (чистая) собирает ОДИН отчёт и для ответа API, и для записи в БД:
 `status` (контракт `resultStatus`), `warnings`, причины частичного результата (`partial`),

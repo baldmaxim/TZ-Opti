@@ -19,8 +19,8 @@ exports.build = async (req, res) => {
   res.json({ ...result, run_id: result.summary.run_id, activated: false });
 };
 
-// GET /api/tenders/:id/issue-clusters?mode=important|working|full
-// Режим по умолчанию — working (скрывает кластеры без значимых элементов).
+// GET /api/tenders/:id/issue-clusters?mode=important|working|verify|full
+// Режим по умолчанию — working: только МАТЕРИАЛЬНЫЕ кластеры (verdict='publish').
 exports.list = async (req, res) => {
   await ensureTender(req.params.id);
   const mode = req.query.mode || 'working';
@@ -29,5 +29,9 @@ exports.list = async (req, res) => {
     acc[c.overall_criticality] = (acc[c.overall_criticality] || 0) + 1;
     return acc;
   }, {});
-  res.json({ items, count: items.length, mode, by_criticality: byCriticality });
+  const byVerdict = items.reduce((acc, c) => {
+    if (c.verdict) acc[c.verdict] = (acc[c.verdict] || 0) + 1;
+    return acc;
+  }, {});
+  res.json({ items, count: items.length, mode, by_criticality: byCriticality, by_verdict: byVerdict });
 };

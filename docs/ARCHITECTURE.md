@@ -88,6 +88,7 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 | Экран «Итог» / финальная «Рецензия» | `review/clusterReviewService.js` `listReviewClusters(tenderId)` поверх `issue_clusters` | consolidation.js — legacy-fallback |
 | Исключение фрагментов из активного текста для следующих стадий | `tz_excluded_ranges` (пишется в `finishStage` по `delete`/`remove_from_scope` issue-level решений стадий 1–4) | — |
 | Ранжирование/группировка/полнота находок (аналитика) | конвейер: `analysis_signals` → … → `self_analysis_results` | — |
+| **Показывать ли замечание инженеру** (материальность) | `review/materiality.js` (матрица `impact_level` × `evidence_level` → `verdict`), считает `critic/criticService.js`; свёртка на кластер — `clustering/clusteringService.js` | `criticality` агента и `confidence` модели — легаси-сортировка (`score`, `display_priority`), на публикацию НЕ влияют |
 | Названия стадий | сервер `STAGE_LABELS` (`stageAnalysisEngine.js`), клиент `STAGE_META` (`client/src/utils/labels.js`) — тексты должны совпадать | не хардкодить в других местах |
 | Зоны ответственности агентов (`problem_type` по стадии) | `review/stageDomains.js` | — |
 | «Вид решения» (delete vs вынести vs правка vs примечание) в docx/preview/md | `review/decisionModel.js` (`decisionVisual` + `resolveRedaction`) | — |
@@ -106,6 +107,18 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 > выгрузка авто-падает на него, когда кластеров/кластерных решений нет, и принудительно — по
 > `?source=issues` (фактический источник виден в `X-Export-Source`). Старые
 > `issues`/`review_decisions(issue_id)` не удалялись.
+
+> **Инженер по умолчанию видит только МАТЕРИАЛЬНЫЕ коммерческие и договорные риски.**
+> Публикацию решает модель материальности (`review/materiality.js`): `impact_level`
+> (`critical|high|medium|low|none`, считается по материальным критериям компании) ×
+> `evidence_level` (`strong|medium|weak`, считается по структуре находки) → `verdict`
+> (`publish|verify|suppress`). `low`/`none` не публикуются никогда; `critical|high` со
+> слабыми доказательствами уходят в `verify`; редактура, дубли, стандартные требования и
+> неподтверждённые предположения — в `suppress` с причиной. Поля живут на всех трёх слоях
+> (`draft_issues` — мнение агентов, `issue_reviews` — авторитетный вердикт, `issue_clusters` —
+> свёртка на объект рецензии) вместе с `impact_dimensions`, `publication_reason`,
+> `suppression_reason` и `required_action`. Ничего не удаляется: режимы выборки
+> `working` (publish) / `verify` / `important` / `full` — это SQL по `verdict`.
 
 ---
 

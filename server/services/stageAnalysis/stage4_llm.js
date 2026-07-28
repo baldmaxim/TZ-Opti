@@ -12,10 +12,11 @@ const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage4Prompts');
 const { listForTender } = require('../risksService');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
+const { attachMateriality } = require('./shared/materialityFields');
 const { scoreStage4Finding } = require('./stage4Scoring');
 const { ALL_ACTIONS } = require('../analysis/actions');
 
-const RESPONSE_SCHEMA = {
+const RESPONSE_SCHEMA = attachMateriality({
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -78,7 +79,7 @@ const RESPONSE_SCHEMA = {
     },
   },
   required: ['findings'],
-};
+});
 
 const CHAR_BUDGET = Number(process.env.STAGE_LLM_CHAR_BUDGET) || 400000;
 const CONCURRENCY = Math.max(1, Number(process.env.STAGE_LLM_CONCURRENCY) || 1);

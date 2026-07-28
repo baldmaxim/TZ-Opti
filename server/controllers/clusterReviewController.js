@@ -22,7 +22,8 @@ exports.build = async (req, res) => {
   res.json(result);
 };
 
-// GET /api/tenders/:id/review/clusters?mode=working|full — список кластеров для рецензии
+// GET /api/tenders/:id/review/clusters?mode=working|verify|important|full
+// working (по умолчанию) = только материальные (verdict=publish), см. review/materiality.js — список кластеров для рецензии
 // (с сохранёнными решениями, дочерними draft_issues и заметками self-analysis).
 exports.list = async (req, res) => {
   await ensureTender(req.params.id);

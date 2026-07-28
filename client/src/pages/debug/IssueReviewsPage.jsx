@@ -4,15 +4,23 @@ import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import CandidateRunBanner from '../../components/debug/CandidateRunBanner';
 
-// Debug-вкладка слоя critic: оценка значимости draft_issues для генподрядчика.
-// Малозначимые замечания не удаляются — скрыты по умолчанию (show_to_engineer=0)
-// и видны только в «Полном режиме». /tenders/:id/debug/issue-reviews
+// Debug-вкладка слоя critic: оценка МАТЕРИАЛЬНОСТИ draft_issues для генподрядчика
+// (impact × evidence → verdict, см. server/services/review/materiality.js).
+// Ничего не удаляется: verify и suppress видны на своих полках с причиной.
+// /tenders/:id/debug/issue-reviews
 
 const MODES = [
-  { key: 'important', label: 'Только важное', hint: 'critical + high' },
-  { key: 'working', label: 'Рабочий режим', hint: 'скрыты малозначимые (low)' },
+  { key: 'important', label: 'Только важное', hint: 'publish + влияние critical|high' },
+  { key: 'working', label: 'Материальные', hint: 'verdict = publish (что видит инженер)' },
+  { key: 'verify', label: 'На проверку', hint: 'verdict = verify (доказательств мало)' },
   { key: 'full', label: 'Полный режим', hint: 'всё, включая скрытое' },
 ];
+
+const VERDICT_CLASS = {
+  publish: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300',
+  verify: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300',
+  suppress: 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400',
+};
 
 const PRIORITY_CLASS = {
   critical: 'bg-red-600 text-white',
@@ -95,9 +103,12 @@ export default function IssueReviewsPage() {
       <CandidateRunBanner runId={runId} onClear={() => { setRunId(null); load(mode, null); }} />
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
-        Critic оценивает каждый draft_issue по значимости для генподрядчика (цена / график /
-        договор / ответственность) и скрывает малозначимые из основного потока. Записи не
-        удаляются — в «Полном режиме» видно всё. Параллельный слой.
+        Critic считает материальность каждого draft_issue: impact_level — по материальным
+        критериям компании (стоимость / срок / оплата / договор / ответственность / объём),
+        evidence_level — по структуре находки (привязка к тексту ТЗ, обоснование, число
+        независимых сигналов). criticality агента и confidence модели в это НЕ входят.
+        Вердикт по матрице impact × evidence: publish — инженер видит по умолчанию,
+        verify — на проверку, suppress — скрыто с причиной. Записи не удаляются.
       </p>
 
       {/* Фильтры-режимы */}
@@ -140,12 +151,29 @@ export default function IssueReviewsPage() {
             className={`border dark:border-gray-700 rounded p-3 space-y-2 ${r.show_to_engineer ? '' : 'opacity-60 bg-gray-50 dark:bg-gray-800'}`}
           >
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`text-xs px-2 py-0.5 rounded font-medium ${PRIORITY_CLASS[r.display_priority] || ''}`}>
+              {/* Новая модель: вердикт + две оси. display_priority оставлен рядом
+                  как легаси-балл сортировки — по нему публикация больше не решается. */}
+              {r.verdict && (
+                <span className={`text-xs px-2 py-0.5 rounded font-medium ${VERDICT_CLASS[r.verdict] || ''}`}>
+                  {r.verdict}
+                </span>
+              )}
+              <span className="text-xs px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200">
+                impact: {r.impact_level || '—'} / evidence: {r.evidence_level || '—'}
+              </span>
+              {Array.isArray(r.impact_dimensions) && r.impact_dimensions.length > 0 && (
+                <span className="text-xs px-2 py-0.5 rounded bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-200">
+                  {r.impact_dimensions.join(', ')}
+                </span>
+              )}
+              {r.required_action && r.required_action !== 'none' && (
+                <span className="text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                  → {r.required_action}
+                </span>
+              )}
+              <span className={`text-xs px-2 py-0.5 rounded font-medium ${PRIORITY_CLASS[r.display_priority] || ''}`} title="Легаси-приоритет сортировки">
                 {r.display_priority}
               </span>
-              {!r.show_to_engineer && (
-                <span className="text-xs px-2 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-400">скрыто</span>
-              )}
               {r.category && <span className="text-xs px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{r.category}</span>}
               {IMPACT_FIELDS.map(([f, lbl]) => (
                 <span key={f} className={`text-xs px-2 py-0.5 rounded ${IMPACT_CLASS[r[f]] || IMPACT_CLASS.none}`}>

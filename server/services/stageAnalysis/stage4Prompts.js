@@ -1,5 +1,7 @@
 'use strict';
 
+const { withMaterialityPrompt } = require('./shared/materialityFields');
+
 // Системные промты Стадии 4 — сверка ТЗ Заказчика с БИБЛИОТЕКОЙ типовых рисков
 // ГП (15 стандартных STANDARD_RISKS + кастомные тендера, с overlay из
 // risksService). Каждый риск — опасная для ГП формулировка + триггеры-примеры +
@@ -118,7 +120,8 @@ function resolveVariant() {
 // Собирает системный промт: общий блок + блок выбранного режима.
 function buildSystemPrompt(variant) {
   const v = Object.prototype.hasOwnProperty.call(VARIANTS, variant) ? variant : DEFAULT_VARIANT;
-  return `${SHARED}\n\n${VARIANTS[v]}`;
+  // Блок оценки материальности — общий для стадий 1–4 (shared/materialityFields).
+  return withMaterialityPrompt(`${SHARED}\n\n${VARIANTS[v]}`);
 }
 
 module.exports = { buildSystemPrompt, resolveVariant, DEFAULT_VARIANT };

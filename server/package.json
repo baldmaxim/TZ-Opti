@@ -15,7 +15,14 @@
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "node --env-file=test/env/test.env --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --env-file=test/env/test.env --env-file-if-exists=../.env.test --test \"test/integration/**/*.test.js\"",
-    "test:integration:strict": "node --env-file=test/env/test.env --env-file=test/env/strict.env --env-file-if-exists=../.env.test --test \"test/integration/**/*.test.js\""
+    "test:integration:strict": "node --env-file=test/env/test.env --env-file=test/env/strict.env --env-file-if-exists=../.env.test --test \"test/integration/**/*.test.js\"",
+    "test:acceptance": "node --env-file=test/env/test.env --env-file-if-exists=../.env.test --test --test-concurrency=1 \"test/acceptance/**/*.test.js\"",
+    "check:syntax": "node scripts/checkSyntax.js",
+    "ci:unit": "node scripts/runTests.js test/unit --strict",
+    "ci:integration": "node scripts/runTests.js test/integration --strict --env=../.env.test",
+    "ci:acceptance": "node scripts/runTests.js test/acceptance --strict --concurrency=1 --env=../.env.test",
+    "ci:migrate:empty": "node scripts/ciMigrationCheck.js --empty",
+    "ci:migrate:populated": "node scripts/ciMigrationCheck.js --populated"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.142",

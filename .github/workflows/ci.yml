@@ -1,0 +1,261 @@
+name: CI
+
+# Обязательная проверка репозитория. Зелёный прогон означает ровно следующее:
+#   • серверный код разбирается парсером целиком (не только то, что грузят тесты);
+#   • юнит-тесты прошли БЕЗ базы и БЕЗ сети;
+#   • integration-тесты РЕАЛЬНО ВЫПОЛНЯЛИСЬ на живом PostgreSQL — пропуск здесь
+#     считается провалом (strict-режим + разбор TAP: skipped/todo > 0 → ошибка);
+#   • миграция разворачивает схему с нуля И безопасно накатывается на населённую
+#     базу (данные не потеряны, backfill снимков отработал и не дублируется);
+#   • клиент собирается в production-режиме;
+#   • приёмочный сценарий портала (API + очередь + воркеры + БД) проходит со
+#     стабом LLM и без единого обращения во внешнюю сеть.
+#
+# Зависимости ставятся ТОЛЬКО через `npm ci` по lock-файлам: сборка обязана быть
+# воспроизводимой, а рассинхрон package.json ↔ package-lock.json — сразу ошибкой.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# Новый пуш в ту же ветку отменяет предыдущий незаконченный прогон.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Node.js — минимум проекта 20 (нужны --env-file и node:test); юнит-тесты
+# гоняются и на 22, чтобы «20+» не оказалось «ровно 20».
+jobs:
+  # --- 1. Синтаксис серверного кода ------------------------------------------
+  syntax:
+    name: Синтаксис серверного кода
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Установка (npm ci, строго по lock-файлам)
+        run: |
+          npm ci
+          npm --prefix server ci
+      # Проверка парсит КАЖДЫЙ .js сервера, включая модули, которые ни один тест
+      # не импортирует (контроллеры и стадии грузятся лениво).
+      - name: node --check по всему server/
+        run: npm run check:syntax
+
+  # --- 2. Юнит-тесты (без БД и без сети) --------------------------------------
+  unit:
+    name: Юнит-тесты (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.x', '22.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Установка (npm ci)
+        run: |
+          npm ci
+          npm --prefix server ci
+      # ВАЖНО: в этой задаче НЕ задаются ни DATABASE_URL, ни TEST_DATABASE_URL —
+      # часть юнит-тестов проверяет поведение процесса, у которого БД нет вовсе.
+      - name: Юнит-тесты (пропуск = провал)
+        run: npm run ci:unit
+
+  # --- 3. Integration-тесты на живом PostgreSQL --------------------------------
+  integration:
+    name: Integration-тесты (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: postgres
+      # ОТДЕЛЬНАЯ тестовая база: тесты применяют к ней схему (runMigration).
+      # DATABASE_URL здесь не задаётся вообще — тестовый процесс обязан ходить
+      # только в TEST_DATABASE_URL (см. db/connectionTarget.js).
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tz_opti_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Установка (npm ci)
+        run: |
+          npm ci
+          npm --prefix server ci
+      - name: Отдельная тестовая БД
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE tz_opti_test;'
+      # Строгий режим: без TEST_DATABASE_URL тесты не пропускаются, а падают;
+      # раннер дополнительно разбирает TAP и валит сборку, если хоть один тест
+      # оказался skipped/todo или не выполнился ни один.
+      - name: Integration-тесты (пропуск = провал)
+        run: npm run ci:integration
+
+  # --- 4. Миграции: пустая и населённая база -----------------------------------
+  migrations:
+    name: Миграции (пустая и населённая БД)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Установка (npm ci)
+        run: |
+          npm ci
+          npm --prefix server ci
+      - name: Две отдельные базы под проверку миграции
+        run: |
+          psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE tz_opti_migrate_empty;'
+          psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE tz_opti_migrate_populated;'
+      # Схема с нуля: все таблицы на месте, инварианты тенантов выполнены,
+      # повторный прогон миграции ничего не ломает.
+      - name: Миграция ПУСТОЙ базы
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tz_opti_migrate_empty?sslmode=disable
+        run: npm run ci:migrate:empty
+      # Главный риск обновления: миграция накатывается на базу С ДАННЫМИ
+      # (демо-сид + legacy-строки анализа без снимка). Проверяется, что ни одна
+      # строка не потеряна и не размножена, а backfill снимков отработал.
+      - name: Миграция НАСЕЛЁННОЙ базы
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tz_opti_migrate_populated?sslmode=disable
+        run: npm run ci:migrate:populated
+
+  # --- 5. Production-сборка клиента --------------------------------------------
+  client_build:
+    name: Production-сборка клиента
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Установка клиента (npm ci)
+        run: npm --prefix client ci
+      - name: vite build
+        run: npm --prefix client run build
+      - name: Сборка не пустая
+        run: test -f client/dist/index.html
+
+  # --- 6. Приёмочный сценарий портала ------------------------------------------
+  acceptance:
+    name: Acceptance API (стаб LLM, без внешней сети)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGPASSWORD: postgres
+      # Своя база: приёмочный сценарий гоняет полный конвейер и не должен
+      # пересекаться с integration-набором.
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tz_opti_acceptance?sslmode=disable
+      # Ключ — только признак «LLM настроен»; сам вызов уходит в стаб-провайдер
+      # (test/helpers/fakeLlm.js). Реальный вызов модели в тестовом процессе
+      # запрещён самим openaiClient, поэтому обращений наружу нет.
+      OPENAI_API_KEY: acceptance-stub-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+      - name: Установка (npm ci)
+        run: |
+          npm ci
+          npm --prefix server ci
+      - name: Отдельная база под acceptance
+        run: psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE tz_opti_acceptance;'
+      # Сценарии: без .md анализ не запускается; полный успешный анализ; полный
+      # отказ LLM не выдаётся за успех; повтор не смешивает результаты; два
+      # воркера не создают дублей; новая ревизия не наследует исключения;
+      # экспорт идёт только от активного согласованного снимка.
+      - name: Acceptance-тесты (пропуск = провал)
+        run: npm run ci:acceptance
+
+  # --- 7. Единая точка «CI зелёный» --------------------------------------------
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    needs: [syntax, unit, integration, migrations, client_build, acceptance]
+    if: always()
+    steps:
+      # Гейт для branch protection: пропущенная или упавшая задача валит CI.
+      # `needs.*.result` разбирается явно, потому что job с `if: always()`
+      # сам по себе зелёный независимо от того, что случилось выше.
+      - name: Итог всех задач
+        run: |
+          echo "syntax=${{ needs.syntax.result }}"
+          echo "unit=${{ needs.unit.result }}"
+          echo "integration=${{ needs.integration.result }}"
+          echo "migrations=${{ needs.migrations.result }}"
+          echo "client_build=${{ needs.client_build.result }}"
+          echo "acceptance=${{ needs.acceptance.result }}"
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "true" ]; then
+            echo "CI НЕ ЗАЧТЁН: не все обязательные задачи прошли."
+            exit 1
+          fi
+          echo "CI зачтён."

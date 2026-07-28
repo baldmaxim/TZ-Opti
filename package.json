@@ -16,8 +16,15 @@
     "test": "npm --prefix server run test",
     "test:unit": "npm --prefix server run test:unit",
     "test:integration": "npm --prefix server run test:integration",
+    "test:acceptance": "npm --prefix server run test:acceptance",
     "verify": "npm run test:unit && npm run test:integration && npm run build",
-    "verify:integration": "npm --prefix server run test:integration:strict"
+    "verify:integration": "npm --prefix server run test:integration:strict",
+    "check:syntax": "npm --prefix server run check:syntax",
+    "ci:unit": "npm --prefix server run ci:unit",
+    "ci:integration": "npm --prefix server run ci:integration",
+    "ci:acceptance": "npm --prefix server run ci:acceptance",
+    "ci:migrate:empty": "npm --prefix server run ci:migrate:empty",
+    "ci:migrate:populated": "npm --prefix server run ci:migrate:populated"
   },
   "engines": {
     "node": ">=20"

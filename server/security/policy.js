@@ -138,6 +138,14 @@ const RULES = [
   r('POST', '/tenders/:tenderId/review/carryovers/confirm', 'decision.write', 'review.carryovers.confirm', DECISION, 'tender', 'cluster'),
   r('GET', '/tenders/:tenderId/review/clusters/:clusterId', 'tender.read', 'review.cluster.get', READ, 'tender', 'cluster'),
   r('POST', '/tenders/:tenderId/review/clusters/:clusterId/decision', 'decision.write', 'review.cluster.decide', DECISION, 'tender', 'cluster'),
+  // Shadow-квалификация замечаний (gate качества, параллельный слой; production
+  // не меняет). Чтение — как рецензия; override — решение инженера; rerun —
+  // повторная оценка (analysis, но НЕ пересчёт замечаний).
+  r('GET', '/tenders/:tenderId/qualification', 'tender.read', 'qualification.list', READ, 'tender', 'qualification'),
+  r('GET', '/tenders/:tenderId/qualification/stats', 'tender.read', 'qualification.stats', READ, 'tender', 'qualification'),
+  r('POST', '/tenders/:tenderId/qualification/rerun', 'analysis.run', 'qualification.rerun', ANALYSIS, 'tender', 'qualification'),
+  r('GET', '/tenders/:tenderId/qualification/clusters/:clusterId', 'tender.read', 'qualification.get', READ, 'tender', 'qualification'),
+  r('POST', '/tenders/:tenderId/qualification/clusters/:clusterId/override', 'decision.write', 'qualification.override', DECISION, 'tender', 'qualification'),
   r('GET', '/tenders/:tenderId/review/preview', 'export.perform', 'review.preview', EXPORT, 'tender', 'review'),
   r('GET', '/tenders/:tenderId/review/consolidated', 'tender.read', 'review.consolidated', READ, 'tender', 'review'),
   r('PATCH', '/issues/:issueId', 'decision.write', 'issue.update', DECISION, 'issue', 'issue'),

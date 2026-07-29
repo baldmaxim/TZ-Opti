@@ -19,6 +19,7 @@ const { buildClusters } = require('../clustering/clusteringService');
 const { buildSelfAnalysis } = require('../selfAnalysis/selfAnalysisService');
 const { STATUS, severityOf } = require('../analysis/resultStatus');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
+const qualificationShadow = require('../qualification/qualificationShadowService');
 const {
   REQUIRED_STAGES,
   MODE,
@@ -373,7 +374,12 @@ async function finalizePipelineRun(tenderId, runId, steps, ctx = {}, runs = anal
 // трогаются (архив). По успеху прогон активируется (указатель переводится, старый
 // архивируется), при сбое помечается failed и указатель остаётся на прежнем.
 // runners/runs инъектируем (по умолчанию боевые) — для офлайн-тестов без БД/LLM.
-async function runPipeline(tenderId, opts = {}, runners = STEP_RUNNERS, runs = analysisRuns) {
+// shadow — SHADOW-квалификация итоговых замечаний (qualificationShadowService.
+// evaluateRunSafe): тоже инъектируется, null отключает.
+async function runPipeline(
+  tenderId, opts = {}, runners = STEP_RUNNERS, runs = analysisRuns,
+  shadow = qualificationShadow.evaluateRunSafe,
+) {
   const keys = planSteps(opts);
   const steps = [];
   let failed = false;
@@ -419,6 +425,20 @@ async function runPipeline(tenderId, opts = {}, runners = STEP_RUNNERS, runs = a
     } catch (e) {
       failed = true;
       steps.push({ step: key, label: meta.label, status: 'failed', ms: Date.now() - t0, error: e.message });
+    }
+  }
+
+  // SHADOW-квалификация итоговых замечаний (требование: gate идёт ПОСЛЕ
+  // формирования замечания, но ДО передачи данных клиенту — то есть до
+  // активации снимка). Строго best-effort и read-only к production: пишет
+  // только в finding_qualifications; сбой gate НЕ меняет исход прогона,
+  // не двигает указатель и не трогает состав замечаний.
+  if (shadow && steps.some((s) => s.step === 'clustering' && s.status === 'done')) {
+    try {
+      await shadow(tenderId, runId, { trigger: 'pipeline' });
+    } catch (err) {
+      // evaluateRunSafe сам глотает ошибки; страховка — на случай инъекции.
+      console.error(`[pipeline] shadow-квалификация не выполнена: ${err.message}`);
     }
   }
 

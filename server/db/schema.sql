@@ -432,6 +432,75 @@ CREATE INDEX IF NOT EXISTS idx_decisions_issue ON review_decisions(issue_id);
 -- idx_decisions_cluster создаётся в migrate.js (ensureIndex) ПОСЛЕ ensureColumn(cluster_id),
 -- т.к. на существующих БД CREATE TABLE IF NOT EXISTS не добавляет новый столбец.
 
+-- SHADOW-РЕЖИМ квалификационного gate (services/qualification/): независимая
+-- оценка каждого ИТОГОВОГО замечания (issue_clusters) квалификационным фильтром
+-- publish | review | hide | reject. СТРОГО ПАРАЛЛЕЛЬНЫЙ слой: production-путь
+-- публикации (materiality + precision-критик), статус замечания, active pointer,
+-- экспорт и порядок публикации НЕ зависят от этих строк — они существуют только
+-- для сравнения gate с решением инженера. Оценка привязана к КОНКРЕТНОМУ
+-- прогону (analysis_run_id) и КОНКРЕТНОЙ версии gate (gate_version); уникальный
+-- ключ запрещает перезапись — повторная оценка возможна только НОВОЙ версией.
+-- cluster_id — без FK (как у review_decisions): shadow-строка обязана пережить
+-- пересборку кластеров и purge прогона не блокировать.
+CREATE TABLE IF NOT EXISTS finding_qualifications (
+  id                   TEXT PRIMARY KEY,
+  tender_id            TEXT NOT NULL,
+  analysis_run_id      TEXT NOT NULL,    -- pipeline-прогон, кластеры которого оценивались
+  cluster_id           TEXT NOT NULL,    -- issue_clusters.id (run-scoped)
+  cluster_key          TEXT,             -- стабильная сигнатура кластера (сравнение между прогонами)
+  gate_version         TEXT NOT NULL,    -- версия алгоритма gate, которой посчитана оценка
+  qualification        TEXT NOT NULL,    -- publish|review|hide|reject|evaluation_failed
+  proposed_priority    TEXT,             -- critical|high|medium|low|informational
+  confidence           REAL,             -- диагностический балл gate (НЕ основание решения)
+  evidence_strength    TEXT,             -- strong|medium|weak|none
+  impact_types         TEXT,             -- JSON-массив типов влияния gate
+  source_strength      REAL,             -- сила источника основания 0..1
+  missing_requirements TEXT,             -- JSON-массив недостающих обязательных элементов
+  reasons              TEXT,             -- JSON-массив причин решения (ru)
+  score_breakdown      TEXT,             -- JSON: слагаемые диагностического балла
+  rule_key             TEXT,             -- сработавшее hard-gate правило
+  production_verdict   TEXT,             -- СНИМОК production-вердикта кластера на момент оценки (только сравнение)
+  production_priority  TEXT,             -- снимок production-приоритета кластера
+  category             TEXT,             -- категория замечания (problem_type кластера)
+  source_stages        TEXT,             -- JSON-массив стадий 1-4, породивших замечание
+  error                TEXT,             -- текст ошибки при qualification='evaluation_failed'
+  evaluated_at         TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_finding_qualifications
+  ON finding_qualifications(analysis_run_id, cluster_id, gate_version);
+CREATE INDEX IF NOT EXISTS idx_finding_qualifications_tender
+  ON finding_qualifications(tender_id, analysis_run_id);
+
+-- Решение инженера ПО SHADOW-ОЦЕНКЕ (сравнение с gate). НЕ подменяет
+-- review_decisions (production-решение рецензии) — это отдельный журнал для
+-- метрик качества gate. Append-only: история решений сохраняется, актуальное —
+-- последнее по decided_at. Для rejected и accepted_with_edit обязателен
+-- структурированный reason_code (словарь — qualificationShadowService).
+CREATE TABLE IF NOT EXISTS finding_qualification_decisions (
+  id                   TEXT PRIMARY KEY,
+  tender_id            TEXT NOT NULL,
+  analysis_run_id      TEXT NOT NULL,
+  cluster_id           TEXT NOT NULL,
+  qualification_id     TEXT,             -- finding_qualifications.id, против которой принято решение
+  gate_version         TEXT,             -- версия gate на момент решения
+  gate_qualification   TEXT,             -- снимок квалификации gate на момент решения
+  decision             TEXT NOT NULL,    -- accepted|accepted_with_edit|rejected|deferred|merged
+  reason_code          TEXT,             -- структурированная причина (обязательна для rejected|accepted_with_edit)
+  agrees_with_gate     INTEGER,          -- 1=совпало, 0=разошлось, NULL=не сопоставимо (deferred/merged/оценки нет)
+  original_text        TEXT,             -- исходная редакция замечания (снимок на момент решения)
+  final_text           TEXT,             -- финальная редакция инженера (NULL = без правки)
+  comment              TEXT,             -- свободный комментарий инженера
+  decided_by           TEXT,             -- субъект (sub из токена)
+  decided_by_email     TEXT,
+  decided_at           TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_fq_decisions_cluster
+  ON finding_qualification_decisions(tender_id, analysis_run_id, cluster_id);
+
 CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
   id                   TEXT PRIMARY KEY,
   tender_id            TEXT NOT NULL,

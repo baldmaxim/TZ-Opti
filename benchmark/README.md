@@ -29,10 +29,24 @@ npm run benchmark                                   # синтетический
 npm run benchmark -- --dataset benchmark/local/datasets/real \
                      --findings benchmark/local/runs/candidate-v2
 npm run benchmark -- --no-write                     # только консоль, без файлов отчёта
+npm run benchmark -- --qualification-gate           # + shadow-сравнение до/после фильтра
 ```
 
 Отчёт (`report.json` + `report.md`) сохраняется в `benchmark/results/<алгоритм>-<время>/`.
 Сравнение алгоритмов = два прогона с разными `--findings` на одном `--dataset`.
+
+## Квалификационный фильтр (shadow mode)
+
+`--qualification-gate` дополнительно прогоняет каждую находку через независимый
+квалификационный фильтр `server/services/qualification/findingQualificationGate.js`
+(hard gates: evidence / основание / последствие / действие / существенность —
+publish | review | hide | reject) и пишет отдельный отчёт `qualified-report.json`
++ `qualified-report.md`: метрики до/после, удалённый шум (FP/дубли/утечки),
+ошибочно скрытые TP, причины каждого решения. Режим ПОЛНОСТЬЮ теневой:
+production-путь публикации, findings-файлы и обычный `report.*` не меняются.
+Qualified-метрики считают видимыми находки publish|review (review — полка
+«на проверку», инженер их видит); hide|reject в метрики не входят.
+Логика сравнения — `server/services/benchmark/qualificationComparison.js`.
 
 ## Формат эталона (`*.gold.json`)
 

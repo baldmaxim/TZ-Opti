@@ -187,13 +187,21 @@ export const useTenderStore = create((set, get) => ({
   // оставлен как есть — гейт «следующая после finish»), затем пересобирает конвейер
   // signals → draft_issues → critic → clustering (опц. self-analysis). Best-effort:
   // если шаг недоступен/падает — собираем кластеры из того, что уже есть.
-  async runAnalysis({ withSelfAnalysis = false } = {}) {
+  // restart: явный перезапуск завершённого анализа — каскадный сброс со стадии 1
+  // (иначе finished-стадии будут пропущены, а сборка итога отклонит устаревшие
+  // входы: stage_pointer_stale / ревизия снимка неизвестна). История прогонов и
+  // решения при сбросе не удаляются — сервер предложит их перенос (carry-over).
+  async runAnalysis({ withSelfAnalysis = false, restart = false } = {}) {
     const id = get().tenderId;
     if (!id) return null;
     set({ analysisRunning: true, analysisStep: 'Подготовка…' });
     const stageStatuses = []; // исход добытчика каждой пройденной стадии
     let aborted = null; // cancelled (гейт/уход) | interrupted (ушли с тендера)
     try {
+      if (restart) {
+        set({ analysisStep: 'Сброс прежнего анализа…' });
+        await api.resetStage(id, 1); // каскад: стадии 1–5 → open, прогоны в архив
+      }
       await get().refreshStages();
       for (let n = 1; n <= 4; n += 1) {
         const statusOf = () => get().stageState?.[`stage${n}_status`];

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../services/api';
+import ResetStageModal from '../../components/stages/ResetStageModal';
 import { toastError } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import { withViewTransition } from '../../utils/viewTransition';
@@ -21,6 +22,7 @@ export default function AnalysisRunPage() {
 
   const [clusterCount, setClusterCount] = useState(null); // null = ещё не загружено
   const [ranOnce, setRanOnce] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
 
   // Грузим только факт наличия замечаний (кластеров) — список здесь не нужен.
   const loadCount = async () => {
@@ -37,14 +39,21 @@ export default function AnalysisRunPage() {
 
   const goReview = () => navigate(`/tenders/${tenderId}/review`);
 
-  const onStart = async () => {
-    const res = await runAnalysis({ withSelfAnalysis: true });
+  const onStart = async ({ restart = false } = {}) => {
+    // Явный перезапуск сбрасывает стадии со стадии 1 (иначе finished-стадии
+    // пропускаются и сборка итога отклоняет устаревшие входы).
+    const res = await runAnalysis({ withSelfAnalysis: true, restart });
     // Ошибка (error) — не идём дальше. Success и warning дают пригодный итог:
     // при частичном результате замечания всё равно собраны — ведём к рецензии.
     if (!res || res.severity === 'error') return;
     setRanOnce(true);
     const n = await loadCount();
     if (n > 0) goReview(); // сразу на «Рецензию» — там замечания редактируемы
+  };
+
+  const onConfirmRestart = () => {
+    setConfirmRestart(false);
+    onStart({ restart: true });
   };
 
   if (!tender || !tenderId) return null;
@@ -88,7 +97,7 @@ export default function AnalysisRunPage() {
               </button>
               <button
                 type="button"
-                onClick={onStart}
+                onClick={() => setConfirmRestart(true)}
                 disabled={analysisRunning}
                 className="btn btn-secondary px-6 py-3 text-base"
               >
@@ -106,7 +115,7 @@ export default function AnalysisRunPage() {
             </p>
             <button
               type="button"
-              onClick={onStart}
+              onClick={() => onStart()}
               disabled={analysisRunning}
               className="btn btn-primary mt-6 px-8 py-3 text-base"
             >
@@ -125,6 +134,14 @@ export default function AnalysisRunPage() {
           </>
         )}
       </div>
+
+      <ResetStageModal
+        open={confirmRestart}
+        stage={1}
+        busy={analysisRunning}
+        onConfirm={onConfirmRestart}
+        onClose={() => setConfirmRestart(false)}
+      />
     </div>
   );
 }

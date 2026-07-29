@@ -11,6 +11,8 @@
 //   npm run benchmark -- --findings <dir|file>          свои результаты агента
 //   npm run benchmark -- --out <dir>                    куда положить отчёт
 //   npm run benchmark -- --no-write                     только консоль, без файлов
+//   npm run benchmark -- --qualification-gate           shadow-сравнение до/после
+//                                                       квалификационного фильтра
 //
 // Реальные (не синтетические) наборы кладите в benchmark/local/ — директория
 // исключена из git (.gitignore). Формат — benchmark/README.md.
@@ -20,6 +22,11 @@ const path = require('node:path');
 
 const { runBenchmark } = require('../services/benchmark/benchmarkRunner');
 const { buildReport, renderMarkdown, METRIC_LABELS } = require('../services/benchmark/reporter');
+const {
+  runQualifiedBenchmark,
+  buildQualificationReport,
+  renderQualificationMarkdown,
+} = require('../services/benchmark/qualificationComparison');
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -32,6 +39,7 @@ function parseArgs(argv) {
     else if (a === '--findings') { out.findings = next(); i += 1; }
     else if (a === '--out') { out.out = next(); i += 1; }
     else if (a === '--no-write') out.write = false;
+    else if (a === '--qualification-gate') out.qualificationGate = true;
     else if (a === '--help' || a === '-h') out.help = true;
   }
   return out;
@@ -40,14 +48,22 @@ function parseArgs(argv) {
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log('Запуск: npm run benchmark -- [--dataset <dir>] [--findings <dir|file>] [--out <dir>] [--no-write]');
+    console.log('Запуск: npm run benchmark -- [--dataset <dir>] [--findings <dir|file>] [--out <dir>] [--no-write] [--qualification-gate]');
     return;
   }
   const datasetDir = path.resolve(ROOT, args.dataset || path.join('benchmark', 'datasets', 'synthetic'));
   const findingsPath = path.resolve(ROOT, args.findings || path.join('benchmark', 'runs', 'sample-agent'));
+  const generatedAt = new Date().toISOString();
+
+  // Shadow-режим сравнения: raw против qualified (после квалификационного фильтра).
+  let qualification = null;
+  if (args.qualificationGate) {
+    const qualifiedRun = runQualifiedBenchmark({ datasetDir, findingsPath });
+    qualification = buildQualificationReport(qualifiedRun, { generatedAt });
+  }
 
   const run = runBenchmark({ datasetDir, findingsPath });
-  const report = buildReport(run, { generatedAt: new Date().toISOString() });
+  const report = buildReport(run, { generatedAt });
 
   const algoSlug = String(report.algorithm || 'agent')
     .toLowerCase().replace(/[^0-9a-zа-я]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
@@ -74,10 +90,27 @@ function main() {
     console.log(`\n⚠ В результатах агента есть документы вне набора: ${report.unknown_documents.join(', ')}`);
   }
 
+  if (qualification) {
+    console.log('\nКвалификационный фильтр (shadow mode) — метрики до / после:');
+    for (const [key, label] of Object.entries(METRIC_LABELS)) {
+      const b = qualification.metrics_before[key];
+      const a = qualification.metrics_after[key];
+      const d = qualification.metrics_delta[key];
+      const f = (v) => (v == null ? '—' : (Number.isInteger(v) ? String(v) : v.toFixed(3)));
+      console.log(`  ${label}: ${f(b)} → ${f(a)} (Δ ${f(d)})`);
+    }
+    const t = qualification.totals;
+    console.log(`  Удалено шума: ${t.removed_noise}, ошибочно скрыто TP: ${t.lost_true_positives}, осталось шума: ${t.surviving_noise}.`);
+  }
+
   if (args.write) {
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
     fs.writeFileSync(path.join(outDir, 'report.md'), `${renderMarkdown(report)}\n`, 'utf8');
+    if (qualification) {
+      fs.writeFileSync(path.join(outDir, 'qualified-report.json'), `${JSON.stringify(qualification, null, 2)}\n`, 'utf8');
+      fs.writeFileSync(path.join(outDir, 'qualified-report.md'), `${renderQualificationMarkdown(qualification)}\n`, 'utf8');
+    }
     console.log(`\nОтчёт сохранён: ${outDir}`);
   }
 }

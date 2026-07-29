@@ -1,0 +1,21 @@
+{
+  "document_id": "synt-004-editorial",
+  "algorithm": "sample-agent",
+  "findings": [
+    {
+      "id": "s4-f1",
+      "stage": 5,
+      "rank": 1,
+      "quote": "Устройство кровельного пирога согласно проекта: пароизоляция, утеплитель, гидроизоляця в два слоя.",
+      "tz_clause": "п. 6.1",
+      "problem_type": "двусмысленная_формулировка",
+      "risk_category": "юридические_формулировки",
+      "impact_level": "low",
+      "impact_dimensions": [],
+      "required_action": "none",
+      "summary": "Опечатка «гидроизоляця» в перечне слоёв кровельного пирога",
+      "basis": "Орфографическая опечатка, состав работ и условия не меняет",
+      "verdict": "suppress"
+    }
+  ]
+}

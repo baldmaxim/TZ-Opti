@@ -1,0 +1,21 @@
+{
+  "document_id": "synt-001-unaccounted-volume",
+  "algorithm": "sample-agent",
+  "findings": [
+    {
+      "id": "s1-f1",
+      "stage": 1,
+      "rank": 1,
+      "quote": "Выполнить демонтаж существующего асфальтобетонного покрытия площадью 450 м2 с погрузкой и вывозом лома.",
+      "tz_clause": "п. 3.2",
+      "problem_type": "не_учтено_в_вор",
+      "risk_category": "покрытие_расчёта",
+      "impact_level": "critical",
+      "impact_dimensions": ["price", "scope"],
+      "required_action": "recalculate",
+      "summary": "Демонтаж покрытия 450 м2 входит в состав работ, но в ведомости объёмов позиции демонтажа нет",
+      "basis": "П. 3.2 требует демонтаж, в Приложении А позиции демонтажа нет — объём не попадёт в расчёт стоимости",
+      "verdict": "publish"
+    }
+  ]
+}

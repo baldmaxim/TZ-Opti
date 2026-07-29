@@ -26,3 +26,7 @@ memory/
 
 # диагностические дампы dev-бриджа (локальный, dev-only)
 server/devtools/.debug/
+
+# benchmark: реальные наборы документов и отчёты прогонов — только локально
+benchmark/local/
+benchmark/results/

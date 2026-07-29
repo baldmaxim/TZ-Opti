@@ -12,6 +12,7 @@
     "bridge": "node server/devtools/claudeBridge.js",
     "seed": "npm --prefix server run seed",
     "purge": "npm --prefix server run purge --",
+    "benchmark": "npm --prefix server run benchmark --",
     "build": "npm --prefix client run build",
     "test": "npm --prefix server run test",
     "test:unit": "npm --prefix server run test:unit",

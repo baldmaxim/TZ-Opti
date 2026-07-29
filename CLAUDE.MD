@@ -26,6 +26,7 @@ npm run worker        # ОТДЕЛЬНЫЙ процесс-воркер очер�
 npm run seed          # пересеять Postgres-БД демо-данными (--force чтобы перезаписать)
 npm run purge -- --tender <id>              # ПЛАН удаления архивных снимков (dry-run)
 npm run purge -- --tender <id> --confirm <id>  # физически удалить архивные снимки анализа
+npm run benchmark     # офлайн-оценка качества анализа на эталонном наборе (без БД и LLM)
 npm run build         # production-сборка клиента
 npm run test:unit     # серверные юнит-тесты (без БД, без сети, без LLM)
 npm run verify        # unit → integration (доступные) → сборка клиента
@@ -376,6 +377,24 @@ DELETE+INSERT в уже выданном инженеру снимке. Тепе
 production-сборку **не запускает вовсе**; debug-сборка — кнопка на debug-странице конвейера.
 
 **Этапы 6–7 — рецензия и ВСЕ выгрузки работают от кластеров.** Source of truth: `signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export`. Финальный шаг «Рецензия» (`ReviewPage`), экран «Итог» (`SummaryPage`), экспорт `.docx`, HTML-preview (`reviewHtmlService.js`), review.md (`mdReview/renderer.js`) и CSV/JSON/summary.md (`exportService.js`) основным путём идут от `issue_clusters` через `server/services/review/clusterReviewService.js` (`loadClusterDecisions` — решённые, `loadClusterReviewRows` — все кластеры): одно решение на кластер пишется в `review_decisions.cluster_id`, выгрузки собираются из primary draft_issue кластера (место локализуется по тексту `source_fragment` — `reviewDocx` не переписывался). **Каждый анализ — неизменяемый снимок с `analysis_run_id`** (`analysisRuns/analysisRunsService.js`): id кластера **run-scoped** (`clusterRunId` от `tenderId + analysis_run_id + cluster_key`), поэтому кластеры разных прогонов НЕ сталкиваются по id и решения прошлого прогона НЕ приклеиваются автоматически к новому — повторный запуск не смешивает старые и новые результаты. Перенос решений между прогонами — только ЯВНЫЙ (`listCarryOverProposals` предлагает по `cluster_key`/месту/тексту, `confirmCarryOvers` подтверждает). Эндпоинты: `POST/GET /api/tenders/:id/review/clusters[...]`. **Backward-compat (fallback):** issue-level путь (`review_decisions.issue_id`, `consolidation.js` `/review/consolidated`, пер-стадийная рецензия внутри стадий 1–4) сохранён; каждая выгрузка авто-падает на него, когда кластеров/кластерных решений нет, и принудительно по `?source=issues` (фактический источник — заголовок `X-Export-Source`). Старые `issues`/`review_decisions(issue_id)` не удалялись. Полное описание сущностей, source-of-truth и end-to-end — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Benchmark качества анализа
+
+Независимый офлайн-контур `server/services/benchmark/` (matcher / evaluator /
+metrics / reporter / benchmarkRunner — чистые, без БД, сети и LLM) сравнивает
+результат любого алгоритма с эталонным набором: `npm run benchmark`
+(`server/scripts/runBenchmark.js`, production active pointers недостижимы —
+скрипт не импортирует db/connection). Набор: `benchmark/datasets/synthetic`
+(`*.md` + `*.gold.json`: ожидаемые critical|working и запрещённые к публикации
+замечания, точные цитаты, допустимые формулировки, обязательное основание);
+результаты агента — `benchmark/runs/<имя>/*.findings.json`. Сопоставление —
+4 оси (место/смысл/категория/направление действия), без требования текстового
+совпадения. Метрики: precision, recall, precision@10/20, recall критических,
+duplicate rate, informational leakage, unsupported rate, замечания без
+последствия. **Реальные тендерные документы — только в `benchmark/local/`
+(в .gitignore), в репозиторий не коммитятся**; отчёты — `benchmark/results/`
+(тоже игнорируется). Формат — `benchmark/README.md`, тесты —
+`server/test/unit/benchmark/`.
 
 ## .env
 

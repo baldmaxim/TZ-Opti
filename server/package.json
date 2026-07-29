@@ -12,6 +12,7 @@
     "migrate": "node db/migrate.js",
     "seed": "node db/seed.js",
     "purge": "node scripts/purgeHistory.js",
+    "benchmark": "node scripts/runBenchmark.js",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "node --env-file=test/env/test.env --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --env-file=test/env/test.env --env-file-if-exists=../.env.test --test \"test/integration/**/*.test.js\"",

@@ -1,0 +1,21 @@
+{
+  "document_id": "synt-003-standard-requirement",
+  "algorithm": "sample-agent",
+  "findings": [
+    {
+      "id": "s3-f1",
+      "stage": 4,
+      "rank": 1,
+      "quote": "Работы выполнять в соответствии с требованиями СП 48.13330.2019 «Организация строительства» и иных действующих норм.",
+      "tz_clause": "п. 5.1",
+      "problem_type": "типовой_риск",
+      "risk_category": "нормативные_требования",
+      "impact_level": "medium",
+      "impact_dimensions": [],
+      "required_action": "none",
+      "summary": "В ТЗ есть ссылка на СП 48.13330 «Организация строительства» и действующие нормы",
+      "basis": "Стандартная норма, включена для полноты",
+      "verdict": "publish"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "document_id": "synt-002-aggregated-vor",
+  "algorithm": "sample-agent",
+  "findings": [
+    {
+      "id": "s2-f1",
+      "stage": 1,
+      "rank": 1,
+      "quote": "Устройство полов (комплекс работ)",
+      "tz_clause": "Приложение Б, поз. 12",
+      "problem_type": "укрупнённая_позиция_вор",
+      "risk_category": "покрытие_расчёта",
+      "impact_level": "medium",
+      "impact_dimensions": ["price"],
+      "required_action": "ask_customer",
+      "summary": "Позиция ВОР укрупнена: состав работ по п. 4.1 шире названия позиции",
+      "basis": "Цена за «комплекс работ» без расшифровки — риск разного толкования состава при расчёте стоимости",
+      "verdict": "publish"
+    }
+  ]
+}

@@ -69,7 +69,8 @@ async function ensureRunId(ctx, stage) {
 
 // Финализатор задания: неуспешный исход завершает ТОТ ЖЕ прогон и возвращает
 // стадию из 'running' в исходный статус (иначе портал навсегда покажет
-// крутящееся кольцо). Успех движок фиксирует сам (activateRun → 'reviewing').
+// крутящееся кольцо). Успех движок фиксирует сам (publishStageResult: снимок,
+// активация и 'reviewing' одной транзакцией).
 async function onJobSettled({ job }) {
   if (job.status === 'completed') return;
   const payload = safeParse(job.payload_json) || {};

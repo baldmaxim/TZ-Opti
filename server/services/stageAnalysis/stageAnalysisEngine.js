@@ -23,7 +23,7 @@ const { importQaXlsx } = require('../qaImportService');
 const { ensureVorItems } = require('../vor/vorImportService');
 const { isConfigured: isOpenAiConfigured } = require('./llm/openaiClient');
 const { isOwnedBy, stageResultType } = require('../review/stageDomains');
-const { writeSignalsForStage } = require('../signals/signalWriter');
+const { publishStageResult } = require('./publishStageResult');
 const segmentStore = require('./segments/segmentStore');
 const { makeStageSegmentStore } = segmentStore;
 const jobService = require('../jobs/jobService');
@@ -285,6 +285,15 @@ function failureSummary(stage, status, err, extra = {}) {
 // Завершить НАЧАТЫЙ прогон стадии неуспешно + закрыть его незавершённые части +
 // вернуть стадию в исходный статус (re-runnable). Никогда не бросает: это
 // финализатор. Возвращает { run_id, status, finalized }.
+//
+// ОДНА ТРАНЗАКЦИЯ на весь неуспешный исход: история частей не может разъехаться
+// со статусом прогона, а стадия — остаться «крутящейся» при закрытом прогоне
+// (раньше это были три независимых шага). Порядок значим: сначала части
+// (running → interrupted, pending → skipped), затем сам прогон (терминальный
+// статус + failureSummary), затем возврат workflow-статуса. Указатель
+// (analysis_active_runs) не трогается вовсе — прежний активный снимок остаётся.
+// Повторный вызов идемпотентен: прогон уже не 'running' → finalizeRun вернёт
+// false, у частей и статуса стадии условные UPDATE не найдут строк.
 async function finalizeStageRun(tenderId, stage, runId, err, {
   status = null, prevStatus = null, reason = null,
 } = {}) {
@@ -292,14 +301,16 @@ async function finalizeStageRun(tenderId, stage, runId, err, {
   let finalized = false;
   try {
     if (runId) {
-      finalized = await analysisRuns.finalizeRun(runId, {
-        status: outcome,
-        summary: failureSummary(stage, outcome, err, reason ? { reason } : {}),
-      });
-      // История частей: то, что считалось в момент обрыва → interrupted,
-      // то, до чего не дошли → skipped. Живых строк у закрытого прогона нет.
-      await segmentStore.finalizeRunSegments(runId, {
-        reason: (err && err.message) || reason || `прогон завершён со статусом «${outcome}»`,
+      await db.transaction(async (tx) => {
+        await segmentStore.finalizeRunSegments(runId, {
+          reason: (err && err.message) || reason || `прогон завершён со статусом «${outcome}»`,
+          tx,
+        });
+        finalized = await analysisRuns.finalizeRun(runId, {
+          status: outcome,
+          summary: failureSummary(stage, outcome, err, reason ? { reason } : {}),
+        }, tx);
+        if (prevStatus != null) await releaseRunningStage(tenderId, stage, prevStatus, tx);
       });
     } else {
       // Прогон не начинался (сбой до beginStageRun — например, гейт стадии).
@@ -309,8 +320,8 @@ async function finalizeStageRun(tenderId, stage, runId, err, {
       console.warn(
         `[stageEngine] стадия ${stage}: сбой до начала прогона — ${(err && err.message) || outcome}`,
       );
+      if (prevStatus != null) await releaseRunningStage(tenderId, stage, prevStatus);
     }
-    if (prevStatus != null) await releaseRunningStage(tenderId, stage, prevStatus);
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error(`[stageEngine] finalizeStageRun сбой: ${e.message}`);
@@ -454,8 +465,8 @@ async function runStageWork(tenderId, stage, control, { runId, documentsRevision
 
   // Снимок стадии — это прогон runId, СОЗДАННЫЙ ДО оркестратора (см.
   // beginStageRun). Здесь он только наполняется и активируется: указатель
-  // переводится по успеху (activateRun ниже), провал не архивирует прежний
-  // актуальный прогон стадии.
+  // переводится по успеху (publishStageResult ниже), провал не архивирует
+  // прежний актуальный прогон стадии.
   // Частичный результат (Стадия 5 QC: часть ТЗ не досчитана) — это НЕ полный
   // успех. Единый контракт результата: warning, а не completed. Добытчики 1–4
   // fail-loud (упавшая часть бросает и роняет весь прогон), поэтому partial у них
@@ -483,76 +494,42 @@ async function runStageWork(tenderId, stage, control, { runId, documentsRevision
     self_analysis: issues.selfAnalysis || null,
   };
 
-  // Связка issue.id ↔ находка — нужна слою signals (source_entity_id ниже).
-  const issueRecords = [];
-
-  await db.transaction(async (tx) => {
-    // Неизменяемый снимок: pending прежнего прогона НЕ удаляем — прежний прогон
-    // архивируется (activateRun ниже), новый несёт свои свежие issues. Строку
-    // analysis_runs создал beginStageRun ДО работы; здесь — только issues снимка.
-    // Повторная попытка задачи в том же прогоне не должна их удваивать.
-    await tx.queryRun('DELETE FROM issues WHERE tender_id = ? AND analysis_run_id = ?', tenderId, runId);
-    for (const issue of issues) {
-      const issueId = newId();
-      await tx.queryRun(
-        `
-        INSERT INTO issues (
-          id, tender_id, analysis_run_id, analysis_stage, source_document_id, source_clause,
-          source_fragment, paragraph_index, char_start, char_end,
-          problem_type, risk_category, criticality, price_impact, schedule_impact,
-          basis, suggested_action, suggested_redaction, review_comment, confidence,
-          section_path, review_status, selected_for_export
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1
-        )
-      `,
-        issueId,
-        tenderId,
-        runId,
-        stage,
-        issue.source_document_id || null,
-        issue.source_clause || null,
-        issue.source_fragment || null,
-        issue.paragraph_index ?? null,
-        issue.char_start ?? null,
-        issue.char_end ?? null,
-        issue.problem_type || null,
-        issue.risk_category || null,
-        issue.criticality || 'medium',
-        issue.price_impact || null,
-        issue.schedule_impact || null,
-        issue.basis || null,
-        issue.suggested_action || 'comment',
-        issue.suggested_redaction || null,
-        issue.review_comment || null,
-        issue.confidence ?? 0.6,
-        issue.section_path || null,
-      );
-      issueRecords.push({ issueId, issue });
-    }
-
-    await setStageStatus(tenderId, stage, 'reviewing', tx);
+  // ПУБЛИКАЦИЯ СНИМКА — единственный production-путь: publishStageResult в ОДНОЙ
+  // транзакции пишет issues, сигналы (для стадий 1–4 обязательны), закрывает
+  // незавершённые части ТЗ, активирует прогон (прежний активный архивируется
+  // тем же коммитом) и ПОСЛЕДНИМ шагом переводит стадию в 'reviewing'.
+  // До коммита читатели видят прежний снимок и прежний статус; откат не
+  // оставляет ни частичных строк, ни 'reviewing' без опубликованного снимка.
+  // Раньше здесь было четыре независимых шага (issues+статус, затем сигналы
+  // best-effort, затем части, затем активация) — сбой между ними оставлял
+  // стадию «успешной» без опубликованного снимка.
+  const publication = await db.transaction(async (tx) => {
+    // Публикация переводит стадию строго 'running' → 'reviewing'. Фоновый путь
+    // ставит 'running' при постановке в очередь; синхронный (внеочередной)
+    // прогон мог стартовать из 'open'/'reviewing' — выравниваем ТОЙ ЖЕ
+    // транзакцией: при откате публикации исходный статус вернётся.
+    await tx.queryRun(
+      `UPDATE tender_stage_state SET stage${stage}_status = 'running', current_stage = ?
+        WHERE tender_id = ? AND stage${stage}_status <> 'running'`,
+      stage, tenderId,
+    );
+    return publishStageResult({
+      tx,
+      tenderId,
+      stage,
+      analysisRunId: runId,
+      issues,
+      // Сигналы строятся из УЖЕ сохранённых находок этого прогона
+      // (source_entity_id обязан ссылаться на их id); стадия 5 сигналов не
+      // эмитит — publishStageResult пропускает шаг сам.
+      signals: (records) => records,
+      summary,
+      documentsRevisionId,
+      configVersion,
+    });
   });
 
-  // Параллельная запись слоя signals (новая архитектура анализа ТЗ).
-  // Изолирована: best-effort writer со своей транзакцией и перехватом ошибок —
-  // сбой signals НЕ влияет на уже закоммиченные issues и статус стадии.
-  // Пишется ДО активации — снимок стадии материализуется целиком.
-  await writeSignalsForStage({ tenderId, runId, stage, records: issueRecords });
-
-  // Закрываем историю частей прогона: живых (pending/running) строк у
-  // завершённого прогона быть не должно. Успешный прогон стадий 1–4 закрывает
-  // все части сам; здесь добираются края (QC Стадии 5 мог не дойти до частей).
-  await ctx.segmentStore.finalize({ reason: 'прогон стадии завершён' });
-
-  // Активируем снимок стадии: указатель переводится на новый прогон, прежний
-  // актуальный прогон этой стадии архивируется (superseded_at). Чтения берут
-  // только issues/signals актуальных stage-прогонов.
-  await analysisRuns.activateRun(tenderId, analysisRuns.stageScope(stage), runId, {
-    documentsRevisionId, configVersion, summary: JSON.stringify(summary),
-  });
-
-  return { runId, summary };
+  return { runId, summary, publication };
 }
 
 // --- Сегменты стадии (части ТЗ) ------------------------------------------------

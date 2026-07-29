@@ -143,9 +143,11 @@ async function unlockNextStage(tenderId, stage, runner = db) {
 }
 
 // Вернуть стадию из 'running' в исходный статус. Условно: если стадия уже ушла
-// в 'reviewing' (успех) или 'finished', трогать её нельзя.
-async function releaseRunningStage(tenderId, stage, prevStatus = 'open') {
-  const res = await db.queryRun(
+// в 'reviewing' (успех) или 'finished', трогать её нельзя. runner (опц.) —
+// транзакция вызывающего: возврат статуса идёт тем же коммитом, что и
+// финализация прогона (см. engine.finalizeStageRun).
+async function releaseRunningStage(tenderId, stage, prevStatus = 'open', runner = db) {
+  const res = await runner.queryRun(
     `UPDATE tender_stage_state SET stage${stage}_status = ?, current_stage = ?
       WHERE tender_id = ? AND stage${stage}_status = 'running'`,
     prevStatus === 'running' ? 'open' : prevStatus,

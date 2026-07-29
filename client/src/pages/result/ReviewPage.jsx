@@ -1,347 +1,58 @@
-import { useEffect, useState } from 'react';
+// Страница инженерной проверки замечаний ИИ (этап «Рецензия»).
+//
+// Две панели: слева исходный текст ТЗ с подсвеченной цитатой выбранного
+// замечания, справа — компактный список + карточка замечания. Вкладки по
+// полкам материальности, верхняя панель статистики, горячие клавиши
+// (A/E/R/V + стрелки), режим «Только существенные».
+//
+// Qualification gate — SHADOW MODE: его классификация показывается в карточке
+// как рекомендация, но production-статус замечания меняют только явные
+// действия инженера (Принять / Принять с изменением / Отклонить и действия
+// с текстом ТЗ). «На проверку», «Объединить» и «Изменить приоритет» пишутся
+// только в shadow-слой (finding_qualification_decisions) — состав и статус
+// замечаний не трогают. Вся чистая логика — utils/reviewBoard.js.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../services/api';
-import {
-  criticalityClass,
-  CRITICALITY,
-  DECISIONS,
-  formatProblemType,
-  VERDICTS,
-  IMPACT_LEVELS,
-  EVIDENCE_LEVELS,
-  REQUIRED_ACTIONS,
-  verdictClass,
-  impactClass,
-  formatDimensions,
-  CRITIC_OUTCOMES,
-  CRITIC_SOURCES,
-} from '../../utils/labels';
-import { formatTzClause, clusterTopic, humanizeNote, occurrenceNote, otherOccurrences } from '../../utils/format';
-import { toastError, toastSuccess } from '../../store/useToastStore';
-import EmptyState from '../../components/ui/EmptyState';
+import { toastError, toastSuccess, toastWarning } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import { useWizardState } from '../../hooks/useWizardState';
+import EmptyState from '../../components/ui/EmptyState';
 import GateNotice from '../../components/wizard/GateNotice';
 import CarryoverPanel from '../../components/review/CarryoverPanel';
+import ReviewTabs from '../../components/review/ReviewTabs';
+import ReviewStatsBar from '../../components/review/ReviewStatsBar';
+import DocumentPane from '../../components/review/DocumentPane';
+import FindingList from '../../components/review/FindingList';
+import FindingCard from '../../components/review/FindingCard';
+import DecisionDialog from '../../components/review/DecisionDialog';
+import { clusterTopic, truncate } from '../../utils/format';
+import {
+  buildSearchIndex,
+  computeStats,
+  decisionStateOf,
+  hotkeyAction,
+  locateQuote,
+  moveIndex,
+  nextUndecidedIndex,
+  packReviewState,
+  productionPayloadFor,
+  reviewStateKey,
+  shadowPayloadFor,
+  tabCounts,
+  unpackReviewState,
+  validateDecisionForm,
+  visibleClusters,
+} from '../../utils/reviewBoard';
 
-// Что именно ляжет в Word по выбранному решению (зеркало server/review/decisionModel.js).
-const EXPORT_HINT = {
-  accept: 'Примечание — Word-комментарий',
-  edit: 'Замена — Track Changes (w:del + w:ins)',
-  delete: 'Удаление — Track Changes (w:del)',
-  remove_from_scope: 'Удаление + метка «Вынесено из объёма ГП»',
-  reject: 'Не экспортируется',
+// Диалог нужен для действий с причиной/параметрами; accept и defer — мгновенные.
+const DIALOG_ACTIONS = ['reject', 'edit', 'merge', 'priority'];
+
+const quoteOf = (cluster) => {
+  if (!cluster) return '';
+  const primary = (cluster.items || []).find((it) => it.item_role === 'primary');
+  return cluster.representative_fragment || (primary && primary.source_fragment) || '';
 };
-
-// Полки рецензии (зеркало MODE_WHERE в clusteringService): инженер по умолчанию
-// видит ТОЛЬКО материальные коммерческие и договорные риски. «На проверку» и
-// «Все» — те же кластеры, ничего не удалено.
-const MODES = [
-  { key: 'working', label: 'Материальные', hint: 'Существенный риск + достаточные доказательства' },
-  { key: 'verify', label: 'На проверку', hint: 'Риск может быть существенным, доказательств недостаточно' },
-  { key: 'full', label: 'Все', hint: 'Включая скрытые (редактура, дубли, стандартные требования)' },
-];
-
-const MODE_HINT = {
-  working: 'Материальные коммерческие и договорные риски — то, что влияет на цену, срок, оплату, договор, ответственность или объём работ ГП.',
-  verify: 'Замечания, где риск может быть существенным, но доказательств для публикации недостаточно.',
-  full: 'Все кластеры снимка, включая скрытые — у каждого видна причина.',
-};
-
-// Пусто в режиме ≠ «нет результата»: в «Материальные» может быть пусто просто
-// потому, что материальных рисков не нашлось — тогда смотреть надо на других полках.
-const EMPTY_TITLE = {
-  working: 'Материальных замечаний нет',
-  verify: 'Замечаний на проверку нет',
-  full: 'Кластеры ещё не собраны',
-};
-
-const EMPTY_HINT = {
-  working: 'Конвейер не нашёл замечаний с существенным влиянием и достаточными доказательствами. Проверьте полки «На проверку» и «Все» — там видно, что и почему не опубликовано. Если анализ ещё не собирался — соберите итог.',
-  verify: 'Нет замечаний, где риск может быть существенным, но доказательств недостаточно.',
-  full: 'Соберите итог из находок стадий 1–4 — конвейер сгруппирует замечания по местам ТЗ.',
-};
-
-const FINDING_LABEL = {
-  missed_coverage: 'Возможный пропуск',
-  weak_cluster: 'Слабый кластер',
-  cluster_contradiction: 'Противоречие кластеров',
-  needs_enrichment: 'Можно усилить',
-};
-
-// Кнопки решений: по умолчанию нейтральные (btn-secondary), выбранное решение
-// подсвечивается заливкой + кольцом — чтобы было видно, что выбрал инженер.
-const DECISION_BUTTONS = [
-  { key: 'reject', label: 'Отклонить', active: 'bg-gray-700 text-white ring-2 ring-offset-1 ring-gray-400 dark:ring-gray-600' },
-  { key: 'edit', label: 'Принять с правкой', active: 'bg-blue-600 text-white ring-2 ring-offset-1 ring-blue-300' },
-  { key: 'accept', label: 'Принять', active: 'bg-green-600 text-white ring-2 ring-offset-1 ring-green-300' },
-  { key: 'remove_from_scope', label: 'Вынести из объёма', active: 'bg-amber-500 text-white ring-2 ring-offset-1 ring-amber-300' },
-  { key: 'delete', label: 'Удалить из ТЗ', active: 'bg-red-600 text-white ring-2 ring-offset-1 ring-red-300' },
-];
-
-// Главный (наиболее значимый) элемент кластера — у него берём отрывок ТЗ и краткое
-// основание для шапки карточки.
-function pickPrimaryItem(items) {
-  return items.find((it) => it.item_role === 'primary') || items[0] || null;
-}
-
-function ClusterCard({ index, cluster, onDecide }) {
-  const decided = cluster.decision || null;
-  // Поле инженера НЕ префиллим вариантом ИИ — стартует пустым (или из решения).
-  const [red, setRed] = useState(decided?.edited_redaction ?? '');
-  const [com, setCom] = useState(decided?.final_comment ?? '');
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-
-  const decide = async (decision) => {
-    setBusy(true);
-    try {
-      await onDecide(cluster.id, { decision, edited_redaction: red, final_comment: com });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const items = cluster.items || [];
-  const notes = cluster.self_analysis || [];
-  const primary = pickPrimaryItem(items);
-  const aiVariant = humanizeNote(cluster.merged_recommendation || '');
-  const shortDescription = humanizeNote((primary && primary.basis) || clusterTopic(cluster) || '—');
-  const clause = formatTzClause(cluster.tz_clause);
-  const dimensions = formatDimensions(cluster.impact_dimensions);
-  // Повторяющееся требование: цитата первичного вхождения + остальные места.
-  const quote = cluster.representative_fragment || (primary && primary.source_fragment) || '';
-  const repeated = occurrenceNote(cluster);
-  const occurrences = otherOccurrences(cluster);
-  const sections = (cluster.affected_sections || []).filter(Boolean);
-  // Одна из причин заполнена всегда, кроме «на проверку» (там нечего объяснять,
-  // кроме нехватки доказательств — это уже видно по метке evidence).
-  const reason = cluster.publication_reason || cluster.suppression_reason || '';
-
-  return (
-    <div className="card p-4 space-y-3">
-      {/* 1. Шапка: номер + вердикт материальности + краткая тема + статус решения. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-base font-bold text-gray-900 dark:text-gray-100">№{index}</span>
-        {cluster.verdict && (
-          <span className={`tag ${verdictClass(cluster.verdict)}`}>
-            {VERDICTS[cluster.verdict] || cluster.verdict}
-          </span>
-        )}
-        <span className={`tag ${impactClass(cluster.overall_impact_level || cluster.overall_criticality)}`}>
-          {IMPACT_LEVELS[cluster.overall_impact_level]
-            || CRITICALITY[cluster.overall_criticality]
-            || cluster.overall_criticality}
-        </span>
-        <span className="font-semibold text-sm">{clusterTopic(cluster)}</span>
-        {decided && (
-          <span className="tag bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 text-xs">
-            Решение: {DECISIONS[decided.decision] || decided.decision}
-          </span>
-        )}
-      </div>
-
-      {/* 1a. Почему замечание здесь: на что влияет, чем подтверждено, что делать. */}
-      <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-        {dimensions.map((d) => (
-          <span key={d} className="tag bg-brand-50 dark:bg-brand-900/30 text-brand-800 dark:text-brand-200">{d}</span>
-        ))}
-        {cluster.overall_evidence_level && (
-          <span>{EVIDENCE_LEVELS[cluster.overall_evidence_level] || cluster.overall_evidence_level}</span>
-        )}
-        {cluster.required_action && cluster.required_action !== 'none' && (
-          <span className="font-medium text-gray-700 dark:text-gray-300">
-            → {REQUIRED_ACTIONS[cluster.required_action] || cluster.required_action}
-          </span>
-        )}
-      </div>
-      {reason && (
-        <div className="text-xs text-gray-500 dark:text-gray-400 italic">{reason}</div>
-      )}
-
-      {/* 2. Место в ТЗ: компактная локация + дословный отрывок (главный ориентир).
-             Повторяющееся требование показывается ОДНИМ замечанием: цитата —
-             представительная, остальные вхождения — под подписью «Обнаружено ещё
-             в N местах» (свёрнуто, чтобы карточка не росла). */}
-      <div>
-        <div className="label">Место в ТЗ</div>
-        {clause && <div className="text-xs text-gray-500 dark:text-gray-400">{clause}</div>}
-        {quote && (
-          <div className="mt-1 p-3 bg-gray-50 dark:bg-gray-800 border-l-2 dark:border-gray-700 border-gray-300 dark:border-gray-700 rounded text-sm text-gray-700 dark:text-gray-300 italic whitespace-pre-wrap">
-            «{quote}»
-          </div>
-        )}
-        {repeated && (
-          <details className="mt-1">
-            <summary className="text-xs text-brand-600 cursor-pointer hover:underline">
-              {repeated}
-              {sections.length > 0 && ` · ${sections.join(', ')}`}
-            </summary>
-            <ul className="mt-1 space-y-1">
-              {occurrences.map((e, i) => (
-                <li key={e.draft_issue_id || i} className="text-xs text-gray-600 dark:text-gray-400 border-l-2 border-gray-200 dark:border-gray-700 pl-2">
-                  {e.tz_clause && (
-                    <div className="text-gray-500 dark:text-gray-500">{formatTzClause(e.tz_clause)}</div>
-                  )}
-                  {e.fragment && <div className="italic whitespace-pre-wrap">«{e.fragment}»</div>}
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-      </div>
-
-      {/* 3. Краткое описание замечания. */}
-      <div>
-        <div className="label">Замечание</div>
-        <div className="text-sm text-gray-800 dark:text-gray-100 whitespace-pre-wrap">{shortDescription}</div>
-      </div>
-
-      {/* 4. Вариант от Агента ИИ (read-only) + кнопка «Взять в правку». */}
-      <div>
-        <div className="flex items-center justify-between gap-2">
-          <div className="label mb-0">Вариант от ИИ — как лучше исправить</div>
-          <button
-            type="button"
-            className="btn btn-secondary text-xs py-1"
-            disabled={!aiVariant}
-            onClick={() => setRed(aiVariant)}
-          >
-            Взять в правку →
-          </button>
-        </div>
-        <div className="mt-1 p-3 bg-blue-50 dark:bg-blue-900/40 border dark:border-gray-700 border-blue-100 dark:border-blue-800 rounded text-sm text-gray-800 dark:text-gray-100 whitespace-pre-wrap">
-          {aiVariant || 'ИИ не предложил конкретной правки.'}
-        </div>
-      </div>
-
-      {/* 5. Ручной ввод инженера. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <div className="label">Текст правки в ТЗ</div>
-          <textarea
-            className="input min-h-[88px]"
-            placeholder="Ваш вариант редакции (или нажмите «Взять в правку»)"
-            value={red}
-            onChange={(e) => setRed(e.target.value)}
-          />
-        </div>
-        <div>
-          <div className="label">Комментарий для Word</div>
-          <textarea
-            className="input min-h-[88px]"
-            placeholder="Пояснение, которое уйдёт в Word-комментарий"
-            value={com}
-            onChange={(e) => setCom(e.target.value)}
-          />
-        </div>
-      </div>
-
-      {/* 6. Решения: нейтральные по умолчанию, подсвечивается только выбранное. */}
-      <div className="flex flex-wrap items-center gap-2 justify-end pt-1 border-t dark:border-gray-700">
-        {DECISION_BUTTONS.map((b) => {
-          const selected = decided?.decision === b.key;
-          return (
-            <button
-              key={b.key}
-              className={`btn ${selected ? b.active : 'btn-secondary'}`}
-              disabled={busy}
-              onClick={() => decide(b.key)}
-            >
-              {b.label}
-            </button>
-          );
-        })}
-      </div>
-      {decided && (
-        <div className="text-xs text-gray-500 dark:text-gray-400 text-right">
-          В экспорт: {EXPORT_HINT[decided.decision] || '—'}
-        </div>
-      )}
-
-      {/* 7. Подробности (свёрнуто): основание, исходные сигналы, самоанализ. */}
-      <div className="border-t dark:border-gray-700 pt-2">
-        <button
-          type="button"
-          className="text-xs text-brand-600 hover:underline"
-          onClick={() => setOpen((v) => !v)}
-        >
-          {open ? '▾ Скрыть подробности' : '▸ Подробнее'} (основание, сигналы стадий, самоанализ)
-        </button>
-        {open && (
-          <div className="mt-2 space-y-3">
-            <div>
-              <div className="label">Объединённое основание</div>
-              <div className="p-3 bg-gray-50 dark:bg-gray-800 border dark:border-gray-700 rounded text-sm whitespace-pre-wrap">
-                {cluster.merged_basis || '—'}
-              </div>
-            </div>
-
-            <div>
-              <div className="label">Исходные замечания и сигналы ({items.length})</div>
-              <div className="space-y-2">
-                {items.map((it) => (
-                  <div key={it.draft_issue_id} className="text-xs border dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`tag text-[10px] ${it.item_role === 'primary' ? 'bg-brand-100 text-brand-800' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'}`}>
-                        {it.item_role === 'primary' ? 'основной' : 'связанный'}
-                      </span>
-                      {it.category && <span className="text-gray-500 dark:text-gray-400">[{it.category}]</span>}
-                      {it.problem_type && <span className="text-gray-600 dark:text-gray-400">{formatProblemType(it.problem_type)}</span>}
-                      {it.verdict && (
-                        <span className={`tag text-[10px] ${verdictClass(it.verdict)}`}>
-                          {VERDICTS[it.verdict] || it.verdict}
-                        </span>
-                      )}
-                      {it.impact_level && (
-                        <span className="text-gray-500 dark:text-gray-400">
-                          {IMPACT_LEVELS[it.impact_level] || it.impact_level}
-                          {it.evidence_level ? `, ${(EVIDENCE_LEVELS[it.evidence_level] || it.evidence_level).toLowerCase()}` : ''}
-                        </span>
-                      )}
-                      {/* Исход precision-критика: кто и почему решил судьбу замечания. */}
-                      {(it.critic_outcome || it.critic_source) && (
-                        <span className="text-gray-400 dark:text-gray-500">
-                          {CRITIC_OUTCOMES[it.critic_outcome] || 'Критиком не решено'}
-                          {it.critic_source ? ` (${CRITIC_SOURCES[it.critic_source] || it.critic_source})` : ''}
-                        </span>
-                      )}
-                    </div>
-                    {(it.publication_reason || it.suppression_reason) && (
-                      <div className="text-gray-500 dark:text-gray-400 mb-1 italic">
-                        {it.publication_reason || it.suppression_reason}
-                      </div>
-                    )}
-                    {it.basis && <div className="text-gray-700 dark:text-gray-300">{it.basis}</div>}
-                    {it.source_fragment && (
-                      <div className="text-gray-500 dark:text-gray-400 mt-1 italic">«{it.source_fragment}»</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {notes.length > 0 && (
-              <div>
-                <div className="label">Самоанализ (Стадия 5)</div>
-                <div className="space-y-1">
-                  {notes.map((n) => (
-                    <div key={n.id} className="text-xs p-2 rounded bg-amber-50 dark:bg-amber-900/40 border dark:border-gray-700 border-amber-100 dark:border-amber-800">
-                      <span className="font-medium text-amber-800 dark:text-amber-300">{FINDING_LABEL[n.finding_type] || n.finding_type}:</span>{' '}
-                      <span className="text-gray-700 dark:text-gray-300">{n.comment}</span>
-                      {n.suggested_improvement && (
-                        <div className="text-gray-600 dark:text-gray-400 mt-0.5">→ {n.suggested_improvement}</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 export default function ReviewPage() {
   const tenderId = useTenderStore((s) => s.tenderId);
@@ -352,107 +63,335 @@ export default function ReviewPage() {
   const [clusters, setClusters] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [building, setBuilding] = useState(false);
-  const [mode, setMode] = useState('working');
-  // Меняется после пересборки/решения — перечитывает предложения переноса решений.
   const [carryKey, setCarryKey] = useState(0);
 
-  const load = async (m = mode) => {
+  // Shadow-слой gate: оценки + актуальные решения инженера по ним.
+  const [gateById, setGateById] = useState(new Map());
+  const [shadowById, setShadowById] = useState(new Map());
+  const [gateRunId, setGateRunId] = useState(null);
+
+  // Текст ТЗ для левой панели.
+  const [docText, setDocText] = useState('');
+  const [docStatus, setDocStatus] = useState('loading');
+
+  // Фильтры, вкладка и позиция — восстанавливаются per пользователь+тендер+прогон.
+  const [tab, setTab] = useState('critical');
+  const [essential, setEssential] = useState(false);
+  const [selectedId, setSelectedId] = useState(null);
+  const [userKey, setUserKey] = useState('anon');
+  const [stateReady, setStateReady] = useState(false);
+
+  const [dialog, setDialog] = useState(null); // { action } | null
+  const [busy, setBusy] = useState(false);
+
+  const runId = gateRunId || (clusters[0] && clusters[0].analysis_run_id) || null;
+  const storageKey = reviewStateKey(tenderId, runId, userKey);
+
+  // --- Загрузка данных -------------------------------------------------------
+
+  const loadClusters = useCallback(async () => {
     if (!tenderId) return;
     try {
-      const data = await api.listReviewClusters(tenderId, m);
+      const data = await api.listReviewClusters(tenderId, 'full');
       setClusters(data.items || []);
       setLoaded(true);
     } catch (err) { toastError(err.message); }
-  };
+  }, [tenderId]);
+
+  const loadGate = useCallback(async () => {
+    if (!tenderId) return;
+    try {
+      const q = await api.listQualification(tenderId);
+      const gates = new Map();
+      const shadows = new Map();
+      for (const it of q.items || []) {
+        gates.set(it.cluster_id, it);
+        if (it.engineer_decision) shadows.set(it.cluster_id, it.engineer_decision);
+      }
+      setGateById(gates);
+      setShadowById(shadows);
+      setGateRunId(q.run_id || null);
+    } catch (_err) {
+      // Shadow-слой недоступен — страница полноценно работает без него.
+    }
+  }, [tenderId]);
+
+  const loadDoc = useCallback(async () => {
+    if (!tenderId) return;
+    setDocStatus('loading');
+    try {
+      const docs = await api.listDocuments(tenderId);
+      const tzMd = (docs.items || []).find(
+        (d) => d.doc_type === 'tz' && /\.md$/i.test(d.name || ''),
+      );
+      if (!tzMd) { setDocStatus('missing'); return; }
+      const res = await api.getDocumentText(tzMd.id);
+      setDocText(res.extracted_text || '');
+      setDocStatus('ready');
+    } catch (_err) { setDocStatus('missing'); }
+  }, [tenderId]);
 
   useEffect(() => {
-    if (reviewStep?.status === 'locked') return;
-    load();
-    /* eslint-disable-next-line */
-  }, [tenderId, reviewStep?.status]);
+    if (reviewStep?.status === 'locked' || !tenderId) return;
+    loadClusters();
+    loadGate();
+    loadDoc();
+    api.getMe()
+      .then((me) => setUserKey(me.subject || me.sub || me.email || 'anon'))
+      .catch(() => {});
+  }, [tenderId, reviewStep?.status, loadClusters, loadGate, loadDoc]);
+
+  // --- Восстановление и сохранение состояния просмотра -----------------------
+
+  useEffect(() => {
+    if (!loaded || stateReady) return;
+    try {
+      const saved = unpackReviewState(localStorage.getItem(storageKey));
+      setTab(saved.tab);
+      setEssential(saved.essential);
+      if (saved.selected_id) setSelectedId(saved.selected_id);
+    } catch (_e) { /* дефолты уже стоят */ }
+    setStateReady(true);
+  }, [loaded, stateReady, storageKey]);
+
+  useEffect(() => {
+    if (!stateReady) return;
+    try {
+      localStorage.setItem(storageKey, packReviewState({ tab, essential, selected_id: selectedId }));
+    } catch (_e) { /* хранилище недоступно — состояние живёт в памяти вкладки */ }
+  }, [tab, essential, selectedId, stateReady, storageKey]);
+
+  // --- Производные данные ----------------------------------------------------
+
+  const essentialBase = useMemo(
+    () => visibleClusters(clusters, { tab: 'all', essential }),
+    [clusters, essential],
+  );
+  const counts = useMemo(() => tabCounts(essentialBase), [essentialBase]);
+  const visible = useMemo(
+    () => visibleClusters(clusters, { tab, essential }),
+    [clusters, tab, essential],
+  );
+  const stats = useMemo(
+    () => computeStats(clusters, shadowById, gateById),
+    [clusters, shadowById, gateById],
+  );
+  const stateById = useMemo(() => {
+    const m = new Map();
+    for (const c of clusters) m.set(c.id, decisionStateOf(c, shadowById.get(c.id) || null));
+    return m;
+  }, [clusters, shadowById]);
+
+  // Выбранное замечание всегда из видимого списка.
+  const selectedIndex = visible.findIndex((c) => c.id === selectedId);
+  const selected = selectedIndex >= 0 ? visible[selectedIndex] : null;
+  useEffect(() => {
+    if (!stateReady) return;
+    if (!selected && visible.length) setSelectedId(visible[0].id);
+    if (selected === null && !visible.length && selectedId) setSelectedId(null);
+  }, [stateReady, selected, visible, selectedId]);
+
+  // Подсветка цитаты в документе (индекс строится один раз на текст).
+  const docIndex = useMemo(() => (docText ? buildSearchIndex(docText) : null), [docText]);
+  const selectedQuote = quoteOf(selected);
+  const highlight = useMemo(() => {
+    if (!selected || !docIndex || !selectedQuote) return null;
+    return locateQuote(docText, selectedQuote, docIndex);
+  }, [selected, docIndex, docText, selectedQuote]);
+
+  // --- Действия --------------------------------------------------------------
+
+  const navigate = useCallback((delta) => {
+    if (!visible.length) return;
+    const next = moveIndex(visible.length, selectedIndex, delta);
+    if (next >= 0) setSelectedId(visible[next].id);
+  }, [visible, selectedIndex]);
+
+  // Выполнить решение: production-слой (если применимо) + shadow-слой gate.
+  const performAction = useCallback(async (action, form = {}) => {
+    if (!selected) return;
+    const check = validateDecisionForm(action, form);
+    if (!check.ok) { toastError(check.error); return; }
+    setBusy(true);
+    try {
+      const prodPayload = productionPayloadFor(action, form);
+      if (prodPayload) {
+        const res = await decideCluster(selected.id, prodPayload);
+        const dec = res?.decision || { decision: prodPayload.decision, ...prodPayload };
+        setClusters((prev) => prev.map((c) => (c.id === selected.id ? { ...c, decision: dec } : c)));
+        setCarryKey((k) => k + 1);
+      }
+      const mergeTarget = form.mergeTargetId
+        ? clusters.find((c) => c.id === form.mergeTargetId)
+        : null;
+      const shadowPayload = shadowPayloadFor(action, form, {
+        mergeTargetLabel: mergeTarget
+          ? truncate(clusterTopic(mergeTarget) || mergeTarget.cluster_title || mergeTarget.id, 80)
+          : null,
+        currentPriority: selected.overall_impact_level || selected.overall_criticality || null,
+      });
+      if (shadowPayload) {
+        try {
+          const res = await api.overrideQualification(tenderId, selected.id, shadowPayload);
+          const saved = res?.decision || shadowPayload;
+          setShadowById((prev) => new Map(prev).set(selected.id, saved));
+        } catch (err) {
+          // Production-решение уже сохранено; сбой shadow-слоя не блокирует работу.
+          if (prodPayload) toastWarning(`Решение сохранено, но shadow-слой gate недоступен: ${err.message}`);
+          else throw err;
+        }
+      }
+      toastSuccess('Решение сохранено');
+      setDialog(null);
+      // Автопереход к следующему необработанному замечанию.
+      const next = nextUndecidedIndex(
+        visible,
+        selectedIndex,
+        (c) => c.id === selected.id || !!decisionStateOf(c, shadowById.get(c.id) || null),
+      );
+      if (next != null) setSelectedId(visible[next].id);
+    } catch (err) {
+      toastError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, selectedIndex, visible, clusters, shadowById, tenderId, decideCluster]);
+
+  const onAction = useCallback((action) => {
+    if (!selected || busy) return;
+    if (DIALOG_ACTIONS.includes(action)) setDialog({ action });
+    else performAction(action, {});
+  }, [selected, busy, performAction]);
+
+  // --- Горячие клавиши -------------------------------------------------------
+
+  const hotkeyCtx = useRef(null);
+  hotkeyCtx.current = { onAction, navigate, dialogOpen: !!dialog, busy };
+  useEffect(() => {
+    const onKey = (e) => {
+      const ctx = hotkeyCtx.current;
+      if (!ctx || ctx.dialogOpen || ctx.busy) return;
+      const action = hotkeyAction(e);
+      if (!action) return;
+      e.preventDefault();
+      if (action === 'next') ctx.navigate(1);
+      else if (action === 'prev') ctx.navigate(-1);
+      else ctx.onAction(action);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // --- Пересборка итога ------------------------------------------------------
 
   const build = async () => {
     setBuilding(true);
     try {
       await api.buildReviewClusters(tenderId, true);
-      await load();
-      setCarryKey((k) => k + 1); // новый прогон — обновить предложения переноса
+      await Promise.all([loadClusters(), loadGate()]);
+      setCarryKey((k) => k + 1);
       toastSuccess('Итог собран');
     } catch (err) { toastError(err.message); }
     setBuilding(false);
   };
 
-  const onDecide = async (clusterId, payload) => {
-    try {
-      const res = await decideCluster(clusterId, payload);
-      setClusters((prev) =>
-        prev.map((c) => (c.id === clusterId ? { ...c, decision: res?.decision || { decision: payload.decision, ...payload } } : c)),
-      );
-      setCarryKey((k) => k + 1); // решённый кластер выбывает из предложений переноса
-      toastSuccess('Решение сохранено');
-    } catch (err) { toastError(err.message); }
-  };
+  if (reviewStep?.status === 'locked') return <GateNotice stepId="review" />;
+  if (!tenderId) return null;
 
-  const switchMode = async (m) => {
-    setMode(m);
-    await load(m);
-  };
-
-  if (reviewStep?.status === 'locked') {
-    return <GateNotice stepId="review" />;
-  }
-
-  const decidedCount = clusters.filter((c) => c.decision).length;
+  const mergeCandidates = visible
+    .map((c, i) => ({ id: c.id, index: i, cluster: c }))
+    .filter((c) => !selected || c.id !== selected.id);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      {/* Шапка: вкладки + пересборка */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-sm text-gray-600 dark:text-gray-400">
-            {MODE_HINT[mode] || MODE_HINT.working} Одно решение на кластер — оно и попадёт в экспорт.
-          </div>
-          {clusters.length > 0 && (
-            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">Обработано: {decidedCount} из {clusters.length}</div>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Полки модели материальности: по умолчанию — только материальные
-              коммерческие и договорные риски. Остальное не удалено, а лежит на
-              полках «На проверку» и «Все» с причиной. */}
-          <div className="flex rounded border dark:border-gray-700 overflow-hidden text-xs">
-            {MODES.map((mo) => (
-              <button
-                key={mo.key}
-                title={mo.hint}
-                className={`px-2 py-1 ${mode === mo.key ? 'bg-brand-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400'}`}
-                onClick={() => switchMode(mo.key)}
-              >
-                {mo.label}
-              </button>
-            ))}
-          </div>
-          <button className="btn btn-secondary text-xs" disabled={building} onClick={build}>
-            {building ? 'Собираю…' : 'Пересобрать итог'}
-          </button>
-        </div>
+        <ReviewTabs active={tab} counts={counts} onChange={setTab} />
+        <button className="btn btn-secondary text-xs" disabled={building} onClick={build}>
+          {building ? 'Собираю…' : 'Пересобрать итог'}
+        </button>
       </div>
 
-      {/* Перенос решений из прошлого прогона (виден только при наличии предложений). */}
-      <CarryoverPanel
-        key={carryKey}
-        tenderId={tenderId}
-        onConfirmed={() => load()}
+      <ReviewStatsBar
+        stats={stats}
+        essential={essential}
+        hiddenByEssential={clusters.length - essentialBase.length}
+        onToggleEssential={() => setEssential((v) => !v)}
       />
+
+      <CarryoverPanel key={carryKey} tenderId={tenderId} onConfirmed={() => loadClusters()} />
 
       {clusters.length === 0 ? (
         <EmptyState
-          title={loaded ? EMPTY_TITLE[mode] || EMPTY_TITLE.working : 'Загрузка…'}
-          description={loaded ? EMPTY_HINT[mode] || EMPTY_HINT.working : ''}
-          action={loaded ? <button className="btn btn-primary" disabled={building} onClick={build}>{building ? 'Собираю…' : 'Собрать итог'}</button> : null}
+          title={loaded ? 'Кластеры ещё не собраны' : 'Загрузка…'}
+          description={loaded
+            ? 'Соберите итог из находок стадий 1–4 — конвейер сгруппирует замечания по местам ТЗ.'
+            : ''}
+          action={loaded ? (
+            <button className="btn btn-primary" disabled={building} onClick={build}>
+              {building ? 'Собираю…' : 'Собрать итог'}
+            </button>
+          ) : null}
         />
       ) : (
-        clusters.map((c, i) => <ClusterCard key={c.id} index={i + 1} cluster={c} onDecide={onDecide} />)
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] gap-3">
+          {/* Левая панель: исходный текст ТЗ с подсветкой цитаты */}
+          <div className="lg:sticky lg:top-2 h-[45vh] lg:h-[calc(100vh-16rem)] min-h-[280px]">
+            <DocumentPane
+              text={docText}
+              status={docStatus}
+              highlight={highlight}
+              hasQuote={!!selectedQuote}
+              quoteFound={!selectedQuote || !!highlight}
+            />
+          </div>
+
+          {/* Правая панель: список + карточка выбранного замечания */}
+          <div className="flex flex-col gap-3 min-h-0">
+            {visible.length === 0 ? (
+              <EmptyState
+                title="На этой вкладке пусто"
+                description={essential
+                  ? 'Действует фильтр «Только существенные» — снимите его в панели выше или переключите вкладку.'
+                  : 'Переключите вкладку — замечания лежат на других полках, ничего не удалено.'}
+              />
+            ) : (
+              <>
+                <FindingList
+                  items={visible}
+                  selectedId={selectedId}
+                  stateById={stateById}
+                  gateById={gateById}
+                  onSelect={setSelectedId}
+                />
+                {selected && (
+                  <FindingCard
+                    cluster={selected}
+                    index={selectedIndex}
+                    total={visible.length}
+                    gate={gateById.get(selected.id) || null}
+                    state={stateById.get(selected.id) || null}
+                    quoteFound={!selectedQuote || !!highlight}
+                    busy={busy}
+                    onAction={onAction}
+                    onNavigate={navigate}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        </div>
       )}
+
+      <DecisionDialog
+        open={!!dialog}
+        action={dialog ? dialog.action : null}
+        cluster={selected}
+        candidates={mergeCandidates}
+        busy={busy}
+        onSubmit={performAction}
+        onClose={() => setDialog(null)}
+      />
     </div>
   );
 }

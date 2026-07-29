@@ -94,6 +94,8 @@ export const api = {
   },
   deleteDocument: (id) => request(`/documents/${id}`, { method: 'DELETE' }),
   documentDownloadUrl: (id) => `${BASE}/documents/${id}/download`,
+  // Извлечённый текст документа (для панели исходного ТЗ на рецензии).
+  getDocumentText: (id) => request(`/documents/${id}/text`),
 
   // Локи разделов подготовки
   getSetupLocks: (tenderId) => request(`/tenders/${tenderId}/setup/locks`),
@@ -227,6 +229,19 @@ export const api = {
     request(`/tenders/${tenderId}/review/clusters/${clusterId}`),
   decideCluster: (tenderId, clusterId, data) =>
     request(`/tenders/${tenderId}/review/clusters/${clusterId}/decision`, { method: 'POST', body: data }),
+
+  // Shadow-квалификация замечаний (qualification gate, параллельный слой):
+  // gate только ПРЕДЛАГАЕТ классификацию — production-статус замечаний не меняет.
+  listQualification: (tenderId, { runId = null, gateVersion = null } = {}) => {
+    const qs = [
+      runId ? `run_id=${encodeURIComponent(runId)}` : null,
+      gateVersion ? `gate_version=${encodeURIComponent(gateVersion)}` : null,
+    ].filter(Boolean).join('&');
+    return request(`/tenders/${tenderId}/qualification${qs ? `?${qs}` : ''}`);
+  },
+  overrideQualification: (tenderId, clusterId, data) =>
+    request(`/tenders/${tenderId}/qualification/clusters/${clusterId}/override`, { method: 'POST', body: data }),
+  qualificationStats: (tenderId) => request(`/tenders/${tenderId}/qualification/stats`),
 
   // Перенос решений между прогонами (после пересборки): предложения + подтверждение.
   listCarryovers: (tenderId) => request(`/tenders/${tenderId}/review/carryovers`),

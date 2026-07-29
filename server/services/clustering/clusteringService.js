@@ -7,7 +7,9 @@
 // инженер видел не россыпь отдельных draft_issues, а сгруппированную проблему
 // с объединённым основанием и рекомендацией.
 //
-// Главное правило (НЕ терять смысл): два draft_issue объединяются только если
+// Кластеризация ДВУХЪЯРУСНАЯ.
+//
+// ЯРУС 1 — по МЕСТУ. Два draft_issue объединяются, только если
 //   1) указывают на одно место ТЗ  — общий tz_clause ИЛИ общий фрагмент/абзац;
 //   2) близки по смыслу             — совпадает доминирующее измерение значимости
 //                                     (цена/срок/договор/ответственность) от critic;
@@ -15,6 +17,16 @@
 //                                     (remove / modify / note — analysis/actions).
 // Разные по смыслу проблемы в одном пункте (открытый объём ≠ риск оплаты) дают
 // РАЗНЫЕ кластеры: у каждого свои cluster_items, каждый сохраняет своё основание.
+//
+// ЯРУС 2 — по ТЕМЕ (clustering/topicModel.js). Одна и та же обязанность ГП
+// (уборка, исполнительная документация, временные сети, поставка материалов)
+// повторяется в ТЗ в нескольких пунктах — раньше инженер получал отдельную
+// карточку на каждый абзац. Теперь группы яруса 1 сливаются, если совпали
+// тип риска + объект работ + бизнес-последствие + рекомендуемое действие И
+// тексты лексически близки. Итог — ОДНО замечание с несколькими вхождениями:
+//   occurrence_count / evidence_fragments / affected_sections / representative_fragment.
+// Ярус 2 НИКОГДА не сливает группы одного места: разные самостоятельные риски
+// одного абзаца остаются разными замечаниями.
 //
 // ПАРАЛЛЕЛЬНЫЙ слой: не трогает issues / review / export / draft_issues / critic.
 // Группировка/слияние — чистые функции (тестируются без БД), как в
@@ -26,6 +38,7 @@ const { newId, nowIso } = require('../../utils/ids');
 const { actionFamily } = require('../analysis/actions');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const materiality = require('../review/materiality');
+const topicModel = require('./topicModel');
 
 // Детерминированный id кластера от (tenderId + clusterKey). Этап 6: решения инженера
 // привязываются к cluster_id, а buildClusters пересобирает кластеры (DELETE+INSERT) —
@@ -111,7 +124,7 @@ function pickPrimary(pairs) {
   )[0];
 }
 
-function uniqueJoin(values, sep) {
+function uniqueList(values) {
   const seen = new Set();
   const out = [];
   for (const v of values) {
@@ -122,7 +135,19 @@ function uniqueJoin(values, sep) {
     seen.add(k);
     out.push(t);
   }
-  return out.join(sep);
+  return out;
+}
+
+// Тематический кластер собирает вхождения из многих пунктов ТЗ — объединённые
+// тексты и список цитат ограничены, иначе карточка (и колонка в БД) распухает.
+const MAX_BASIS_ITEMS = 10;
+const MAX_EVIDENCE_FRAGMENTS = 25;
+
+function uniqueJoin(values, sep, limit = MAX_BASIS_ITEMS) {
+  const list = uniqueList(values);
+  if (list.length <= limit) return list.join(sep);
+  const rest = list.length - limit;
+  return [...list.slice(0, limit), `…и ещё ${rest} формулировок того же требования`].join(sep);
 }
 
 // Свёртка материальности кластера по его элементам.
@@ -171,7 +196,60 @@ function clusterMateriality(pairs) {
   };
 }
 
-function buildCluster(tenderId, pairs) {
+// Группа ЯРУСА 1 (одно место + один смысл) с описанием темы для яруса 2.
+function makeGroup(pairs) {
+  const primary = pickPrimary(pairs);
+  const family = actionFamily(primary.draft.suggested_action);
+  const consequence = dominantDimension(primary.review);
+  return {
+    key: clusterKey(primary.draft, primary.review || {}),
+    placeKey: placeKey(primary.draft),
+    paragraphIndex: primary.draft.paragraph_index ?? null,
+    pairs,
+    primary,
+    topic: topicModel.describe(primary.draft, primary.review, consequence, family),
+  };
+}
+
+// Историческая форма вызова buildCluster(tenderId, pairs[]) — один кластер из
+// плоского списка пар (офлайн-демо и старые тесты). Оборачиваем в «единицу».
+function toUnit(input) {
+  if (!Array.isArray(input)) return input;
+  const g = makeGroup(input);
+  return { topicKey: g.topic.topicKey, topic: g.topic, groups: [g] };
+}
+
+// Вхождения замечания в ТЗ: по одному на КАЖДОЕ место (дубли одной цитаты в
+// одном месте схлопываются — это разные сигналы про один текст, а не разные
+// места). Порядок — по документу, чтобы первое вхождение было представительным.
+function buildEvidence(pairs) {
+  const seen = new Set();
+  const out = [];
+  for (const p of pairs) {
+    const d = p.draft;
+    const fragment = (d.source_fragment || '').trim();
+    const key = `${placeKey(d)}::${normalize(fragment)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      draft_issue_id: d.id,
+      tz_clause: d.tz_clause || null,
+      section: topicModel.sectionLabel(d.tz_clause),
+      paragraph_index: d.paragraph_index ?? null,
+      fragment: fragment || null,
+    });
+  }
+  out.sort(
+    (a, b) =>
+      ((a.paragraph_index ?? 1e9) - (b.paragraph_index ?? 1e9)) ||
+      String(a.tz_clause || '').localeCompare(String(b.tz_clause || '')),
+  );
+  return out.slice(0, MAX_EVIDENCE_FRAGMENTS);
+}
+
+function buildCluster(tenderId, input) {
+  const unit = toUnit(input);
+  const pairs = unit.groups.flatMap((g) => g.pairs);
   const primary = pickPrimary(pairs);
   const pd = primary.draft;
   const dim = dominantDimension(primary.review);
@@ -204,16 +282,32 @@ function buildCluster(tenderId, pairs) {
   // «На проверку» и «Все» (ничего не удаляется).
   const show_to_engineer = mat.verdict === 'publish';
 
-  const tz_clause = pairs.map((p) => p.draft.tz_clause).find(Boolean) || null;
-  const cluster_title = `${DIM_LABEL[dim] || DIM_LABEL.general}${tz_clause ? ` — ${tz_clause}` : ''}`;
+  const tz_clause = pd.tz_clause || pairs.map((p) => p.draft.tz_clause).find(Boolean) || null;
+  // Заголовок называет ПРЕДМЕТ («Уборка и вывоз мусора»), если объект работ
+  // распознан: для замечания из пяти пунктов ТЗ «Влияние на стоимость — п. 4.1»
+  // ничего не объясняет.
+  const topicLabel = (unit.topic && unit.topic.workObjectLabel) || DIM_LABEL[dim] || DIM_LABEL.general;
+  const cluster_title = `${topicLabel}${tz_clause ? ` — ${tz_clause}` : ''}`;
 
   const itemsSorted = [...pairs].sort(
     (a, b) => critOf(b) - critOf(a) || scoreOf(b) - scoreOf(a),
   );
 
-  // Стабильный ключ группы = ключ места + смысловой bucket primary-элемента
-  // (тот же clusterKey, по которому pairs были сгруппированы). Основа id и привязки решений.
-  const cluster_key = clusterKey(pd, primary.review || {});
+  // Вхождения: сколько РАЗНЫХ мест ТЗ содержат это же требование.
+  const evidence_fragments = buildEvidence(pairs);
+  const occurrence_count = new Set(pairs.map((p) => placeKey(p.draft))).size;
+  const affected_sections = uniqueList(evidence_fragments.map((e) => e.section));
+  // Представительная цитата — от первичного (наиболее значимого) вхождения;
+  // именно её показывает карточка и по ней экспорт находит место в .docx.
+  const representative_fragment =
+    (pd.source_fragment || '').trim()
+    || (evidence_fragments.find((e) => e.fragment) || {}).fragment
+    || null;
+
+  // Стабильный ключ группы. Одноместный кластер сохраняет историческую форму
+  // placeKey::semanticBucket (от неё зависит перенос решений между прогонами),
+  // тематический — ключ темы + якорь первого вхождения.
+  const cluster_key = topicModel.unitClusterKey(unit);
 
   return {
     id: clusterId(tenderId, cluster_key),
@@ -229,6 +323,13 @@ function buildCluster(tenderId, pairs) {
     semantic_bucket: semanticBucket(pd, primary.review),
     item_count: pairs.length,
     paragraph_index: pd.paragraph_index ?? null,
+    // Повторяющееся требование: одно замечание — несколько мест ТЗ.
+    occurrence_count,
+    evidence_fragments,
+    affected_sections,
+    representative_fragment,
+    topic_key: unit.topicKey || null,
+    work_object: (unit.topic && unit.topic.workObject) || null,
     // Модель материальности на уровне кластера (одно решение — один вердикт).
     verdict: mat.verdict,
     overall_impact_level: mat.impact_level,
@@ -245,6 +346,7 @@ function buildCluster(tenderId, pairs) {
 }
 
 // Чистое ядро: пары {draft, review} -> кластеры[]. Без БД.
+// Ярус 1 (место × смысл) → ярус 2 (тема) → сборка кластеров.
 function clusterPairs(pairs, tenderId) {
   const byKey = new Map();
   for (const p of pairs) {
@@ -252,7 +354,9 @@ function clusterPairs(pairs, tenderId) {
     if (!byKey.has(key)) byKey.set(key, []);
     byKey.get(key).push(p);
   }
-  const clusters = [...byKey.values()].map((group) => buildCluster(tenderId, group));
+  const groups = [...byKey.values()].map(makeGroup);
+  const units = topicModel.mergeGroups(groups);
+  const clusters = units.map((unit) => buildCluster(tenderId, unit));
   clusters.sort(
     (a, b) =>
       (a.paragraph_index ?? 1e9) - (b.paragraph_index ?? 1e9) ||
@@ -268,11 +372,12 @@ function safeParse(s, fallback) {
   try { const v = JSON.parse(s); return v == null ? fallback : v; } catch (_e) { return fallback; }
 }
 
-// JSON-массив измерений из колонки: не-массив (NULL/битая строка) → [].
-function parseDimensions(s) {
+// JSON-массив из колонки: не-массив (NULL/битая строка) → [].
+function parseJsonArray(s) {
   const v = safeParse(s, []);
   return Array.isArray(v) ? v : [];
 }
+const parseDimensions = parseJsonArray;
 
 // Грузит draft_issues тендера вместе с вердиктом critic (LEFT JOIN — кластеризуем
 // даже без прогона critic: тогда review пуст и сработает дефолтный bucket).
@@ -348,14 +453,19 @@ async function buildClusters(tenderId, runId) {
            overall_criticality, show_to_engineer, final_problem_type,
            semantic_bucket, cluster_key, item_count, paragraph_index, created_at,
            verdict, overall_impact_level, overall_evidence_level, impact_dimensions,
-           publication_reason, suppression_reason, required_action
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           publication_reason, suppression_reason, required_action,
+           occurrence_count, evidence_fragments, affected_sections, representative_fragment,
+           topic_key, work_object
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         cid, c.tender_id, rid, c.tz_clause, c.cluster_title, c.merged_basis, c.merged_recommendation,
         c.overall_criticality, c.show_to_engineer ? 1 : 0, c.final_problem_type,
         c.semantic_bucket, c.cluster_key, c.item_count, c.paragraph_index, createdAt,
         c.verdict, c.overall_impact_level, c.overall_evidence_level,
         JSON.stringify(c.impact_dimensions || []),
         c.publication_reason, c.suppression_reason, c.required_action,
+        c.occurrence_count, JSON.stringify(c.evidence_fragments || []),
+        JSON.stringify(c.affected_sections || []), c.representative_fragment,
+        c.topic_key, c.work_object,
       );
       for (const it of c.items) {
         await tx.queryRun(
@@ -378,6 +488,10 @@ async function buildClusters(tenderId, runId) {
       draft_issues: pairs.length,
       clusters: clusters.length,
       multi_item: clusters.filter((c) => c.item_count > 1).length,
+      // Повторяющиеся требования: сколько замечаний собрано из нескольких мест
+      // ТЗ и сколько отдельных карточек это сэкономило инженеру.
+      multi_place: clusters.filter((c) => c.occurrence_count > 1).length,
+      merged_occurrences: clusters.reduce((n, c) => n + Math.max(0, c.occurrence_count - 1), 0),
       shown: clusters.filter((c) => c.show_to_engineer).length,
       hidden: clusters.filter((c) => !c.show_to_engineer).length,
       by_criticality: byCriticality,
@@ -449,6 +563,11 @@ async function listClusters(tenderId, mode = 'working', runId) {
     ...c,
     show_to_engineer: Number(c.show_to_engineer) === 1,
     impact_dimensions: parseDimensions(c.impact_dimensions),
+    // Вхождения повторяющегося требования (JSON-колонки → массивы).
+    // Прогоны до появления полей отдают 1 вхождение — карточка не ломается.
+    occurrence_count: Number(c.occurrence_count) > 0 ? Number(c.occurrence_count) : 1,
+    evidence_fragments: parseJsonArray(c.evidence_fragments),
+    affected_sections: parseJsonArray(c.affected_sections),
     items: itemsByCluster.get(c.id) || [],
   }));
 }
@@ -464,6 +583,8 @@ module.exports = {
   semanticBucket,
   clusterKey,
   pickPrimary,
+  makeGroup,
+  buildEvidence,
   buildCluster,
   clusterPairs,
   // DB

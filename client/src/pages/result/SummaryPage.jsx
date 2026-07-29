@@ -5,7 +5,7 @@ import { useTenderStore } from '../../store/useTenderStore';
 import { useWizardState } from '../../hooks/useWizardState';
 import GateNotice from '../../components/wizard/GateNotice';
 import { USER_DECISION_LABELS, DECISIONS, formatProblemType, criticalityClass, CRITICALITY } from '../../utils/labels';
-import { humanizeNote } from '../../utils/format';
+import { humanizeNote, occurrenceNote } from '../../utils/format';
 
 // Что ляжет в Word по решению кластера (зеркало server/review/decisionModel.js).
 const EXPORT_HINT = {
@@ -114,6 +114,13 @@ export default function SummaryPage() {
                     )}
                   </div>
                   {c.merged_basis && <div className="text-sm text-gray-700 dark:text-gray-300 break-words whitespace-pre-wrap">{humanizeNote(c.merged_basis)}</div>}
+                  {/* Повторяющееся требование — одно замечание на все его места в ТЗ. */}
+                  {occurrenceNote(c) && (
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      {occurrenceNote(c)}
+                      {(c.affected_sections || []).length > 0 && ` · ${c.affected_sections.join(', ')}`}
+                    </div>
+                  )}
                 </div>
                 {!c.decision && (
                   <button

@@ -53,6 +53,28 @@ export const humanizeNote = (text) => {
   });
 };
 
+// Повторяющееся требование: одно замечание собрано из нескольких мест ТЗ
+// (occurrence_count — число РАЗНЫХ мест, не число сигналов). Подпись под цитатой
+// показываем только начиная со второго вхождения; форма слова согласуется
+// («ещё в 1 месте», «ещё в 3 местах», «ещё в 21 месте»).
+export const occurrenceNote = (cluster) => {
+  const total = Number(cluster && cluster.occurrence_count) || 1;
+  const more = total - 1;
+  if (more < 1) return '';
+  const word = more % 10 === 1 && more % 100 !== 11 ? 'месте' : 'местах';
+  return `Обнаружено ещё в ${more} ${word}`;
+};
+
+// Прочие вхождения требования (без первичного — он уже показан цитатой).
+export const otherOccurrences = (cluster) => {
+  const list = (cluster && cluster.evidence_fragments) || [];
+  if (!Array.isArray(list) || list.length < 2) return [];
+  const primaryId = (cluster.items || []).find((it) => it.item_role === 'primary');
+  const skipId = primaryId ? primaryId.draft_issue_id : null;
+  const rest = skipId ? list.filter((e) => e.draft_issue_id !== skipId) : list.slice(1);
+  return rest.length ? rest : list.slice(1);
+};
+
 // Тема кластера без хвоста-пути: cluster_title = "<тема> — <tz_clause>". Отрезаем
 // длинный tz_clause, оставляя короткую тему (напр. «Влияние на стоимость»).
 export const clusterTopic = (cluster) => {

@@ -15,7 +15,7 @@ import {
   CRITIC_OUTCOMES,
   CRITIC_SOURCES,
 } from '../../utils/labels';
-import { formatTzClause, clusterTopic, humanizeNote } from '../../utils/format';
+import { formatTzClause, clusterTopic, humanizeNote, occurrenceNote, otherOccurrences } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
 import { useTenderStore } from '../../store/useTenderStore';
@@ -108,6 +108,11 @@ function ClusterCard({ index, cluster, onDecide }) {
   const shortDescription = humanizeNote((primary && primary.basis) || clusterTopic(cluster) || '—');
   const clause = formatTzClause(cluster.tz_clause);
   const dimensions = formatDimensions(cluster.impact_dimensions);
+  // Повторяющееся требование: цитата первичного вхождения + остальные места.
+  const quote = cluster.representative_fragment || (primary && primary.source_fragment) || '';
+  const repeated = occurrenceNote(cluster);
+  const occurrences = otherOccurrences(cluster);
+  const sections = (cluster.affected_sections || []).filter(Boolean);
   // Одна из причин заполнена всегда, кроме «на проверку» (там нечего объяснять,
   // кроме нехватки доказательств — это уже видно по метке evidence).
   const reason = cluster.publication_reason || cluster.suppression_reason || '';
@@ -153,14 +158,35 @@ function ClusterCard({ index, cluster, onDecide }) {
         <div className="text-xs text-gray-500 dark:text-gray-400 italic">{reason}</div>
       )}
 
-      {/* 2. Место в ТЗ: компактная локация + дословный отрывок (главный ориентир). */}
+      {/* 2. Место в ТЗ: компактная локация + дословный отрывок (главный ориентир).
+             Повторяющееся требование показывается ОДНИМ замечанием: цитата —
+             представительная, остальные вхождения — под подписью «Обнаружено ещё
+             в N местах» (свёрнуто, чтобы карточка не росла). */}
       <div>
         <div className="label">Место в ТЗ</div>
         {clause && <div className="text-xs text-gray-500 dark:text-gray-400">{clause}</div>}
-        {primary && primary.source_fragment && (
+        {quote && (
           <div className="mt-1 p-3 bg-gray-50 dark:bg-gray-800 border-l-2 dark:border-gray-700 border-gray-300 dark:border-gray-700 rounded text-sm text-gray-700 dark:text-gray-300 italic whitespace-pre-wrap">
-            «{primary.source_fragment}»
+            «{quote}»
           </div>
+        )}
+        {repeated && (
+          <details className="mt-1">
+            <summary className="text-xs text-brand-600 cursor-pointer hover:underline">
+              {repeated}
+              {sections.length > 0 && ` · ${sections.join(', ')}`}
+            </summary>
+            <ul className="mt-1 space-y-1">
+              {occurrences.map((e, i) => (
+                <li key={e.draft_issue_id || i} className="text-xs text-gray-600 dark:text-gray-400 border-l-2 border-gray-200 dark:border-gray-700 pl-2">
+                  {e.tz_clause && (
+                    <div className="text-gray-500 dark:text-gray-500">{formatTzClause(e.tz_clause)}</div>
+                  )}
+                  {e.fragment && <div className="italic whitespace-pre-wrap">«{e.fragment}»</div>}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
       </div>
 

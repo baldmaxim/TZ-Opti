@@ -1,6 +1,12 @@
-// Презентационный список кластеров замечаний (одно место ТЗ + близкий смысл).
+// Презентационный список кластеров замечаний (одно требование + близкий смысл).
 // Единый вид для основного экрана «Анализ ТЗ» и debug-страницы кластеров —
 // чтобы карточка кластера выглядела одинаково везде.
+//
+// Повторённое в нескольких пунктах ТЗ требование — ОДНА карточка: цитата
+// первичного вхождения + подпись «Обнаружено ещё в N местах» со списком
+// остальных вхождений.
+
+import { occurrenceNote, otherOccurrences, formatTzClause } from '../../utils/format';
 
 const CRIT_CLASS = {
   critical: 'bg-red-600 text-white',
@@ -17,7 +23,11 @@ const ROLE_CLASS = {
 export default function ClusterList({ items = [] }) {
   return (
     <div className="space-y-4">
-      {items.map((c) => (
+      {items.map((c) => {
+        const repeated = occurrenceNote(c);
+        const occurrences = otherOccurrences(c);
+        const sections = (c.affected_sections || []).filter(Boolean);
+        return (
         <div
           key={c.id}
           className={`border dark:border-gray-700 rounded p-4 space-y-3 ${c.show_to_engineer ? '' : 'opacity-60 bg-gray-50 dark:bg-gray-800'}`}
@@ -33,6 +43,11 @@ export default function ClusterList({ items = [] }) {
             <span className="text-xs px-2 py-0.5 rounded bg-indigo-50 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300">
               {c.item_count} замеч.
             </span>
+            {Number(c.occurrence_count) > 1 && (
+              <span className="text-xs px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
+                {c.occurrence_count} мест в ТЗ
+              </span>
+            )}
             {c.final_problem_type && (
               <span className="text-xs text-gray-500 dark:text-gray-400">{c.final_problem_type}</span>
             )}
@@ -43,6 +58,29 @@ export default function ClusterList({ items = [] }) {
 
           <div className="font-medium text-gray-900 dark:text-gray-100">{c.cluster_title}</div>
           {c.tz_clause && <div className="text-xs text-gray-500 dark:text-gray-400">Пункт ТЗ: {c.tz_clause}</div>}
+
+          {/* Представительная цитата + прочие вхождения того же требования */}
+          {c.representative_fragment && (
+            <div className="text-sm text-gray-700 dark:text-gray-300 italic border-l-2 border-gray-300 dark:border-gray-700 pl-2 whitespace-pre-wrap">
+              «{c.representative_fragment}»
+            </div>
+          )}
+          {repeated && (
+            <details>
+              <summary className="text-xs text-brand-600 cursor-pointer hover:underline">
+                {repeated}
+                {sections.length > 0 && ` · ${sections.join(', ')}`}
+              </summary>
+              <ul className="mt-1 space-y-1">
+                {occurrences.map((e, i) => (
+                  <li key={e.draft_issue_id || i} className="text-xs text-gray-600 dark:text-gray-400 border-l-2 border-gray-200 dark:border-gray-700 pl-2">
+                    {e.tz_clause && <div className="text-gray-500 dark:text-gray-500">{formatTzClause(e.tz_clause)}</div>}
+                    {e.fragment && <div className="italic whitespace-pre-wrap">«{e.fragment}»</div>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
 
           {/* Объединённое основание (basis) */}
           {c.merged_basis && (
@@ -80,7 +118,8 @@ export default function ClusterList({ items = [] }) {
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

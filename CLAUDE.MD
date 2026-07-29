@@ -203,6 +203,33 @@ Excel-number → number; единицы «кв.м»/«м²»/«куб.м»/«п.
 
 **Зоны ответственности и сборка итога.** Каждый агент 1–4 пишет ТОЛЬКО в свой домен `problem_type` — единый реестр `server/services/review/stageDomains.js` (Stage1 покрытие расчёта; Stage2 Q&A+характеристики; Stage3 условия; Stage4 риски); движок логирует находки вне домена (`off_domain` в summary). Слой сборки `server/services/review/consolidation.js` (`consolidate(tenderId)`) сводит находки разных стадий, указывающие на одно место ТЗ (абзац + перекрытие char-диапазонов; фолбэк — цитата), в группы: **primary** по критичности (тай-брейк — порядок стадий), прочие — `related`, конфликты помечаются (решает инженер). Один итог: `GET /api/tenders/:id/review/consolidated` → экран «Итог» (`client/src/pages/result/SummaryPage.jsx`). Экспорт берёт **одно** решение на место (primary; дубли попадают в отчёт экспорта как `skipped`) через `dedupeExportDecisions`. Тесты слоя — `server/test/consolidation.test.js`.
 
+**Повторённое требование — ОДНО замечание, а не карточка на каждый абзац.**
+Кластеризация двухъярусная. **Ярус 1** (`clusteringService`, `placeKey × semanticBucket`) —
+одно МЕСТО ТЗ. **Ярус 2** (`clustering/topicModel.js`, чистый) — одна ТЕМА: группы яруса 1
+сливаются, если совпали **тип риска** (`riskTypeOf` — семейства поверх свободного
+`problem_type`), **объект работ** (`detectWorkObject` — таксономия обязанностей ГП: уборка,
+исполнительная документация, временные сети, поставка материалов, охрана, ОТ и ТБ,
+гарантия, оплата, …), **бизнес-последствие** (`dominantDimension` от critic),
+**рекомендуемое действие** (`required_action`, при пустом — из семейства `suggested_action`)
+и тексты прошли **смысловую сверку**. Порог сверки зависит от того, распознан ли объект
+работ: распознан → лексическая близость не требуется (её уже подтвердила таксономия, а
+формулировки одной обязанности пересекаются словами плохо: «ежедневная уборка площадки» vs
+«вывоз строительного мусора»); НЕ распознан (`other`) → опора только текст, порог высокий
+(Жаккар ≥ 0.45). **Ярус 2 НИКОГДА не сливает группы одного места** — разные самостоятельные
+риски одного абзаца (открытый объём ≠ риск оплаты) остаются разными замечаниями.
+Вхождения хранятся ПРИ кластере (снимок неизменяем, пересчитывать на чтении нельзя):
+`occurrence_count` (число РАЗНЫХ мест; `item_count` — число draft_issues),
+`evidence_fragments` (JSON: цитата + пункт + раздел + абзац), `affected_sections`,
+`representative_fragment` (цитата первичного вхождения — её показывает карточка и по ней
+docx-экспорт находит место), плюс `work_object`/`topic_key` для аудита слияния. Заголовок
+кластера называет ПРЕДМЕТ («Уборка и вывоз мусора»), если объект работ распознан. UI
+(`ReviewPage`, `ClusterList`, `SummaryPage` через `occurrenceNote`/`otherOccurrences` в
+`client/src/utils/format.js`) показывает ОДНО замечание и подпись
+«Обнаружено ещё в N местах» со свёрнутым списком остальных вхождений. Тесты —
+`server/test/unit/clusteringTopics.test.js` (уборка / исполнительная документация /
+временные сети / поставка материалов + границы слияния) и
+`server/test/integration/clusterOccurrences.integration.test.js` (круг через Postgres).
+
 **Конвейер анализа (signals → draft_issues → critic → clustering → self-analysis).** Поверх стадий работает основной аналитический конвейер: стадии 1–4 добывают находки → движок пишет их сигналами (`signals/signalWriter.js`, авто, best-effort) → `unifiedAnalysis/unifiedIssueBuilder.js` (draft_issues) → `critic/criticService.js` (значимость) → `clustering/clusteringService.js` (кластеры) → `selfAnalysis/selfAnalysisService.js` (QC, Стадия 5). Каждый слой — таблица + сервис + контроллер + роут + debug-страница + офлайн-тест чистых функций. Оркестратор `pipeline/analysisPipeline.js` пересобирает слои 2–5 одним вызовом (`POST /api/tenders/:id/pipeline/run`, `{with_self_analysis:false}` — без LLM-шага; после сбоя шага остальные `skipped`, отчёт `{ok, failed_step, steps[]}` — сбой ≠ HTTP-ошибка); debug-страница `/tenders/:id/debug/pipeline`, тест `server/test/unit/pipeline.test.js`.
 
 **Публикацию замечания решают impact × evidence, а НЕ criticality/confidence.**

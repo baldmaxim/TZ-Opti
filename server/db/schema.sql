@@ -346,9 +346,18 @@ CREATE TABLE IF NOT EXISTS issue_clusters (
   publication_reason     TEXT,              -- почему публикуется (от решающего элемента)
   suppression_reason     TEXT,              -- почему скрыто (от решающего элемента)
   required_action        TEXT,              -- что делать инженеру
+  -- ПОВТОРЯЮЩЕЕСЯ ТРЕБОВАНИЕ (ярус 2, clustering/topicModel.js): одна обязанность
+  -- ГП, встречающаяся в нескольких пунктах ТЗ, — ОДНО замечание с несколькими
+  -- вхождениями, а не карточка на каждый абзац.
+  occurrence_count       INTEGER,           -- число РАЗНЫХ мест ТЗ (item_count — число draft_issues)
+  evidence_fragments     TEXT,              -- JSON: [{draft_issue_id, tz_clause, section, paragraph_index, fragment}]
+  affected_sections      TEXT,              -- JSON-массив разделов ТЗ, затронутых требованием
+  representative_fragment TEXT,             -- цитата первичного вхождения (её показывает карточка и ищет docx-экспорт)
   -- доп. прозрачность (сверх спеки):
+  topic_key              TEXT,              -- тип риска|объект работ|последствие|действие (ось слияния яруса 2)
+  work_object            TEXT,              -- предмет обязанности: cleaning|as_built_docs|temporary_utilities|…
   semantic_bucket        TEXT,              -- ключ смысловой группы (домен значимости + действие)
-  cluster_key            TEXT,              -- стабильная сигнатура (placeKey::semanticBucket) — основа детерминированного id
+  cluster_key            TEXT,              -- стабильная сигнатура (placeKey::semanticBucket или topic:…) — основа детерминированного id
   item_count             INTEGER,           -- число draft_issues в кластере
   paragraph_index        INTEGER,           -- для стабильного порядка/дебага
   created_at             TEXT NOT NULL,

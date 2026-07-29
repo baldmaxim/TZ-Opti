@@ -437,6 +437,23 @@ async function runMigration() {
   await ensureColumn('issue_reviews', 'critic_assessment', 'TEXT');
   await ensureIndex('idx_issue_reviews_outcome', 'issue_reviews', 'tender_id, analysis_run_id, critic_outcome');
 
+  // --- Повторяющееся требование: одно замечание, несколько вхождений ---------
+  //
+  // Ярус 2 кластеризации (clustering/topicModel.js) сводит однотипную обязанность
+  // ГП из разных пунктов ТЗ в ОДИН кластер. Вхождения хранятся при кластере,
+  // потому что после активации снимок неизменяем: пересчитывать их на чтении
+  // из draft_issues значило бы показывать не то, что было решено инженером.
+  await ensureColumn('issue_clusters', 'occurrence_count', 'INTEGER');
+  await ensureColumn('issue_clusters', 'evidence_fragments', 'TEXT');
+  await ensureColumn('issue_clusters', 'affected_sections', 'TEXT');
+  await ensureColumn('issue_clusters', 'representative_fragment', 'TEXT');
+  await ensureColumn('issue_clusters', 'topic_key', 'TEXT');
+  await ensureColumn('issue_clusters', 'work_object', 'TEXT');
+  // Старые кластеры собирались только по месту — у них ровно одно вхождение.
+  // Задним числом их не пересобираем (снимок неизменяем), но счётчик обязан
+  // быть честным: NULL в UI выглядел бы как «мест нет».
+  await db.exec('UPDATE issue_clusters SET occurrence_count = 1 WHERE occurrence_count IS NULL;');
+
   // --- Части ТЗ: КЭШ отдельно, ИСТОРИЯ ВЫПОЛНЕНИЯ отдельно -------------------
   //
   // Раньше analysis_segments была одной строкой на (тендер, стадия, часть) и

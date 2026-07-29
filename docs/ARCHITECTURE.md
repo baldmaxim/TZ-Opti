@@ -71,7 +71,7 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 - **`analysis_signals`** — `signal_type` (`coverage|decision|condition|risk` ← стадия 1–4), `source_entity_id` (= id issue), локализация + `weight` (из `confidence`), `signal_payload_json`.
 - **`draft_issues`** — сводный черновик по одному месту ТЗ: `created_from_signal_ids` (JSON), `category` (свод signal_type), `basis`/`suggested_action`/`suggested_redaction`, `confidence`.
 - **`issue_reviews`** — оценка значимости draft_issue: `business_impact`, `{price,schedule,contract,responsibility}_impact`, `display_priority` (`critical|high|medium|low`), `show_to_engineer` (0=мягко скрыт), `score`, `criteria_json`.
-- **`issue_clusters`** / **`issue_cluster_items`** — кластер похожих замечаний одного места: `cluster_title`, `merged_basis`, `merged_recommendation`, `overall_criticality`, `semantic_bucket`, `show_to_engineer`; items связывают кластер с `draft_issue` ролью `primary|related`.
+- **`issue_clusters`** / **`issue_cluster_items`** — ОДНО замечание инженера: `cluster_title`, `merged_basis`, `merged_recommendation`, `overall_criticality`, `semantic_bucket`, `show_to_engineer`; items связывают кластер с `draft_issue` ролью `primary|related`. Кластеризация двухъярусная: ярус 1 — одно МЕСТО ТЗ (`placeKey × semantic_bucket`), ярус 2 — одна ТЕМА (`clustering/topicModel.js`: тип риска + объект работ + бизнес-последствие + рекомендуемое действие + смысловая близость), поэтому однотипная обязанность из нескольких пунктов ТЗ даёт одно замечание с вхождениями: `occurrence_count` (число РАЗНЫХ мест; `item_count` — число draft_issues), `evidence_fragments` (JSON: цитата + пункт + раздел + абзац на каждое вхождение), `affected_sections`, `representative_fragment` (цитата первичного вхождения — её показывает карточка и по ней экспорт находит место в .docx), `work_object`/`topic_key` (ось слияния). Разные самостоятельные риски ОДНОГО абзаца ярус 2 не сливает никогда.
 - **`self_analysis_results`** — QC-замечание о РАЗБОРЕ: `finding_type` (`missed_coverage|weak_cluster|cluster_contradiction|needs_enrichment`), `cluster_id` (адресат, NULL = про весь ТЗ), `comment`, `suggested_improvement`, `source` (`heuristic|llm`).
 
 ---
@@ -317,7 +317,8 @@ stageRunLifecycle.integration.test.js` (сбой в середине докум�
 
 - **Чистые функции тестируются без БД.** Группировка/слияние/скоринг/эвристики каждого слоя —
   отдельные экспортируемые функции, покрытые офлайн-тестами (`server/test/*.test.js`, `npm test`):
-  `consolidation.test.js`, `critic.test.js`, `clustering.test.js`, `selfAnalysis.test.js`,
+  `consolidation.test.js`, `critic.test.js`, `clustering.test.js`, `clusteringTopics.test.js`,
+  `selfAnalysis.test.js`,
   `clusterReview.test.js`, `clusterExports.test.js`, `pipeline.test.js`,
   `stage4Scoring.test.js`, `reviewExport.test.js`. БД и LLM в тестах не нужны.
 - **Идемпотентность.** Каждый `build*` пересобирает свой слой целиком по тендеру; повторный

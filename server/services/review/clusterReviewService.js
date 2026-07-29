@@ -56,7 +56,10 @@ function clusterToExportIssue(cluster, primaryDraft = {}) {
     id: cluster.id,
     analysis_stage: null, // кластер сводит несколько стадий — единой стадии нет
     cluster_id: cluster.id,
-    source_fragment: primaryDraft.source_fragment || null,
+    // Место в .docx ищется по тексту цитаты. У повторяющегося требования это
+    // ПРЕДСТАВИТЕЛЬНОЕ вхождение (representative_fragment == фрагмент primary):
+    // решение инженера одно, и правка ставится там, где показана цитата.
+    source_fragment: primaryDraft.source_fragment || cluster.representative_fragment || null,
     source_clause: cluster.tz_clause || primaryDraft.tz_clause || null,
     paragraph_index:
       cluster.paragraph_index != null ? cluster.paragraph_index : (primaryDraft.paragraph_index ?? null),

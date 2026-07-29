@@ -319,8 +319,27 @@ async function collectStageInputs(tenderId, stages = [1, 2, 3, 4], tx) {
   });
 }
 
+// Число реально затронутых строк (pg → rowCount, sqlite-совместимо → changes).
+const affectedRows = (res) => (res && (res.changes ?? res.rowCount)) || 0;
+
+function activationError(message, code = 'RUN_ACTIVATION_FAILED') {
+  const err = new Error(`Активация прогона не выполнена: ${message}`);
+  err.code = code;
+  err.status = 409;
+  err.retryable = false;
+  return err;
+}
+
 // Активировать прогон по успеху: архивировать прежний актуальный прогон этого
 // scope (superseded_at), перевести указатель на runId, пометить прогон completed.
+//
+// tx (опц.) — транзакция вызывающего: тогда ВСЕ запросы идут через неё, своей
+// транзакции функция не открывает и ни commit, ни rollback не делает — снимок
+// публикуется и активируется одним коммитом вызывающего.
+//
+// КРИТИЧЕСКИЕ UPDATE проверяются по rowCount: «перевёл указатель, а строки не
+// было» — это молчаливая потеря активации, худший исход из возможных (портал
+// покажет успех, читать будет прежний снимок). Возвращает счётчики шагов.
 async function activateRun(tenderId, scope, runId, opts = {}, tx) {
   const e = exec(tx);
   const now = nowIso();
@@ -328,13 +347,18 @@ async function activateRun(tenderId, scope, runId, opts = {}, tx) {
     `SELECT analysis_run_id FROM analysis_active_runs WHERE tender_id = ? AND scope = ?`,
     tenderId, scope,
   );
-  if (prev && prev.analysis_run_id && prev.analysis_run_id !== runId) {
-    await e.queryRun(
+  const previousRunId = prev && prev.analysis_run_id && prev.analysis_run_id !== runId
+    ? prev.analysis_run_id
+    : null;
+  let previousSuperseded = 0;
+  if (previousRunId) {
+    // Не критично: 0 строк = прежний прогон уже был архивирован кем-то другим.
+    previousSuperseded = affectedRows(await e.queryRun(
       `UPDATE analysis_runs SET superseded_at = ? WHERE id = ? AND superseded_at IS NULL`,
-      now, prev.analysis_run_id,
-    );
+      now, previousRunId,
+    ));
   }
-  await e.queryRun(
+  const runUpdated = affectedRows(await e.queryRun(
     `UPDATE analysis_runs
         SET status = 'completed', finished_at = ?,
             summary = COALESCE(?, summary),
@@ -342,8 +366,14 @@ async function activateRun(tenderId, scope, runId, opts = {}, tx) {
             config_version = COALESCE(?, config_version)
       WHERE id = ?`,
     now, opts.summary ?? null, opts.documentsRevisionId ?? null, opts.configVersion ?? null, runId,
-  );
-  await e.queryRun(
+  ));
+  if (runUpdated !== 1) {
+    throw activationError(
+      `строка прогона ${runId} не обновлена (затронуто строк: ${runUpdated})`,
+      'RUN_ACTIVATION_RUN_NOT_UPDATED',
+    );
+  }
+  const pointerUpdated = affectedRows(await e.queryRun(
     `INSERT INTO analysis_active_runs
        (tender_id, scope, documents_revision_id, config_version, analysis_run_id, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -353,7 +383,22 @@ async function activateRun(tenderId, scope, runId, opts = {}, tx) {
        analysis_run_id = EXCLUDED.analysis_run_id,
        updated_at = EXCLUDED.updated_at`,
     tenderId, scope, opts.documentsRevisionId ?? null, opts.configVersion ?? null, runId, now,
-  );
+  ));
+  if (pointerUpdated !== 1) {
+    throw activationError(
+      `указатель ${scope} не переведён на прогон ${runId} (затронуто строк: ${pointerUpdated})`,
+      'RUN_ACTIVATION_POINTER_NOT_MOVED',
+    );
+  }
+  return {
+    run_id: runId,
+    scope,
+    run_updated: runUpdated,
+    pointer_updated: pointerUpdated,
+    previous_run_id: previousRunId,
+    previous_superseded: previousSuperseded,
+    activated_at: now,
+  };
 }
 
 // Завершить прогон БЕЗ активации: строка помечается completed и СРАЗУ

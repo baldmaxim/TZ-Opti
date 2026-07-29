@@ -86,6 +86,52 @@ async function setStageStatus(tenderId, stage, status, runner = db) {
   );
 }
 
+// Допустимые значения tender_stage_state.stageN_status.
+const STAGE_STATUSES = Object.freeze(['locked', 'open', 'running', 'reviewing', 'finished']);
+
+function lifecycleError(message, code = 'STAGE_LIFECYCLE_CONFLICT', status = 409) {
+  const err = new Error(`Переход статуса стадии не выполнен: ${message}`);
+  err.code = code;
+  err.status = status;
+  err.retryable = false;
+  return err;
+}
+
+// УСЛОВНЫЙ перевод статуса стадии: from → to, ровно для этого тендера и этой
+// стадии. В отличие от setStageStatus (безусловный UPDATE) здесь три вещи:
+//   • ожидаемый ПРЕДЫДУЩИЙ статус стоит в WHERE — параллельный процесс, уже
+//     уведший стадию дальше, не будет перетёрт;
+//   • rowCount проверяется: 0 строк = состояние не то, которое мы предполагали,
+//     это конфликт жизненного цикла, а не «ничего не поменялось»;
+//   • tx (опц.) — перевод идёт транзакцией вызывающего, поэтому до её коммита
+//     стадия для читателей остаётся в прежнем статусе.
+async function transitionStageStatus(tenderId, stage, { from, to, tx = null } = {}) {
+  if (!tenderId) throw lifecycleError('не передан tenderId', 'STAGE_TRANSITION_INVALID', 500);
+  if (!Number.isInteger(stage) || stage < 1 || stage > 5) {
+    throw lifecycleError(`недопустимая стадия «${stage}»`, 'STAGE_TRANSITION_INVALID', 500);
+  }
+  if (!STAGE_STATUSES.includes(from) || !STAGE_STATUSES.includes(to)) {
+    throw lifecycleError(
+      `недопустимый переход «${from}» → «${to}»`, 'STAGE_TRANSITION_INVALID', 500,
+    );
+  }
+  const runner = tx || db;
+  const col = `stage${stage}_status`;
+  const res = await runner.queryRun(
+    `UPDATE tender_stage_state SET ${col} = ?, current_stage = ?
+      WHERE tender_id = ? AND ${col} = ?`,
+    to, stage, tenderId, from,
+  );
+  const changed = (res && (res.changes ?? res.rowCount)) || 0;
+  if (changed !== 1) {
+    throw lifecycleError(
+      `тендер ${tenderId}, стадия ${stage}: ожидался статус «${from}» для перехода в «${to}», `
+        + `обновлено строк: ${changed}`,
+    );
+  }
+  return { tender_id: tenderId, stage, from, to, changed };
+}
+
 async function unlockNextStage(tenderId, stage, runner = db) {
   if (stage >= 5) return;
   const nextCol = `stage${stage + 1}_status`;
@@ -141,6 +187,7 @@ async function recoverOrphanedRunningStages() {
 }
 
 module.exports = {
+  STAGE_STATUSES,
   // чистые функции контракта результата (офлайн-тесты)
   classifyStageRun,
   canFinishStage,
@@ -148,6 +195,7 @@ module.exports = {
   // DB
   getStageState,
   setStageStatus,
+  transitionStageStatus,
   unlockNextStage,
   releaseRunningStage,
   recoverOrphanedRunningStages,

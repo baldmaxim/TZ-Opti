@@ -67,47 +67,155 @@ function buildSignal({ tenderId, runId, stage, issueId, issue }) {
   };
 }
 
-// Параллельная запись слоя signals для одной стадии.
-// records: [{ issueId, issue }] — id уже сохранённых issue + сами находки.
-// Best-effort: своя транзакция, ошибки только логируются (стадия не падает).
-async function writeSignalsForStage({ tenderId, runId, stage, records }) {
-  if (!signalTypeForStage(stage)) return { written: 0, skipped: true };
-  const signals = (records || [])
-    .map((r) => buildSignal({ tenderId, runId, stage, issueId: r.issueId, issue: r.issue }))
-    .filter(Boolean);
+// --- Нормализация входа --------------------------------------------------------
+
+// На вход принимаем и готовые строки сигналов (buildSignal), и записи стадии
+// { issueId, issue }: писать может как движок сразу после сохранения issues, так
+// и backfill из уже существующих строк.
+function isSignalRow(item) {
+  return !!item && (typeof item.payloadJson === 'string' || !!item.signalType);
+}
+
+function buildSignalRows({ tenderId, analysisRunId, stage, items }) {
+  const rows = [];
+  for (const item of items || []) {
+    if (!item) continue;
+    const row = isSignalRow(item)
+      ? item
+      : buildSignal({
+        tenderId, runId: analysisRunId, stage,
+        issueId: item.issueId ?? item.id ?? null,
+        issue: item.issue || item,
+      });
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+function signalsError(message, code = 'SIGNALS_WRITE_FAILED') {
+  const err = new Error(`[signals] ${message}`);
+  err.code = code;
+  return err;
+}
+
+// ПРИВЯЗКА К ПРОГОНУ — проверяется у КАЖДОЙ строки, а не один раз на пачку.
+// Сигнал без analysis_run_id (или с чужим) не попадает ни в один снимок: чтения
+// берут только сигналы актуальных stage-прогонов (getActiveStageRunIds), поэтому
+// такая строка — молча потерянная находка. В strict это ошибка публикации;
+// в legacy — предупреждение + приведение к прогону-владельцу (как раньше).
+function ensureRunScope(rows, analysisRunId, { stage, strict }) {
+  if (!analysisRunId) {
+    const msg = `стадия ${stage}: analysis_run_id не передан — сигналы не принадлежат ни одному снимку`;
+    if (strict) throw signalsError(msg, 'SIGNALS_RUN_ID_REQUIRED');
+    // eslint-disable-next-line no-console
+    console.warn(`[signals] ${msg}`);
+    return rows;
+  }
+  const scoped = [];
+  for (const row of rows) {
+    if (row.runId && row.runId !== analysisRunId) {
+      const msg = `стадия ${stage}: сигнал ${row.id} привязан к чужому прогону ${row.runId} `
+        + `(прогон-владелец ${analysisRunId})`;
+      if (strict) throw signalsError(msg, 'SIGNALS_RUN_ID_MISMATCH');
+      // eslint-disable-next-line no-console
+      console.warn(`[signals] ${msg}`);
+    }
+    scoped.push(row.runId === analysisRunId ? row : { ...row, runId: analysisRunId });
+  }
+  return scoped;
+}
+
+// --- Запись --------------------------------------------------------------------
+
+// exec — исполнитель запросов: переданная транзакция или своя. ВСЕ запросы идут
+// через него: при tx запись живёт и падает вместе с транзакцией вызывающего.
+async function insertSignals(exec, { tenderId, analysisRunId, rows }) {
+  // Неизменяемый снимок: сигналы пишутся с analysis_run_id нового stage-прогона,
+  // прежние прогоны НЕ удаляются (архив). Идемпотентность — в пределах ПРОГОНА:
+  // чистим только сигналы этого прогона (повторная запись того же прогона), чтения
+  // берут лишь сигналы актуальных stage-прогонов (getActiveStageRunIds).
+  if (analysisRunId) {
+    await exec.queryRun(
+      `DELETE FROM analysis_signals WHERE tender_id = ? AND analysis_run_id = ?`,
+      tenderId, analysisRunId,
+    );
+  }
+  for (const s of rows) {
+    // eslint-disable-next-line no-await-in-loop
+    await exec.queryRun(
+      `INSERT INTO analysis_signals (
+         id, tender_id, analysis_run_id, analysis_stage, signal_type,
+         source_entity_type, source_entity_id, tz_clause, source_fragment,
+         signal_payload_json, weight, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      s.id, s.tenderId, s.runId, s.stage, s.signalType,
+      s.sourceEntityType, s.sourceEntityId, s.tzClause, s.sourceFragment,
+      s.payloadJson, s.weight, s.createdAt,
+    );
+  }
+  return rows.length;
+}
+
+// Запись слоя signals для одной стадии.
+//
+//   tenderId, stage  — чей снимок и чья стадия;
+//   analysisRunId    — ПРОГОН-ВЛАДЕЛЕЦ строк (алиас runId — старая форма вызова);
+//   signals          — строки сигналов ИЛИ записи стадии [{ issueId, issue }]
+//                      (алиас records — старая форма вызова);
+//   tx               — транзакция вызывающего: если передана, ВСЕ запросы идут
+//                      только через неё (своей транзакции слой не открывает);
+//   strict           — режим публикации: SQL-ошибки НЕ перехватываются, ложного
+//                      успеха не возвращается, ошибка уходит вызывающему.
+//
+// strict=false — legacy-режим (прежнее поведение: своя транзакция, ошибка только
+// логируется, стадия не падает). Он остаётся ради существующих вызовов, но каждый
+// такой вызов помечается предупреждением: снимок стадии может быть активирован
+// без сигналов, и это молчаливая потеря находок.
+async function writeSignalsForStage({
+  tenderId,
+  stage,
+  analysisRunId = null,
+  runId = null, // legacy-имя того же параметра
+  signals = null,
+  records = null, // legacy-имя того же параметра
+  tx = null,
+  strict = false,
+} = {}) {
+  const rid = analysisRunId || runId || null;
+  if (!signalTypeForStage(stage)) return { written: 0, skipped: true, run_id: rid };
+
+  const rows = ensureRunScope(
+    buildSignalRows({ tenderId, analysisRunId: rid, stage, items: signals || records || [] }),
+    rid,
+    { stage, strict },
+  );
+
+  if (strict) {
+    // Ошибки не глушим и результат не подменяем: неудачная запись сигналов
+    // обязана дойти до вызывающего (снимок без сигналов публиковать нельзя).
+    const written = tx
+      ? await insertSignals(tx, { tenderId, analysisRunId: rid, rows })
+      : await db.transaction((t) => insertSignals(t, { tenderId, analysisRunId: rid, rows }));
+    return { written, run_id: rid, strict: true };
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[signals] стадия ${stage}: запись сигналов в legacy-режиме (strict=false) — `
+      + `сбой будет проглочен, снимок ${rid || '(без прогона)'} может остаться без сигналов`,
+  );
   try {
-    await db.transaction(async (tx) => {
-      // Неизменяемый снимок: сигналы пишутся с analysis_run_id нового stage-прогона,
-      // прежние прогоны НЕ удаляются (архив). Идемпотентность — в пределах ПРОГОНА:
-      // чистим только сигналы этого runId (повторная запись того же прогона), чтения
-      // берут лишь сигналы актуальных stage-прогонов (getActiveStageRunIds).
-      if (runId) {
-        await tx.queryRun(
-          `DELETE FROM analysis_signals WHERE tender_id = ? AND analysis_run_id = ?`,
-          tenderId, runId,
-        );
-      }
-      for (const s of signals) {
-        await tx.queryRun(
-          `INSERT INTO analysis_signals (
-             id, tender_id, analysis_run_id, analysis_stage, signal_type,
-             source_entity_type, source_entity_id, tz_clause, source_fragment,
-             signal_payload_json, weight, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          s.id, s.tenderId, s.runId, s.stage, s.signalType,
-          s.sourceEntityType, s.sourceEntityId, s.tzClause, s.sourceFragment,
-          s.payloadJson, s.weight, s.createdAt,
-        );
-      }
-    });
-    return { written: signals.length };
+    const written = tx
+      ? await insertSignals(tx, { tenderId, analysisRunId: rid, rows })
+      : await db.transaction((t) => insertSignals(t, { tenderId, analysisRunId: rid, rows }));
+    return { written, run_id: rid };
   } catch (err) {
     // Слой signals не критичен для issue-пайплайна — не валим стадию, только лог.
     // eslint-disable-next-line no-console
     console.warn(
-      `[signals] стадия ${stage}: не удалось записать сигналы (${signals.length}) — ${err.message}`,
+      `[signals] стадия ${stage}: не удалось записать сигналы (${rows.length}) — ${err.message}`,
     );
-    return { written: 0, error: err.message };
+    return { written: 0, error: err.message, run_id: rid };
   }
 }
 
@@ -132,7 +240,11 @@ async function backfillSignalsFromIssues(tenderId) {
       runId,
     );
     const records = issues.map((i) => ({ issueId: i.id, issue: i }));
-    const res = await writeSignalsForStage({ tenderId, runId, stage, records });
+    // Backfill остаётся best-effort (strict=false): он чинит уже существующий
+    // снимок, а не публикует новый — падать на одной стадии здесь нечего.
+    const res = await writeSignalsForStage({
+      tenderId, stage, analysisRunId: runId, signals: records,
+    });
     perStage[stage] = res.written || 0;
     total += res.written || 0;
   }

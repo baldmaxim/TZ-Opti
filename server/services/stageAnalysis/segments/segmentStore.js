@@ -265,11 +265,14 @@ const markRunSegmentFailed = (runId, index, error) => setRunSegment(
 // Закрыть незавершённые части прогона при его финализации. Часть, которую
 // считали в момент обрыва → interrupted; части, до которых очередь не дошла →
 // skipped. После этого строки прогона неизменяемы: живых состояний в них нет.
-async function finalizeRunSegments(runId, { reason = null } = {}) {
+// tx (опц.) — транзакция вызывающего: закрытие частей идёт тем же коммитом, что и
+// остальная публикация снимка. Без tx — прежнее поведение (отдельные запросы).
+async function finalizeRunSegments(runId, { reason = null, tx = null } = {}) {
   if (!runId) return { interrupted: 0, skipped: 0 };
+  const exec = tx || db;
   const now = nowIso();
   const upd = async (from, to, msg) => {
-    const res = await db.queryRun(
+    const res = await exec.queryRun(
       `UPDATE analysis_run_segments
           SET status = ?, error = COALESCE(error, ?), finished_at = COALESCE(finished_at, ?), updated_at = ?
         WHERE analysis_run_id = ? AND status = ?`,

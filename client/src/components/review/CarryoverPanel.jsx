@@ -20,6 +20,7 @@ function keyOf(p) { return p.decision && p.decision.id; }
 
 export default function CarryoverPanel({ tenderId, onConfirmed }) {
   const [proposals, setProposals] = useState([]);
+  const [materialized, setMaterialized] = useState([]);
   const [selected, setSelected] = useState({}); // { [decisionId]: true }
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -30,6 +31,7 @@ export default function CarryoverPanel({ tenderId, onConfirmed }) {
       const data = await api.listCarryovers(tenderId);
       const list = data.proposals || [];
       setProposals(list);
+      setMaterialized(data.materialized || []);
       // По умолчанию отмечаем только точные совпадения без конфликта — остальное
       // инженер включает осознанно.
       const init = {};
@@ -58,7 +60,7 @@ export default function CarryoverPanel({ tenderId, onConfirmed }) {
     setBusy(false);
   };
 
-  if (!loaded || !proposals.length) return null;
+  if (!loaded || (!proposals.length && !materialized.length)) return null;
 
   const selectedCount = proposals.filter((p) => selected[keyOf(p)]).length;
 
@@ -120,12 +122,39 @@ export default function CarryoverPanel({ tenderId, onConfirmed }) {
         })}
       </div>
 
-      <div className="flex items-center justify-end gap-2 pt-1 border-t border-amber-200 dark:border-amber-800">
-        <span className="text-xs text-gray-500 dark:text-gray-400">Выбрано: {selectedCount}</span>
-        <button className="btn btn-primary text-xs" disabled={busy || !selectedCount} onClick={confirm}>
-          {busy ? 'Переношу…' : 'Подтвердить перенос выбранных'}
-        </button>
-      </div>
+      {materialized.length > 0 && (
+        <div className="space-y-1 pt-2 border-t border-amber-200 dark:border-amber-800">
+          <div className="text-xs font-semibold text-green-800 dark:text-green-300">
+            Учтено в согласованной версии ТЗ ({materialized.length})
+          </div>
+          <div className="text-xs text-gray-600 dark:text-gray-400">
+            Эти решения уже применены к тексту — замечание исчезло из нового
+            анализа, потому что исправлено, переносить нечего.
+          </div>
+          {materialized.map((m) => (
+            <div
+              key={m.decision.id}
+              className="flex items-center gap-2 p-2 rounded border border-green-200 dark:border-green-800 bg-green-50/60 dark:bg-green-900/20"
+            >
+              <span className="tag bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 text-xs">
+                {DECISIONS[m.decision.decision] || m.decision.decision}
+              </span>
+              <span className="text-sm text-gray-800 dark:text-gray-100 truncate">
+                {m.decision.cluster_title || formatTzClause(m.decision.tz_clause) || 'замечание прошлого прогона'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {proposals.length > 0 && (
+        <div className="flex items-center justify-end gap-2 pt-1 border-t border-amber-200 dark:border-amber-800">
+          <span className="text-xs text-gray-500 dark:text-gray-400">Выбрано: {selectedCount}</span>
+          <button className="btn btn-primary text-xs" disabled={busy || !selectedCount} onClick={confirm}>
+            {busy ? 'Переношу…' : 'Подтвердить перенос выбранных'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

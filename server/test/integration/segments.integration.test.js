@@ -206,6 +206,33 @@ test('финализация прогона закрывает незаверш�
   assert.match(rows[1].error, /воркер потерян/);
 });
 
+test('КРОСС-РЕВИЗИЯ: часть с тем же input_hash поднимается из кэша другой ревизии', OPTS, async () => {
+  const REV2 = 'rev_2';
+  const runId = await makeRun('seg-run-crossrev');
+  const scope2 = { revisionId: REV2, configVersion: CFG };
+
+  // Ревизия 1 уже содержит посчитанную часть 'a' (индекс 0, тесты выше).
+  // Новая ревизия (согласованная версия): нарезка сдвинулась — тот же вход
+  // оказался частью с ДРУГИМ индексом.
+  await store.planCache(TENDER_ID, STAGE, { ...scope2, segments: [seg(0, 'intro-new'), seg(1, 'a')] });
+
+  const wrapped = store.makeStageSegmentStore({
+    tenderId: TENDER_ID, stage: STAGE, revisionId: REV2, configVersion: CFG, runId,
+  });
+  const reused = await wrapped.getCompleted(1, 'a');
+  assert.deepEqual(reused, [{ fragment: 'A' }], 'результат ревизии 1 переиспользован по input_hash');
+
+  // Прогрев: результат продублирован в кэш текущей ревизии — следующий запуск
+  // попадёт точным ключом.
+  assert.deepEqual(await store.getCompleted(TENDER_ID, STAGE, 1, 'a', scope2), [{ fragment: 'A' }]);
+
+  // Изменённая часть новой ревизии из чужого кэша не поднимается.
+  assert.equal(await wrapped.getCompleted(0, 'intro-new'), null);
+
+  // Другая версия конфигурации — не кэш (та же защита, что и внутри ревизии).
+  assert.equal(await store.getCompletedByHash(TENDER_ID, STAGE, 'a', { configVersion: 'cfg_other' }), null);
+});
+
 test('части разных стадий одного тендера не пересекаются', OPTS, async () => {
   const runId = await makeRun('seg-run-stage4');
   await getDb().queryRun('UPDATE analysis_runs SET stage = 4 WHERE id = ?', runId);

@@ -40,6 +40,19 @@ exports.run = async (req, res) => {
   return res.json(report);
 };
 
+// GET /api/tenders/:id/pipeline/impact — карта затронутого (dry-run): какие
+// части каких стадий придётся пересчитывать при запуске анализа по текущему
+// входу (после активации согласованной версии). Без LLM и без записи; хэши
+// частей сверяются с кэшем, включая кэш прошлых ревизий. estimate=true —
+// жадная упаковка частей может каскадно сдвинуть нарезку, это оценка.
+exports.impact = async (req, res) => {
+  await ensureTender(req.params.id);
+  // Ленивая загрузка: impactService тянет модули стадий — не грузим на импорте.
+  // eslint-disable-next-line global-require
+  const impact = require('../services/agreedVersion/impactService');
+  res.json(await impact.previewStagesImpact(req.params.id));
+};
+
 // GET /api/tenders/:id/pipeline/status — состояние конвейера:
 //   • свежесть слоёв (счётчик + время сборки + stale, сводный needs_rebuild);
 //   • active_run — прогон под указателем (его читает портал);

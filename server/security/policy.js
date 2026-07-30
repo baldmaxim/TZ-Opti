@@ -130,6 +130,7 @@ const RULES = [
   r('GET', '/tenders/:tenderId/self-analysis', 'tender.read', 'self_analysis.list', READ, 'tender', 'self_analysis'),
   r('POST', '/tenders/:tenderId/pipeline/run', 'analysis.run', 'pipeline.run', ANALYSIS, 'tender', 'pipeline'),
   r('GET', '/tenders/:tenderId/pipeline/status', 'tender.read', 'pipeline.status', READ, 'tender', 'pipeline'),
+  r('GET', '/tenders/:tenderId/pipeline/impact', 'tender.read', 'pipeline.impact', READ, 'tender', 'pipeline'),
 
   // --- рецензия и решения ------------------------------------------------
   r('POST', '/tenders/:tenderId/review/clusters/build', 'analysis.run', 'review.clusters.build', ANALYSIS, 'tender', 'cluster'),

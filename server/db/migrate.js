@@ -488,6 +488,9 @@ async function runMigration() {
     `CREATE UNIQUE INDEX IF NOT EXISTS ux_segments_cache
        ON analysis_segments(tender_id, analysis_stage, document_revision_id, segment_index);`,
   );
+  // Кросс-ревизионное переиспользование частей (селективный пересчёт после
+  // согласованной версии): поиск completed-части по input_hash.
+  await ensureIndex('idx_segments_hash', 'analysis_segments', 'tender_id, analysis_stage, input_hash');
   // Колонки состояния выполнения в кэше больше не нужны — их роль забрала
   // analysis_run_segments (там они неизменяемы и привязаны к своему прогону).
   for (const col of ['analysis_run_id', 'attempts', 'error', 'started_at', 'finished_at']) {

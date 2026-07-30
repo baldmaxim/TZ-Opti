@@ -119,6 +119,34 @@ function matchDecisionsToClusters(oldDecisions, newClusters) {
   return proposals;
 }
 
+// --- «Учтено в согласованной версии» (materialized) --------------------------
+// Решение прошлого прогона, не нашедшее кластера в новом, — не всегда потеря:
+// если его правка легла в активную согласованную версию ТЗ, замечание исчезло
+// из нового анализа ИМЕННО ПОТОМУ, что текст уже исправлен. Такое решение
+// показывается зелёной секцией «учтено», а не как конфликт переноса.
+
+const MATERIALIZING_DECISIONS = new Set(['delete', 'remove_from_scope', 'edit']);
+
+// Ключи решений, вошедших в снимок applied_decisions активной версии.
+function materializedKeySet(appliedDecisions) {
+  const set = new Set();
+  for (const d of appliedDecisions || []) {
+    if (!MATERIALIZING_DECISIONS.has(d.decision)) continue;
+    if (d.cluster_id) set.add(`id:${d.cluster_id}`);
+    if (d.cluster_key) set.add(`key:${d.cluster_key}`);
+  }
+  return set;
+}
+
+function isMaterializedDecision(decision, keySet) {
+  if (!decision || !keySet || !keySet.size) return false;
+  if (!MATERIALIZING_DECISIONS.has(decision.decision)) return false;
+  return Boolean(
+    (decision.cluster_id && keySet.has(`id:${decision.cluster_id}`))
+    || (decision.cluster_key && keySet.has(`key:${decision.cluster_key}`)),
+  );
+}
+
 // Гарантия отсутствия дублей в экспорте: одна строка на место (cluster_id, иначе
 // абзац+диапазон). Первая по порядку побеждает.
 function dedupeExportRows(rows) {
@@ -686,8 +714,24 @@ async function listCarryOverProposals(tenderId) {
   const decidedSet = new Set(decided.map((r) => r.cluster_id));
   const openClusters = newClusters.filter((c) => !decidedSet.has(c.id));
 
-  const proposals = matchDecisionsToClusters(oldDecisions, openClusters).filter((p) => p.cluster_id);
-  return { active_run_id: activeRunId, from_run_id: prevRun.id, proposals };
+  const all = matchDecisionsToClusters(oldDecisions, openClusters);
+  const proposals = all.filter((p) => p.cluster_id);
+
+  // Решения без совпадения, чья правка вошла в активную согласованную версию, —
+  // «учтено в тексте», отдельным списком (не потеряны и не требуют переноса).
+  const agreedRow = await db.queryOne(
+    `SELECT applied_decisions FROM tz_agreed_versions
+      WHERE tender_id = ? AND status = 'active' ORDER BY version_no DESC LIMIT 1`,
+    tenderId,
+  );
+  let applied = [];
+  try { applied = JSON.parse((agreedRow && agreedRow.applied_decisions) || '[]'); } catch (_e) { applied = []; }
+  const keySet = materializedKeySet(applied);
+  const materialized = all
+    .filter((p) => !p.cluster_id && isMaterializedDecision(p.decision, keySet))
+    .map((p) => ({ decision: p.decision, status: 'materialized' }));
+
+  return { active_run_id: activeRunId, from_run_id: prevRun.id, proposals, materialized };
 }
 
 // Подтвердить перенос выбранных решений в АКТУАЛЬНЫЙ прогон.
@@ -735,6 +779,8 @@ module.exports = {
   clusterRunId,
   selectActiveRunIds,
   matchDecisionsToClusters,
+  materializedKeySet,
+  isMaterializedDecision,
   dedupeExportRows,
   // DB: жизненный цикл прогона
   beginRun,

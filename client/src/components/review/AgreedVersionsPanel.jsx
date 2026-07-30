@@ -27,6 +27,8 @@ export default function AgreedVersionsPanel({ tenderId, decidedCount = 0, onChan
   const [versions, setVersions] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [impact, setImpact] = useState(null);
+  const [impactBusy, setImpactBusy] = useState(false);
 
   const load = async () => {
     if (!tenderId) return;
@@ -59,10 +61,19 @@ export default function AgreedVersionsPanel({ tenderId, decidedCount = 0, onChan
     try {
       const v = await api.activateAgreedVersion(tenderId, versionId);
       toastSuccess(`Версия ${v.version_no} активна: следующий анализ пойдёт по ней`);
+      setImpact(null); // вход изменился — прежняя карта неактуальна
       await load();
       if (onChanged) await onChanged();
     } catch (err) { toastError(err.message); }
     setBusy(false);
+  };
+
+  const loadImpact = async () => {
+    setImpactBusy(true);
+    try {
+      setImpact(await api.getPipelineImpact(tenderId));
+    } catch (err) { toastError(err.message); }
+    setImpactBusy(false);
   };
 
   const archive = async (versionId) => {
@@ -98,6 +109,36 @@ export default function AgreedVersionsPanel({ tenderId, decidedCount = 0, onChan
           {busy ? 'Формирую…' : 'Сформировать версию из решений'}
         </button>
       </div>
+
+      {versions.some((v) => v.status === 'active') && (
+        <div className="space-y-2">
+          <button className="btn text-xs" disabled={impactBusy} onClick={loadImpact}>
+            {impactBusy ? 'Оцениваю…' : 'Что пересчитается при следующем анализе?'}
+          </button>
+          {impact && (
+            <div className="text-xs space-y-1 p-2 rounded border dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60">
+              {(impact.stages || []).map((s) => (
+                <div key={s.stage} className="flex items-center gap-2">
+                  <span className="w-20">Стадия {s.stage}:</span>
+                  {s.affected ? (
+                    <span className="text-amber-700 dark:text-amber-300">
+                      пересчёт {s.to_compute} из {s.total} частей
+                    </span>
+                  ) : (
+                    <span className="text-green-700 dark:text-green-300">
+                      не затронута — все {s.total} частей из кэша, без вызовов модели
+                    </span>
+                  )}
+                </div>
+              ))}
+              <div className="text-gray-500 dark:text-gray-400 pt-1">
+                Оценка, не гарантия: правка может сдвинуть нарезку частей, тогда
+                пересчёта потребует и хвост документа.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {versions.length > 0 && (
         <div className="space-y-2">

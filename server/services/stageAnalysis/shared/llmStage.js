@@ -249,6 +249,25 @@ async function runLlmStage(ctx, cfg) {
     };
   });
 
+  // Режим planOnly (карта затронутого, impactService): посчитать нарезку и
+  // хэши частей БЕЗ записи плана, без LLM и без истории. Результат уходит
+  // side-channel'ом (ctx.planReport), возврат — пустой список находок, чтобы
+  // обёртки стадий не менялись.
+  if (ctx.planOnly) {
+    ctx.planReport = {
+      total: prepared.length,
+      segments: prepared.map((p) => ({
+        index: p.idx,
+        key: p.seg.key || null,
+        heading_path: (p.seg.headingPath || []).join(' › ') || null,
+        chars: p.seg.chars ?? null,
+        tokens: p.seg.tokens ?? null,
+        input_hash: p.hash,
+      })),
+    };
+    return [];
+  }
+
   // План нарезки в analysis_segments: статус каждой части виден снаружи и
   // переживает завершение задания (в отличие от чекпойнта задачи).
   const store = ctx.segmentStore || null;

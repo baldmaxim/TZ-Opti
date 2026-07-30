@@ -151,6 +151,33 @@ async function getCompleted(tenderId, stage, index, inputHash, { revisionId = nu
   return Array.isArray(findings) ? findings : null;
 }
 
+// КРОСС-РЕВИЗИОННЫЙ поиск: completed-часть с ТЕМ ЖЕ input_hash и той же
+// версией конфигурации из ЛЮБОЙ хранимой ревизии, независимо от segment_index
+// (нарезка новой ревизии могла сдвинуться). Безопасно: в кэше лежат СЫРЫЕ
+// находки модели (цитаты без координат) — локализация выполняется после подъёма
+// из кэша против текущих блоков (llmStage), чужие координаты не переносятся.
+// Это и есть селективный пересчёт: изменённые части новой согласованной версии
+// считаются заново, нетронутые поднимаются из кэша прошлой ревизии.
+async function getCompletedByHash(tenderId, stage, inputHash, { configVersion = undefined } = {}) {
+  if (!inputHash) return null;
+  const params = [tenderId, stage, inputHash];
+  let configFilter = '';
+  if (configVersion !== undefined) {
+    configFilter = 'AND config_version IS NOT DISTINCT FROM ?';
+    params.push(configVersion || null);
+  }
+  const row = await db.queryOne(
+    `SELECT findings_json FROM analysis_segments
+      WHERE tender_id = ? AND analysis_stage = ? AND input_hash = ? AND status = 'completed'
+        ${configFilter}
+      ORDER BY updated_at DESC LIMIT 1`,
+    ...params,
+  );
+  if (!row) return null;
+  const findings = safeParse(row.findings_json);
+  return Array.isArray(findings) ? findings : null;
+}
+
 async function saveCache(tenderId, stage, index, { findings, revisionId = null, configVersion = null, runId = null } = {}) {
   const list = Array.isArray(findings) ? findings : [];
   await db.queryRun(
@@ -382,7 +409,16 @@ function makeStageSegmentStore({
       await planRunSegments(runId, tenderId, stage, { revisionId, configVersion, segments });
       return n;
     }, 0),
-    getCompleted: (index, hash) => guard('read', () => getCompleted(tenderId, stage, index, hash, scope)),
+    getCompleted: (index, hash) => guard('read', async () => {
+      const exact = await getCompleted(tenderId, stage, index, hash, scope);
+      if (exact) return exact;
+      // Каскад: часть с тем же входом, посчитанная для ДРУГОЙ ревизии
+      // (селективный пересчёт после согласованной версии). Найденное дублируем
+      // в кэш текущей ревизии — следующий запуск попадёт точным ключом.
+      const foreign = await getCompletedByHash(tenderId, stage, hash, scope);
+      if (foreign) await saveCache(tenderId, stage, index, { findings: foreign, ...scope });
+      return foreign;
+    }),
     // Часть засчитана без обращения к модели (кэш ревизии или чекпойнт задачи) —
     // в истории прогона это видно отдельным source, а не выдаётся за расчёт.
     markReused: (index, count, source = SOURCE.CACHE) => guard(
@@ -407,6 +443,7 @@ module.exports = {
   planCache,
   pruneCache,
   getCompleted,
+  getCompletedByHash,
   saveCache,
   invalidateCache,
   getCacheSegment,

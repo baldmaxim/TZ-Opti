@@ -630,7 +630,9 @@ async function finishStage(tenderId, stage) {
 //   • снимает указатель pipeline: производный снимок собран из отозванных входов,
 //     показывать его как актуальный итог нельзя (его слои тоже остаются в БД);
 //   • возвращает workflow-состояние стадий (open / locked, current_stage);
-//   • чистит ПРОЕКЦИИ, а не историю: analysis_segments (кэш частей);
+//   • НИЧЕГО не удаляет физически: даже кэш частей (analysis_segments) остаётся —
+//     он скоуплен ревизией и гейтится input_hash, на нём держится селективный
+//     пересчёт;
 //   • пишет событие в журнал аудита (что снято, что сохранено).
 // Физическое удаление истории — только отдельной admin-командой
 // (services/admin/purgeService.js).
@@ -648,12 +650,11 @@ async function resetStage(tenderId, stage, { actor = null, requestId = null } = 
       'SELECT COUNT(*) AS c FROM issues WHERE tender_id = ? AND analysis_stage >= ?', tenderId, stage,
     );
 
-    // Проекции (не история): КЭШ частей ТЗ.
-    // analysis_run_segments (история выполнения частей по прогонам) НЕ трогаем —
-    // это история наравне с analysis_runs/issues/signals/решениями.
-    await tx.queryRun(
-      'DELETE FROM analysis_segments WHERE tender_id = ? AND analysis_stage >= ?', tenderId, stage,
-    );
+    // КЭШ частей (analysis_segments) НЕ чистим: он скоуплен ревизией документов
+    // и гейтится input_hash + config_version — рассинхрон с входом анализа
+    // невозможен, а удаление убивало бы селективный пересчёт (нетронутые части
+    // следующего прогона поднимаются из кэша без LLM). Точечный сброс части —
+    // retryStageSegment. analysis_run_segments (история) не трогается никогда.
 
     // Указатели: стадии ≥ N + производный pipeline-снимок. Прогоны архивируются,
     // но НЕ удаляются.
@@ -744,6 +745,7 @@ function countBy(arr, key) {
 
 module.exports = {
   STAGE_LABELS,
+  buildContextForStage,
   // чистые функции контракта результата (офлайн-тесты)
   classifyStageRun,
   canFinishStage,

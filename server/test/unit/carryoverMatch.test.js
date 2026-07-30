@@ -70,3 +70,26 @@ test('matchDecisionsToClusters: приоритет exact над place', () => {
   assert.equal(out[0].match, 'exact');
   assert.equal(out[0].cluster_id, 'c_exact');
 });
+
+// --- «Учтено в согласованной версии» (materialized) ---------------------------
+
+const { materializedKeySet, isMaterializedDecision } = require('../../services/analysisRuns/analysisRunsService');
+
+test('materializedKeySet: только текст-меняющие решения дают ключи', () => {
+  const set = materializedKeySet([
+    { decision: 'delete', cluster_id: 'c1', cluster_key: 'k1' },
+    { decision: 'edit', cluster_id: 'c2', cluster_key: null },
+    { decision: 'accept', cluster_id: 'c3', cluster_key: 'k3' }, // noop — текст не меняет
+  ]);
+  assert.ok(set.has('id:c1') && set.has('key:k1') && set.has('id:c2'));
+  assert.ok(!set.has('id:c3') && !set.has('key:k3'));
+});
+
+test('isMaterializedDecision: совпадение по cluster_id ИЛИ cluster_key, accept — никогда', () => {
+  const set = materializedKeySet([{ decision: 'remove_from_scope', cluster_id: 'c1', cluster_key: 'k1' }]);
+  assert.equal(isMaterializedDecision({ decision: 'remove_from_scope', cluster_id: 'c1' }, set), true);
+  assert.equal(isMaterializedDecision({ decision: 'delete', cluster_id: 'x', cluster_key: 'k1' }, set), true);
+  assert.equal(isMaterializedDecision({ decision: 'delete', cluster_id: 'x', cluster_key: 'y' }, set), false);
+  assert.equal(isMaterializedDecision({ decision: 'accept', cluster_id: 'c1' }, set), false);
+  assert.equal(isMaterializedDecision({ decision: 'delete', cluster_id: 'c1' }, new Set()), false);
+});

@@ -332,6 +332,11 @@ async function runMigration() {
   await ensureColumn('qa_entries', 'affects_kp', 'INTEGER DEFAULT 0');
   await ensureColumn('qa_entries', 'affects_contract', 'INTEGER DEFAULT 0');
   await ensureColumn('qa_entries', 'affects_schedule', 'INTEGER DEFAULT 0');
+  // Раунды импорта Q&A: записи не удаляются, а сменяют статус (active |
+  // superseded | cancelled); DEFAULT 'active' бэкфиллит существующие строки.
+  await ensureColumn('qa_entries', 'qa_import_id', 'TEXT');
+  await ensureColumn('qa_entries', 'status', "TEXT DEFAULT 'active'");
+  await ensureColumn('qa_entries', 'supersedes_entry_id', 'TEXT');
 
   // Отчёт структурного импорта документа (сейчас — ВОР, services/vor):
   // сколько позиций, по каким листам, где найдена шапка, предупреждения.

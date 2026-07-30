@@ -98,7 +98,14 @@ async function buildContextForStage(tenderId, stage, { runId, configVersion = nu
     ctx.checklist = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ?', tenderId);
   }
   if (stage === 2) {
-    ctx.qaEntries = await db.queryAll('SELECT * FROM qa_entries WHERE tender_id = ? ORDER BY order_idx ASC', tenderId);
+    // Только АКТИВНЫЕ записи: superseded сменились новым ответом, cancelled
+    // отменены инженером — их модели не показываем (история остаётся в БД).
+    ctx.qaEntries = await db.queryAll(
+      `SELECT * FROM qa_entries
+        WHERE tender_id = ? AND COALESCE(status, 'active') = 'active'
+        ORDER BY order_idx ASC`,
+      tenderId,
+    );
     // Таблица характеристик — второй справочник принятого (значения, принятые
     // компанией в расчёт). Стадия 2 сверяет ТЗ и с Q&A-решениями, и с ней.
     ctx.characteristics = await db.queryAll(
@@ -414,7 +421,10 @@ async function runStageWork(tenderId, stage, control, { runId, documentsRevision
     throw badRequest(`OPENAI_API_KEY не настроен на сервере. Стадия ${stage} (LLM-агент) недоступна.`);
   }
   if (stage === 2) {
-    const qaCountRow = await db.queryOne('SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?', tenderId);
+    const qaCountRow = await db.queryOne(
+      `SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ? AND COALESCE(status, 'active') = 'active'`,
+      tenderId,
+    );
     let qaCount = Number(qaCountRow?.c || 0);
     if (!qaCount) {
       // qa_entries пуст — пробуем авто-импортировать из загруженного на вкладке
@@ -428,9 +438,9 @@ async function runStageWork(tenderId, stage, control, { runId, documentsRevision
       );
       if (qaDoc?.file_path) {
         try {
-          await importQaXlsx(tenderId, qaDoc.file_path);
+          await importQaXlsx(tenderId, qaDoc.file_path, { originalName: qaDoc.name || null });
           const recheck = await db.queryOne(
-            'SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ?',
+            `SELECT COUNT(*) as c FROM qa_entries WHERE tender_id = ? AND COALESCE(status, 'active') = 'active'`,
             tenderId,
           );
           qaCount = Number(recheck?.c || 0);

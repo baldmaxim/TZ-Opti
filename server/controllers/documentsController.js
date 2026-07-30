@@ -70,7 +70,10 @@ exports.upload = async (req, res) => {
   setImmediate(async () => {
     try {
       if (docType === 'qa') {
-        await importQaXlsx(tenderId, req.file.path);
+        // Одношаговый импорт: новый раунд qa_imports, записи добавляются
+        // diff-ом (повтор того же файла не плодит дублей). Характеристики
+        // импорт НЕ трогает никогда.
+        await importQaXlsx(tenderId, req.file.path, { originalName: req.file.originalname || null });
         await db.queryRun(
           `UPDATE documents SET processing_status = 'extracted' WHERE id = ?`,
           id,

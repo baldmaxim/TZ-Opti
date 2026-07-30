@@ -143,9 +143,11 @@ async function autoLinkAll(tenderId, options = {}) {
     p.tokenSet = new Set(meaningfulTokens(p.text));
   }
 
+  // Привязываем только АКТИВНЫЕ записи: superseded/cancelled в анализ не идут,
+  // их привязки (если были) сохраняются как история.
   const where = overwrite
-    ? 'WHERE tender_id = ?'
-    : "WHERE tender_id = ? AND (tz_clause IS NULL OR TRIM(tz_clause) = '')";
+    ? "WHERE tender_id = ? AND COALESCE(status, 'active') = 'active'"
+    : "WHERE tender_id = ? AND (tz_clause IS NULL OR TRIM(tz_clause) = '') AND COALESCE(status, 'active') = 'active'";
   const entries = await db.queryAll(`SELECT * FROM qa_entries ${where}`, tenderId);
 
   // IDF-штраф для абзацев-«магнитов».

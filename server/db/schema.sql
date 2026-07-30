@@ -131,10 +131,35 @@ CREATE TABLE IF NOT EXISTS qa_entries (
   accepted_decision  TEXT,
   order_idx          INTEGER DEFAULT 0,
   imported_at        TEXT NOT NULL,
+  -- Раунды импорта: записи не удаляются, а сменяют статус.
+  qa_import_id        TEXT,                     -- раунд, который завёл запись (NULL — legacy/seed)
+  status              TEXT DEFAULT 'active',    -- 'active' | 'superseded' | 'cancelled'
+  supersedes_entry_id TEXT,                     -- явная связь «новый ответ → отменяемый»
   FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_qa_tender ON qa_entries(tender_id);
+
+-- РАУНДЫ импорта Q&A: каждый импорт — отдельная строка с номером и датой.
+-- Двухфазный поток: pending (предпросмотр diff) → applied | discarded.
+-- Снимок разбора файла (sheets_json) хранится в строке: apply пересчитывает
+-- diff против текущих активных записей уже без обращения к файлу.
+-- ИНВАРИАНТ: импорт Q&A никогда не трогает таблицу characteristics.
+CREATE TABLE IF NOT EXISTS qa_imports (
+  id                TEXT PRIMARY KEY,
+  tender_id         TEXT NOT NULL,
+  round_no          INTEGER NOT NULL,          -- 1,2,3… на тендер
+  source_file_path  TEXT,
+  original_name     TEXT,
+  sheets_json       TEXT,                      -- JSON: разбор всех листов (entries + пригодность)
+  summary_json      TEXT,                      -- JSON: сводка diff (preview) / применения (apply)
+  status            TEXT DEFAULT 'pending',    -- 'pending' | 'applied' | 'discarded'
+  created_at        TEXT NOT NULL,
+  applied_at        TEXT,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_imports_tender ON qa_imports(tender_id, round_no);
 
 CREATE TABLE IF NOT EXISTS characteristics (
   id                  TEXT PRIMARY KEY,

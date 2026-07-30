@@ -2,7 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../services/api';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import EmptyState from '../../components/ui/EmptyState';
+import QaImportDiff from '../../components/qa/QaImportDiff';
 import { useTenderStore } from '../../store/useTenderStore';
+
+const STATUS_META = {
+  active: null, // действующая запись — без бейджа
+  superseded: { label: 'заменён', cls: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400' },
+  cancelled: { label: 'отменён', cls: 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' },
+};
 
 const CONTOURS = [
   { key: 'affects_calc',     short: 'Р', title: 'Влияет на расчёт' },
@@ -21,7 +28,9 @@ export default function QaPage() {
   const [sectionFilter, setSectionFilter] = useState('');
   const [roundFilter, setRoundFilter] = useState('');
   const [tzFilter, setTzFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('active');
   const [search, setSearch] = useState('');
+  const [preview, setPreview] = useState(null); // pending-раунд импорта (diff)
   const fileRef = useRef(null);
   const clauseTimers = useRef({});
 
@@ -37,17 +46,49 @@ export default function QaPage() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [tenderId]);
 
+  // Двухфазный импорт: файл разбирается на сервере (все листы) и возвращается
+  // diff — применение только после явного подтверждения инженера.
   const handleUpload = async (file) => {
     if (!file) return;
     setBusy(true);
     try {
-      const result = await api.uploadQa(tenderId, file);
-      toastSuccess(`Загружено: ${result.qa_count} строк, ${result.sections_count} разделов`);
+      const p = await api.previewQaImport(tenderId, file);
+      setPreview(p);
       if (fileRef.current) fileRef.current.value = '';
+    } catch (err) { toastError(err.message); }
+    setBusy(false);
+  };
+
+  const handleApplyImport = async (sheets) => {
+    if (!preview) return;
+    setBusy(true);
+    try {
+      const r = await api.applyQaImport(tenderId, preview.import_id, sheets);
+      toastSuccess(
+        `Раунд ${r.round_no} применён: ${r.new} новых, ${r.answer_changed} изменённых ответов, ${r.unchanged} без изменений`,
+      );
+      setPreview(null);
       await load();
       await Promise.all([refreshDocuments(), refreshTender()]);
     } catch (err) { toastError(err.message); }
     setBusy(false);
+  };
+
+  const handleDiscardImport = async () => {
+    if (!preview) return;
+    setBusy(true);
+    try {
+      await api.discardQaImport(tenderId, preview.import_id);
+      setPreview(null);
+      toastSuccess('Раунд импорта отменён — данные не изменились');
+    } catch (err) { toastError(err.message); }
+    setBusy(false);
+  };
+
+  // Отмена/восстановление ответа инженером (superseded управляется импортом).
+  const toggleCancelled = (entry) => {
+    const next = (entry.status || 'active') === 'cancelled' ? 'active' : 'cancelled';
+    patchEntry(entry.id, { status: next });
   };
 
   const handleAutoLink = async (overwrite) => {
@@ -100,9 +141,14 @@ export default function QaPage() {
     return [...s];
   }, [qaEntries]);
 
+  const activeEntries = useMemo(
+    () => qaEntries.filter((q) => (q.status || 'active') === 'active'),
+    [qaEntries],
+  );
+
   const stats = useMemo(() => {
     const t = { reflected: 0, contradicts: 0, calc: 0, kp: 0, contract: 0, schedule: 0, anyImpact: 0, linked: 0 };
-    for (const q of qaEntries) {
+    for (const q of activeEntries) {
       if (q.tz_clause && q.tz_clause.trim()) t.linked += 1;
       if (q.tz_reflected) t.reflected += 1;
       if (q.tz_contradicts) t.contradicts += 1;
@@ -113,11 +159,13 @@ export default function QaPage() {
       if (q.affects_calc || q.affects_kp || q.affects_contract || q.affects_schedule) t.anyImpact += 1;
     }
     return t;
-  }, [qaEntries]);
+  }, [activeEntries]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return qaEntries.filter((q) => {
+      const status = q.status || 'active';
+      if (statusFilter && statusFilter !== 'all' && status !== statusFilter) return false;
       if (sectionFilter && q.section !== sectionFilter) return false;
       if (roundFilter && q.round_label !== roundFilter) return false;
       if (tzFilter === 'contradicts' && !q.tz_contradicts) return false;
@@ -130,7 +178,7 @@ export default function QaPage() {
       }
       return true;
     });
-  }, [qaEntries, sectionFilter, roundFilter, tzFilter, search]);
+  }, [qaEntries, sectionFilter, roundFilter, tzFilter, statusFilter, search]);
 
   return (
     <div className="space-y-4">
@@ -139,7 +187,7 @@ export default function QaPage() {
           <div className="min-w-0">
             <h3 className="font-semibold text-sm">Форма «Вопрос-ответ» (.xlsx)</h3>
             <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-              Импорт формата «Форма ВОПРОС-ОТВЕТ»: «№ / Дата / Дата получения ответа / Раздел / Вопрос / Ответ / Принятые решения». Шапка распознаётся автоматически. Каждая загрузка <strong>полностью заменяет</strong> ранее загруженные строки. Экспорт выгружает текущую таблицу (с разметкой анализа) обратно в .xlsx.
+              Импорт формата «Форма ВОПРОС-ОТВЕТ»: «№ / Дата / Дата получения ответа / Раздел / Вопрос / Ответ / Принятые решения». Шапка распознаётся автоматически, разбираются все листы файла. Каждая загрузка — <strong>новый раунд</strong>: перед применением показывается сравнение с текущей таблицей, прежние вопросы и ответы не удаляются (изменившийся ответ помечает старый как «заменён»). Экспорт выгружает текущую таблицу (с разметкой анализа) обратно в .xlsx.
             </p>
           </div>
           {qaEntries.length > 0 && (
@@ -166,10 +214,23 @@ export default function QaPage() {
         </div>
       </div>
 
+      {preview && (
+        <QaImportDiff
+          preview={preview}
+          busy={busy}
+          onApply={handleApplyImport}
+          onDiscard={handleDiscardImport}
+        />
+      )}
+
       {qaEntries.length > 0 && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="Всего вопросов" value={qaEntries.length} />
+            <Stat
+              label="Действующих вопросов"
+              value={activeEntries.length}
+              hint={qaEntries.length !== activeEntries.length ? `всего с историей: ${qaEntries.length}` : null}
+            />
             <Stat label="Уникальных разделов" value={sections.length} />
             <Stat label="Отражено в ТЗ" value={stats.reflected} hint={`${stats.contradicts} противоречий`} />
             <Stat label="Влияют на КП/расчёт/договор/график" value={stats.anyImpact} hint={`Р${stats.calc} К${stats.kp} Д${stats.contract} Г${stats.schedule}`} />
@@ -231,6 +292,12 @@ export default function QaPage() {
                 <option value="not_reflected">○ Не отражено (есть пункт ТЗ)</option>
                 <option value="no_clause">— Без привязки к ТЗ</option>
               </select>
+              <select className="input" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                <option value="active">Действующие</option>
+                <option value="superseded">Заменённые</option>
+                <option value="cancelled">Отменённые</option>
+                <option value="all">Все (с историей)</option>
+              </select>
             </div>
           )}
         </div>
@@ -259,11 +326,20 @@ export default function QaPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((q, i) => (
-                  <tr key={q.id} className="border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 align-top">
+                {filtered.map((q, i) => {
+                  const status = q.status || 'active';
+                  const meta = STATUS_META[status];
+                  return (
+                  <tr
+                    key={q.id}
+                    className={`border-t dark:border-gray-700 border-gray-100 dark:border-gray-700 align-top ${status !== 'active' ? 'opacity-60' : ''}`}
+                  >
                     <td className="table-cell text-gray-400 dark:text-gray-500">{i + 1}</td>
                     <td className="table-cell text-gray-700 dark:text-gray-300 whitespace-nowrap">{q.section || '—'}</td>
-                    <td className="table-cell whitespace-pre-wrap">{q.question || '—'}</td>
+                    <td className="table-cell whitespace-pre-wrap">
+                      {meta && <span className={`tag text-[10px] mr-1 ${meta.cls}`}>{meta.label}</span>}
+                      {q.question || '—'}
+                    </td>
                     <td className="table-cell whitespace-pre-wrap text-gray-700 dark:text-gray-300">{q.answer || '—'}</td>
                     <td className="table-cell">
                       <textarea
@@ -303,7 +379,7 @@ export default function QaPage() {
                       </div>
                     </td>
                     <td className="table-cell">
-                      <div className="flex gap-1">
+                      <div className="flex gap-1 items-center">
                         {CONTOURS.map((c) => (
                           <Pill
                             key={c.key}
@@ -315,13 +391,24 @@ export default function QaPage() {
                             {c.short}
                           </Pill>
                         ))}
+                        {status !== 'superseded' && (
+                          <Pill
+                            on={status === 'cancelled'}
+                            onClick={() => toggleCancelled(q)}
+                            color="red"
+                            title={status === 'cancelled' ? 'Вернуть ответ в действующие' : 'Отменить ответ (не пойдёт в анализ)'}
+                          >
+                            ✕
+                          </Pill>
+                        )}
                       </div>
                     </td>
                     {rounds.length > 1 && (
                       <td className="table-cell text-gray-500 dark:text-gray-400 whitespace-nowrap">{q.round_label || '—'}</td>
                     )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

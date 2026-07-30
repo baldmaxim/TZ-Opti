@@ -3,18 +3,56 @@
 const db = require('../db/connection');
 const { badRequest, notFound } = require('../utils/errors');
 const { newId } = require('../utils/ids');
-const { importQaXlsx } = require('../services/qaImportService');
+const qaImport = require('../services/qaImportService');
 const { exportQaXlsx } = require('../services/qaExportService');
 const { autoLinkAll } = require('../services/qaTzLinkService');
 const { populateStandardCharacteristics } = require('../services/characteristicsTemplate');
 
+async function ensureTender(tenderId) {
+  const t = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
+  if (!t) throw notFound('Тендер не найден');
+}
+
+// Одношаговый импорт (без предпросмотра): все пригодные листы, раунд создаётся
+// и сразу применяется. Основной путь UI — двухфазный (preview → apply ниже).
 exports.import = async (req, res) => {
   if (!req.file) throw badRequest('Файл не передан');
-  const tenderId = req.params.id;
-  const tender = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
-  if (!tender) throw notFound('Тендер не найден');
-  const result = await importQaXlsx(tenderId, req.file.path);
+  await ensureTender(req.params.id);
+  const result = await qaImport.importQaXlsx(req.params.id, req.file.path, {
+    originalName: req.file.originalname || null,
+  });
   res.status(201).json({ ok: true, ...result });
+};
+
+// Фаза 1: разбор файла + diff против активных записей. Ничего не применяет —
+// создаёт раунд qa_imports в статусе pending и возвращает предпросмотр.
+exports.previewImport = async (req, res) => {
+  if (!req.file) throw badRequest('Файл не передан');
+  await ensureTender(req.params.id);
+  const preview = await qaImport.previewQaImport(req.params.id, req.file.path, {
+    originalName: req.file.originalname || null,
+  });
+  res.status(201).json(preview);
+};
+
+// Фаза 2: применить раунд. body: { sheets: ['Лист1', …] } — выбранные листы
+// (по умолчанию все пригодные).
+exports.applyImport = async (req, res) => {
+  await ensureTender(req.params.id);
+  const sheetNames = Array.isArray(req.body && req.body.sheets) ? req.body.sheets : null;
+  const result = await qaImport.applyQaImport(req.params.id, req.params.importId, { sheetNames });
+  res.json(result);
+};
+
+exports.discardImport = async (req, res) => {
+  await ensureTender(req.params.id);
+  res.json(await qaImport.discardQaImport(req.params.id, req.params.importId));
+};
+
+// Список раундов импорта (номер, дата, статус, сводка).
+exports.listImports = async (req, res) => {
+  await ensureTender(req.params.id);
+  res.json({ items: await qaImport.listQaImports(req.params.id) });
 };
 
 exports.listQa = async (req, res) => {
@@ -66,9 +104,21 @@ exports.autoLink = async (req, res) => {
 
 exports.patchQaEntry = async (req, res) => {
   const { id, entryId } = req.params;
-  const existing = await db.queryOne('SELECT id FROM qa_entries WHERE id = ? AND tender_id = ?', entryId, id);
+  const existing = await db.queryOne('SELECT id, status FROM qa_entries WHERE id = ? AND tender_id = ?', entryId, id);
   if (!existing) throw notFound('Запись Q&A не найдена');
   const data = {};
+  // Статус меняется инженером только между active и cancelled; superseded
+  // управляется импортом (новая запись ссылается на отменяемую) и руками не ставится.
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'status')) {
+    const status = String(req.body.status || '');
+    if (!['active', 'cancelled'].includes(status)) {
+      throw badRequest('Допустимые статусы: active, cancelled (superseded ставит импорт)');
+    }
+    if ((existing.status || 'active') === 'superseded') {
+      throw badRequest('Запись superseded: её сменил новый ответ, статус меняется только импортом');
+    }
+    data.status = status;
+  }
   for (const f of QA_PATCH_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(req.body || {}, f)) {
       const v = req.body[f];

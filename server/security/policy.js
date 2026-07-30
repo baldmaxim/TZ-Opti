@@ -92,6 +92,10 @@ const RULES = [
 
   // --- Q&A и характеристики ---------------------------------------------
   r('POST', '/tenders/:tenderId/qa/import', 'document.upload', 'qa.import', WRITE, 'tender', 'qa'),
+  r('POST', '/tenders/:tenderId/qa/imports/preview', 'document.upload', 'qa.import.preview', WRITE, 'tender', 'qa'),
+  r('GET', '/tenders/:tenderId/qa/imports', 'tender.read', 'qa.imports.list', READ, 'tender', 'qa'),
+  r('POST', '/tenders/:tenderId/qa/imports/:importId/apply', 'document.upload', 'qa.import.apply', WRITE, 'tender', 'qa'),
+  r('POST', '/tenders/:tenderId/qa/imports/:importId/discard', 'document.upload', 'qa.import.discard', WRITE, 'tender', 'qa'),
   r('POST', '/tenders/:tenderId/qa/auto-link', 'setup.write', 'qa.autolink', WRITE, 'tender', 'qa'),
   r('GET', '/tenders/:tenderId/qa', 'tender.read', 'qa.list', READ, 'tender', 'qa'),
   r('GET', '/tenders/:tenderId/qa/export', 'export.perform', 'qa.export', EXPORT, 'tender', 'qa'),

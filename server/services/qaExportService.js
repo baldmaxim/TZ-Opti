@@ -8,10 +8,13 @@
 const XLSX = require('xlsx');
 const db = require('../db/connection');
 
+const STATUS_LABEL = { active: 'действует', superseded: 'заменён', cancelled: 'отменён' };
+
 const COLUMNS = [
   { header: '№', get: (_q, i) => i + 1 },
   { header: 'Раздел', get: (q) => q.section || '' },
   { header: 'Раунд', get: (q) => q.round_label || '' },
+  { header: 'Статус', get: (q) => STATUS_LABEL[q.status || 'active'] || q.status || '' },
   { header: 'Вопрос', get: (q) => q.question || '' },
   { header: 'Ответ Заказчика', get: (q) => q.answer || '' },
   { header: 'Принятые решения', get: (q) => q.accepted_decision || '' },
@@ -36,7 +39,7 @@ async function exportQaXlsx(tenderId) {
   const sheet = XLSX.utils.aoa_to_sheet(aoa);
   // Разумная ширина колонок, чтобы файл открывался читаемым.
   sheet['!cols'] = [
-    { wch: 4 }, { wch: 18 }, { wch: 16 }, { wch: 50 }, { wch: 50 }, { wch: 40 },
+    { wch: 4 }, { wch: 18 }, { wch: 16 }, { wch: 10 }, { wch: 50 }, { wch: 50 }, { wch: 40 },
     { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 },
   ];
   const wb = XLSX.utils.book_new();

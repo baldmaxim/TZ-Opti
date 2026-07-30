@@ -133,6 +133,17 @@ export const api = {
     fd.append('file', file);
     return request(`/tenders/${tenderId}/qa/import`, { method: 'POST', body: fd, isForm: true });
   },
+  // Раунды импорта Q&A: предпросмотр diff → применение выбранных листов / отмена.
+  previewQaImport: (tenderId, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return request(`/tenders/${tenderId}/qa/imports/preview`, { method: 'POST', body: fd, isForm: true });
+  },
+  applyQaImport: (tenderId, importId, sheets = null) =>
+    request(`/tenders/${tenderId}/qa/imports/${importId}/apply`, { method: 'POST', body: sheets ? { sheets } : {} }),
+  discardQaImport: (tenderId, importId) =>
+    request(`/tenders/${tenderId}/qa/imports/${importId}/discard`, { method: 'POST' }),
+  listQaImports: (tenderId) => request(`/tenders/${tenderId}/qa/imports`),
   listQa: (tenderId) => request(`/tenders/${tenderId}/qa`),
   qaExportUrl: (tenderId) => `${BASE}/tenders/${tenderId}/qa/export`,
   patchQaEntry: (tenderId, entryId, data) => request(`/tenders/${tenderId}/qa/${entryId}`, { method: 'PATCH', body: data }),

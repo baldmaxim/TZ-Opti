@@ -19,8 +19,7 @@ export default function ResetStageModal({ open, stage, onConfirm, onClose, busy 
         Вы открываете на пересмотр стадию {stage}. Это <strong>каскадно сбросит</strong> все стадии после неё:
       </p>
       <ul className="list-disc ml-5 mt-2 text-sm text-gray-700 dark:text-gray-300">
-        <li>будут удалены замечания и решения стадий ≥ {stage};</li>
-        <li>будут удалены применённые исключения фрагментов ТЗ;</li>
+        <li>результаты стадий ≥ {stage} будут сняты с актуальных (уйдут в архив);</li>
         <li>анализ нужно будет запустить заново.</li>
       </ul>
       <p className="text-sm text-gray-700 dark:text-gray-300 mt-3">Продолжить?</p>

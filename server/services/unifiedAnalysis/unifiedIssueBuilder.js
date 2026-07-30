@@ -18,7 +18,7 @@
 
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
-const { getActiveTzText } = require('../tzActiveTextService');
+const { getTzText } = require('../tzActiveTextService');
 const { backfillSignalsFromIssues } = require('../signals/signalWriter');
 const { actionFamily } = require('../analysis/actions');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
@@ -340,7 +340,7 @@ async function buildDraftIssues(tenderId, runId) {
   // Исходный текст ТЗ — для резолва фрагмента по абзацу, когда сигнал безъякорный.
   let tzBlockText = null;
   try {
-    const tz = await getActiveTzText(tenderId);
+    const tz = await getTzText(tenderId);
     if (tz && !tz.missingMd && Array.isArray(tz.blocks)) {
       const byIndex = new Map(tz.blocks.map((b) => [b.index, b.text]));
       tzBlockText = (idx) => byIndex.get(idx) || null;

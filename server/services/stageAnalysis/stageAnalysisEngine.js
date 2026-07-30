@@ -1,17 +1,11 @@
 'use strict';
 
 const db = require('../../db/connection');
-const { newId, nowIso } = require('../../utils/ids');
 const { badRequest } = require('../../utils/errors');
 const {
-  getActiveTzText,
+  getTzText,
   getDocumentByType,
-  getTzMdDocument,
-  computeRevisionId,
-  nodeIdFor,
-  hashText,
 } = require('../tzActiveTextService');
-const { parseMdToBlocks } = require('../mdParser');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { runStage1Llm } = require('./stage1_llm');
 const { runStage2Llm } = require('./stage2_llm');
@@ -59,7 +53,7 @@ const STAGE_LABELS = {
 async function buildContextForStage(tenderId, stage, { runId, configVersion = null } = {}) {
   const {
     document: tzDoc, paragraphs, blocks, activeText, rawText, revisionId, missingMd,
-  } = await getActiveTzText(tenderId, stage);
+  } = await getTzText(tenderId);
   if (missingMd || !tzDoc) {
     throw badRequest('Загрузите .md-копию ТЗ в слот «ТЗ → Markdown» — анализ ведётся только по .md.');
   }
@@ -606,72 +600,9 @@ async function finishStage(tenderId, stage) {
       `Стадию ${stage} нельзя завершить: успешного анализа не было (статус «${cur}»). Запустите анализ заново.`,
     );
   }
-  // Применяем tz_excluded_ranges для решений delete / remove_from_scope.
-  // Только issues АКТУАЛЬНОГО stage-прогона (архивные прогоны не влияют).
-  const stageRunId = await analysisRuns.getActiveStageRunId(tenderId, stage);
-  const closeIssues = stageRunId ? await db.queryAll(
-    `
-      SELECT i.*, d.decision, d.target_text FROM issues i
-      LEFT JOIN review_decisions d ON d.issue_id = i.id
-      WHERE i.tender_id = ? AND i.analysis_stage = ? AND i.analysis_run_id = ?
-    `,
-    tenderId,
-    stage,
-    stageRunId,
-  ) : [];
-
-  // Привязка исключений к КОНКРЕТНОЙ ревизии ТЗ: считаем revisionId текущего
-  // документа и стабильные node_id / хэш текста по абзацу. Так исключения этой
-  // версии не применятся к следующей загруженной версии ТЗ (см. getActiveTzText).
-  const tzDoc = await getTzMdDocument(tenderId);
-  const revisionId = tzDoc ? computeRevisionId(tzDoc) : null;
-  const tzBlocks = tzDoc ? await parseMdToBlocks(tzDoc.extracted_text || '') : [];
-  const blockByIndex = new Map(tzBlocks.map((b) => [b.index, b]));
-
+  // Чистый гейт статусов: вход анализа неизменяем, решения инженера на текст
+  // следующих стадий не влияют (влияние — через согласованную версию ТЗ).
   await db.transaction(async (tx) => {
-    for (const issue of closeIssues) {
-      const isDelete = issue.review_status === 'accepted'
-        && (issue.decision === 'delete' || issue.decision === 'remove_from_scope');
-      if (isDelete && issue.paragraph_index != null && issue.char_start != null && issue.char_end != null) {
-        // Если инженер удалил только ПОДЧАСТЬ фрагмента — исключаем из активного
-        // текста (для следующих стадий) ровно её, а не весь пункт.
-        let cStart = issue.char_start;
-        let cEnd = issue.char_end;
-        const part = (issue.target_text || '').trim();
-        if (part && issue.source_fragment) {
-          const i = issue.source_fragment.indexOf(part);
-          if (i !== -1) { cStart = issue.char_start + i; cEnd = cStart + part.length; }
-        }
-        // Стабильный id узла + хэш исходного (исключаемого) текста этой ревизии.
-        const block = blockByIndex.get(issue.paragraph_index) || null;
-        const nodeId = block ? nodeIdFor(block) : null;
-        const fragText = block
-          ? block.text.slice(Math.max(0, cStart), Math.max(0, cEnd))
-          : (issue.source_fragment || '');
-        const srcHash = hashText(fragText);
-        await tx.queryRun(
-          `
-          INSERT INTO tz_excluded_ranges (
-            id, tender_id, source_document_id, document_revision_id, node_id, source_text_hash,
-            paragraph_index, char_start, char_end, after_stage, source_issue_id, stale, needs_confirmation, created_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
-        `,
-          newId(),
-          tenderId,
-          issue.source_document_id || null,
-          revisionId,
-          nodeId,
-          srcHash,
-          issue.paragraph_index,
-          cStart,
-          cEnd,
-          stage,
-          issue.id,
-          nowIso(),
-        );
-      }
-    }
     await setStageStatus(tenderId, stage, 'finished', tx);
     await unlockNextStage(tenderId, stage, tx);
   });
@@ -689,8 +620,7 @@ async function finishStage(tenderId, stage) {
 //   • снимает указатель pipeline: производный снимок собран из отозванных входов,
 //     показывать его как актуальный итог нельзя (его слои тоже остаются в БД);
 //   • возвращает workflow-состояние стадий (open / locked, current_stage);
-//   • чистит ПРОЕКЦИИ, а не историю: tz_excluded_ranges (исключения из активного
-//     текста — иначе текст остался бы урезанным) и analysis_segments (кэш частей);
+//   • чистит ПРОЕКЦИИ, а не историю: analysis_segments (кэш частей);
 //   • пишет событие в журнал аудита (что снято, что сохранено).
 // Физическое удаление истории — только отдельной admin-командой
 // (services/admin/purgeService.js).
@@ -708,10 +638,9 @@ async function resetStage(tenderId, stage, { actor = null, requestId = null } = 
       'SELECT COUNT(*) AS c FROM issues WHERE tender_id = ? AND analysis_stage >= ?', tenderId, stage,
     );
 
-    // Проекции (не история): исключения из активного текста и КЭШ частей ТЗ.
+    // Проекции (не история): КЭШ частей ТЗ.
     // analysis_run_segments (история выполнения частей по прогонам) НЕ трогаем —
     // это история наравне с analysis_runs/issues/signals/решениями.
-    await tx.queryRun('DELETE FROM tz_excluded_ranges WHERE tender_id = ? AND after_stage >= ?', tenderId, stage);
     await tx.queryRun(
       'DELETE FROM analysis_segments WHERE tender_id = ? AND analysis_stage >= ?', tenderId, stage,
     );

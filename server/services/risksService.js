@@ -5,7 +5,7 @@ const { newId, nowIso } = require('../utils/ids');
 const { STANDARD_RISKS } = require('../db/standardRisks');
 const { tenderTypeToContractKind } = require('./conditionsRenderer');
 const { findInParagraphs, normalize } = require('./stageAnalysis/shared/fragmentMatcher');
-const { getActiveTzText } = require('./tzActiveTextService');
+const { getTzText } = require('./tzActiveTextService');
 
 const CUSTOM_PREFIX = 'custom:';
 
@@ -208,7 +208,7 @@ async function removeCustom(tenderId, customId) {
 }
 
 async function getMatches(tenderId) {
-  const tz = await getActiveTzText(tenderId, 99);
+  const tz = await getTzText(tenderId);
   if (!tz.document) return {};
   const out = {};
   const tzNorm = normalize(tz.activeText || '');

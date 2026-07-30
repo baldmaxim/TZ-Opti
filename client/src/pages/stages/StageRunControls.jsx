@@ -32,7 +32,7 @@ export default function StageRunControls({ stage, status, hasSummary }) {
   };
 
   const onFinish = async () => {
-    if (!confirm('Завершить стадию? Решения с действием «удалить из ТЗ» применятся к активному тексту, и стадия N+1 разблокируется.')) return;
+    if (!confirm('Завершить стадию? Следующая стадия разблокируется.')) return;
     setBusy(true);
     try {
       await finishStage(stage);

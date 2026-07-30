@@ -10,7 +10,7 @@
 // Вид решения единый с docx/md — decisionModel.
 
 const db = require('../db/connection');
-const { getActiveTzText } = require('./tzActiveTextService');
+const { getTzText } = require('./tzActiveTextService');
 const { decisionVisual, resolveRedaction } = require('./review/decisionModel');
 const analysisRuns = require('./analysisRuns/analysisRunsService');
 const clusterReview = require('./review/clusterReviewService');
@@ -151,7 +151,7 @@ async function loadIssueAnnotations(tenderId) {
 async function renderReviewHtml(tenderId, { source = null } = {}) {
   const tender = await db.queryOne('SELECT * FROM tenders WHERE id = ?', tenderId);
   if (!tender) return '<h1>Тендер не найден</h1>';
-  const tz = await getActiveTzText(tenderId, 99);
+  const tz = await getTzText(tenderId);
   if (!tz.document) {
     return wrap(
       `<h1>${escapeHtml(tender.title)}</h1>`

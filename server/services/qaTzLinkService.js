@@ -2,7 +2,7 @@
 
 const db = require('../db/connection');
 const { tokens } = require('./stageAnalysis/shared/fragmentMatcher');
-const { getActiveTzText } = require('./tzActiveTextService');
+const { getTzText } = require('./tzActiveTextService');
 
 // Сшивка фрагментов в логические параграфы.
 // PDF-экстракция режет строки по визуальным линиям, поэтому одно предложение
@@ -130,7 +130,7 @@ function buildIdfMap(entries, paragraphs) {
 
 async function autoLinkAll(tenderId, options = {}) {
   const overwrite = !!options.overwrite;
-  const tz = await getActiveTzText(tenderId, 99);
+  const tz = await getTzText(tenderId);
   if (!tz.document) return { linked: 0, total: 0, skipped: 0, reason: 'no_tz' };
 
   // Сшивка параграфов из сырого текста ТЗ — компенсирует фрагментацию PDF.

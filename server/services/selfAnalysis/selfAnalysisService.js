@@ -24,7 +24,7 @@ const critic = require('../critic/criticService');
 const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
 const { listSignals } = require('../signals/signalWriter');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
-const { getActiveTzText } = require('../tzActiveTextService');
+const { getTzText } = require('../tzActiveTextService');
 const { runSelfAnalysisLlm, FINDING_TYPES, QC_STATUS } = require('../stageAnalysis/stage5_llm');
 const { makeStageSegmentStore } = require('../stageAnalysis/segments/segmentStore');
 const { FAMILY } = require('../analysis/actions');
@@ -324,7 +324,7 @@ async function buildSelfAnalysis(tenderId, runId) {
   let tzBlocks = [];
   let tzRevisionId = null;
   try {
-    const tz = await getActiveTzText(tenderId, 5);
+    const tz = await getTzText(tenderId);
     tzText = (tz && (tz.activeText || tz.rawText)) || '';
     tzBlocks = (tz && tz.blocks) || [];
     tzRevisionId = (tz && tz.revisionId) || null;

@@ -59,7 +59,7 @@ test('только .docx в слоте ТЗ → анализ не имеет в�
     text: 'Извлечённый из .docx текст — для семантического анализа НЕ используется.',
   });
 
-  const active = await tz.getActiveTzText(TENDER_ID, 1);
+  const active = await tz.getTzText(TENDER_ID);
   assert.equal(active.missingMd, true, 'при отсутствии .md анализ обязан сообщить об отсутствии входа');
   assert.equal(active.document, null, '.docx НЕ должен подставляться как источник анализа');
   assert.equal(active.activeText, '', 'активного текста ТЗ нет — анализ по .docx не ведётся');
@@ -74,7 +74,7 @@ test('.md в слоте ТЗ → он и есть источник анализ�
     text: '# 1. Объём работ\n\nПодрядчик выполняет монтаж по проекту.',
   });
 
-  const active = await tz.getActiveTzText(TENDER_ID, 1);
+  const active = await tz.getTzText(TENDER_ID);
   assert.equal(active.missingMd, false);
   assert.ok(active.document, 'должен быть найден документ ТЗ');
   assert.match(active.document.name, /\.md$/i, 'источник анализа — именно .md-копия');
@@ -87,7 +87,7 @@ test('и .md, и .docx вместе → источник анализа = .md (d
   await addDoc(db, { id: 'md-both-docx', name: 'ТЗ.docx', text: 'DOCX-текст (для экспорта).' });
   await addDoc(db, { id: 'md-both-md', name: 'ТЗ.md', text: '# Раздел\n\nMD-текст (для анализа).' });
 
-  const active = await tz.getActiveTzText(TENDER_ID, 1);
+  const active = await tz.getTzText(TENDER_ID);
   assert.equal(active.missingMd, false);
   assert.match(active.document.name, /\.md$/i, 'при наличии обоих форматов анализ берёт .md, а не .docx');
   assert.ok(active.activeText.includes('MD-текст'));

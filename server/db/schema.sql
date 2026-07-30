@@ -501,6 +501,10 @@ CREATE TABLE IF NOT EXISTS finding_qualification_decisions (
 CREATE INDEX IF NOT EXISTS idx_fq_decisions_cluster
   ON finding_qualification_decisions(tender_id, analysis_run_id, cluster_id);
 
+-- LEGACY (2026-07-30): демонтаж мутации активного текста — код таблицу больше
+-- НЕ пишет и НЕ читает. Вход анализа неизменяем; влияние решений инженера —
+-- через согласованную версию ТЗ (tz_agreed_versions). Таблица оставлена как
+-- история; физический DROP — отдельной поздней миграцией.
 CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
   id                   TEXT PRIMARY KEY,
   tender_id            TEXT NOT NULL,

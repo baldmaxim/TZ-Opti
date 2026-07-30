@@ -318,7 +318,7 @@ async function insertEvaluations(rows) {
 async function evaluateRun(tenderId, runId, { gateVersion = GATE_VERSION, trigger = 'api' } = {}) {
   // Ленивая загрузка: tzActiveTextService тянет mdParser — не грузим на импорте.
   // eslint-disable-next-line global-require
-  const { getActiveTzText } = require('../tzActiveTextService');
+  const { getTzText } = require('../tzActiveTextService');
 
   await requireRun(tenderId, runId);
   const clusters = await loadClustersForRun(tenderId, runId);
@@ -347,7 +347,7 @@ async function evaluateRun(tenderId, runId, { gateVersion = GATE_VERSION, trigge
 
   // ОБЯЗАТЕЛЬНЫЙ Markdown-вход: без .md ТЗ gate не считается по суррогату —
   // оценка фиксируется как evaluation_failed с явной причиной.
-  const tz = await getActiveTzText(tenderId);
+  const tz = await getTzText(tenderId);
   let rows = null;
   if (tz.missingMd) {
     rows = pending.map((c) => failedEvaluationRow(c, {

@@ -10,9 +10,9 @@
 //   2. ДВА ВОРКЕРА не создают дублей: одна стадия одной ревизии считается ровно
 //      один раз, сколько бы воркеров ни разбирало очередь и сколько бы раз
 //      инженер ни нажал «Запустить».
-//   3. НОВАЯ РЕВИЗИЯ ТЗ не получает исключения прошлой: удалённый в прошлой
-//      версии фрагмент снова попадает в анализ, а старые исключения помечаются
-//      требующими подтверждения.
+//   3. ВХОД АНАЛИЗА НЕИЗМЕНЯЕМ: решение инженера (delete) НЕ меняет текст,
+//      который видят следующие стадии, и не создаёт исключений; новая ревизия
+//      ТЗ считается заново, а не поднимается из кэша прошлой.
 //
 //   npm run test:acceptance      — без TEST_DATABASE_URL тесты SKIP
 //   npm run test:acceptance:ci   — без TEST_DATABASE_URL тесты ПАДАЮТ
@@ -181,16 +181,16 @@ test('два воркера и два нажатия «Запустить» не
   assert.equal(new Set(fragments).size, fragments.length, 'одна и та же находка не записана дважды');
 });
 
-// --- 3. Новая ревизия ТЗ не получает старые исключения ----------------------------
+// --- 3. Вход анализа неизменяем ---------------------------------------------------
 
-test('новая ревизия ТЗ не наследует исключения прошлой', OPTS, async (t) => {
+test('вход анализа неизменяем: решение инженера не меняет текст для следующих стадий', OPTS, async (t) => {
   const db = H.getDb();
   const { call } = await H.startApi(t);
   await H.startWorker(t);
   const llm = H.scriptedLlm(t);
   llm.respond((c) => H.findingFor(c));
 
-  const tenderId = await newTender(call, 'новая ревизия');
+  const tenderId = await newTender(call, 'неизменный вход');
   await H.uploadDocument(call, tenderId, { name: 'ТЗ.md', text: H.buildTzMarkdown() });
   await H.seedQaEntries(db, tenderId);
 
@@ -200,10 +200,11 @@ test('новая ревизия ТЗ не наследует исключени�
   const issues = (await call(`/api/tenders/${tenderId}/stages/1/issues`)).body.items;
   const target = issues[0];
   const removedFragment = target.source_fragment;
-  assert.ok(removedFragment, 'нужна находка с дословной цитатой — по ней считается исключение');
+  assert.ok(removedFragment, 'нужна находка с дословной цитатой');
 
-  // Инженер удаляет фрагмент из объёма и завершает стадию: фрагмент выходит из
-  // активного текста для следующих стадий (tz_excluded_ranges этой ревизии).
+  // Инженер принимает решение delete и завершает стадию. По новой архитектуре
+  // это НЕ трогает вход следующих стадий: влияние решений — только через
+  // согласованную версию ТЗ (tz_agreed_versions), а не через мутацию текста.
   const decision = await call(`/api/issues/${target.id}/decision`, {
     method: 'POST', body: { decision: 'delete', final_comment: 'Работа вне объёма ГП' },
   });
@@ -211,48 +212,38 @@ test('новая ревизия ТЗ не наследует исключени�
   assert.equal((await H.finishStage(call, tenderId, 1)).status, 200);
 
   const exclusions = await db.queryAll('SELECT * FROM tz_excluded_ranges WHERE tender_id = ?', tenderId);
-  assert.equal(exclusions.length, 1, 'решение delete обязано дать ровно одно исключение');
-  const revisionA = exclusions[0].document_revision_id;
-  assert.ok(revisionA, 'исключение обязано быть привязано к ревизии ТЗ');
-  assert.equal(Number(exclusions[0].stale), 0);
+  assert.equal(exclusions.length, 0, 'демонтаж мутации: finishStage не создаёт исключений');
 
-  // Стадия 2 на той же ревизии: удалённый фрагмент в модель НЕ уходит.
+  // Стадия 2 на той же ревизии: фрагмент ПО-ПРЕЖНЕМУ в промте — вход неизменяем.
   llm.reset();
   llm.respond(() => H.NO_FINDINGS);
   const stage2 = await H.runStageAndWait(call, tenderId, 2);
   assert.equal(stage2.outcome.status, 'completed');
   assert.ok(llm.callCount > 0, 'стадия 2 обязана была обратиться к модели');
   assert.ok(
-    !llm.seen.includes(removedFragment),
-    'исключение применено: удалённый фрагмент не попадает в анализ следующей стадии',
+    llm.seen.includes(removedFragment),
+    'вход анализа неизменяем: решение инженера не урезает текст следующей стадии',
   );
 
   // --- НОВАЯ ВЕРСИЯ ТЗ -----------------------------------------------------------
-  // Загружается вторая .md-копия (та же структура + новый раздел): это другая
-  // ревизия, координаты прошлых исключений к ней не относятся.
+  // Загружается вторая .md-копия (та же структура + новый раздел): другая ревизия
+  // обязана считаться заново, а не подниматься из кэша прошлой.
   await H.uploadDocument(call, tenderId, {
     name: 'ТЗ.md',
     text: `${H.buildTzMarkdown()}\n\n# 7. Раздел 7. Дополнительные требования\n\n7.1 Новый пункт версии 2. ${'Требования уточнены заказчиком. '.repeat(4)}`,
   });
+  // Дождаться асинхронного извлечения текста новой версии.
+  await H.waitFor(async () => {
+    const row = await db.queryOne(
+      `SELECT processing_status FROM documents WHERE tender_id = ? AND doc_type = 'tz'
+       ORDER BY uploaded_at DESC LIMIT 1`, tenderId,
+    );
+    return row && row.processing_status === 'extracted' ? row : null;
+  }, { what: 'извлечение текста новой версии ТЗ' });
 
-  // Пометка исключений идёт следом за извлечением текста новой версии.
-  const afterUpload = await H.waitFor(async () => {
-    const rows = await db.queryAll('SELECT * FROM tz_excluded_ranges WHERE tender_id = ?', tenderId);
-    return rows.length && Number(rows[0].stale) === 1 ? rows : null;
-  }, { what: 'пометка исключений прошлой ревизии' });
-  assert.equal(afterUpload.length, 1, 'исключения прошлой ревизии не удаляются — они помечаются');
-  assert.equal(Number(afterUpload[0].stale), 1, 'исключение прошлой ревизии обязано стать stale');
-  assert.equal(Number(afterUpload[0].needs_confirmation), 1, 'перенос исключения требует подтверждения инженером');
-  assert.equal(afterUpload[0].document_revision_id, revisionA, 'исключение осталось привязано к своей ревизии');
-
-  // Стадия 2 на НОВОЙ ревизии: ранее удалённый фрагмент снова в анализе.
   llm.reset();
   const stage2again = await H.runStageAndWait(call, tenderId, 2);
   assert.equal(stage2again.outcome.status, 'completed');
   assert.ok(llm.callCount > 0, 'новая ревизия обязана считаться заново, а не подниматься из кэша прошлой');
-  assert.ok(
-    llm.seen.includes(removedFragment),
-    'исключение прошлой ревизии НЕ применяется к новой версии ТЗ — фрагмент снова анализируется',
-  );
   assert.ok(llm.seen.includes('Новый пункт версии 2'), 'новая версия ТЗ действительно попала в анализ');
 });

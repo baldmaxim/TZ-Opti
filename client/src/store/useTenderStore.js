@@ -168,6 +168,24 @@ export const useTenderStore = create((set, get) => ({
     return result;
   },
 
+  // Ждёт завершения фонового ЗАДАНИЯ конвейера в очереди. Возвращает { job } с
+  // терминальным статусом (completed | failed | cancelled | interrupted),
+  // { navigated: true } при уходе с тендера (сервер досчитает сам) или null,
+  // если задание не создано. Прогресс задач показывается в analysisStep.
+  async _waitPipelineJob(jobId) {
+    const id = get().tenderId;
+    if (!id || !jobId) return null;
+    for (;;) {
+      await sleep(5000);
+      if (get().tenderId !== id) return { navigated: true };
+      let job;
+      try { job = await api.getJob(jobId); } catch { continue; } // временная сетевая ошибка
+      const p = job.progress || {};
+      if (p.total) set({ analysisStep: `Сборка кластеров… (${p.done || 0}/${p.total})` });
+      if (job.status !== 'queued' && job.status !== 'running') return { job };
+    }
+  },
+
   // Ждёт завершения фонового прогона стадии n (status !== 'running'). Возвращает
   // последний снимок /stages. Используется оркестратором runAnalysis.
   async _waitStage(n) {
@@ -259,21 +277,42 @@ export const useTenderStore = create((set, get) => ({
       } else {
         set({ analysisStep: 'Сборка кластеров…' });
         try {
-          const report = await api.runPipeline(id, { withSelfAnalysis });
-          if (report && report.ok) {
-            // {ok:true} может нести warnings (частичный QC): не рапортуем полный
-            // успех, если сборка неполная — берём статус контракта из отчёта.
-            pipelineStatus = report.status === ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
-              ? ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
-              : ANALYSIS_STATUS.COMPLETED;
-          } else if (report && report.blocked === 'inputs') {
-            // Сервер отверг набор входов (manifest) — итог не собран и указатель цел.
-            toastError(`Сборка итога отклонена сервером: ${report.error || 'входы не годятся'}.`);
-          } else if (report && report.stale_inputs) {
-            toastError('Итог не активирован: во время сборки изменились входы (стадии/документы). Повторите анализ.');
+          // Асинхронный режим (202 + задание очереди) вместо синхронного POST:
+          // тот держал HTTP-запрос всё время сборки (20+ минут на большом ТЗ)
+          // и рвался о server.requestTimeout — браузер показывал ошибку, хотя
+          // сервер успешно досчитывал. Теперь сборку ведёт воркер, клиент
+          // опрашивает задание; закрытая вкладка сборку не прерывает.
+          const queued = await api.runPipelineAsync(id, { withSelfAnalysis });
+          const wait = await get()._waitPipelineJob(queued && queued.job && queued.job.id);
+          if (!wait) {
+            toastError('Сборка кластеров не удалась: задание очереди не создано.');
+          } else if (wait.navigated) {
+            // Ушли с тендера — опрос остановлен, воркер досчитает и активирует сам.
+            aborted = ANALYSIS_STATUS.INTERRUPTED;
+          } else if (wait.job.status === 'cancelled') {
+            toastError('Сборка кластеров отменена.');
+          } else if (wait.job.status === 'interrupted') {
+            toastError('Сборка кластеров прервана (рестарт воркера) — повторите анализ.');
           } else {
-            const step = report && report.failed_step ? `: шаг «${report.failed_step}»` : '';
-            toastError(`Сборка кластеров не удалась${step}.`);
+            // Отчёт финализатора (пишется и при сбое шага — finalize always_run).
+            const report = wait.job.result || null;
+            if (report && report.ok) {
+              // {ok:true} может нести warnings (частичный QC): не рапортуем полный
+              // успех, если сборка неполная — берём статус контракта из отчёта.
+              pipelineStatus = report.status === ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+                ? ANALYSIS_STATUS.COMPLETED_WITH_WARNINGS
+                : ANALYSIS_STATUS.COMPLETED;
+            } else if (report && report.blocked === 'inputs') {
+              // Сервер отверг набор входов (manifest) — итог не собран и указатель цел.
+              toastError(`Сборка итога отклонена сервером: ${report.error || 'входы не годятся'}.`);
+            } else if (report && report.stale_inputs) {
+              toastError('Итог не активирован: во время сборки изменились входы (стадии/документы). Повторите анализ.');
+            } else {
+              const step = report && report.failed_step ? `: шаг «${report.failed_step}»` : '';
+              // Отчёта нет (begin не прошёл — например, негодные входы) — причина в job.error.
+              const detail = !report && wait.job.error ? ` — ${wait.job.error}` : '';
+              toastError(`Сборка кластеров не удалась${step}${detail}.`);
+            }
           }
         } catch (err) {
           toastError(`Сборка кластеров не удалась — ${err.message}`);

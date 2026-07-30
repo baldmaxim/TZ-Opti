@@ -31,6 +31,51 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_tender ON documents(tender_id);
 
+-- Карта сопоставления «требование ТЗ ↔ позиции ВОР» (Стадия 1): структурная
+-- связь требования с позициями ведомости (количества/единицы — ФАКТ ведомости),
+-- включённые/недостающие операции, исключения, примечания по единицам и
+-- количеству. Снимок прогона: одна строка на (analysis_run_id, match_key).
+CREATE TABLE IF NOT EXISTS requirement_matches (
+  id                    TEXT PRIMARY KEY,
+  tender_id             TEXT NOT NULL,
+  analysis_run_id       TEXT NOT NULL,
+  match_key             TEXT NOT NULL,   -- хэш нормализованной цитаты требования
+  requirement_fragment  TEXT NOT NULL,
+  section_path          TEXT,
+  coverage_status       TEXT NOT NULL,   -- covered | partial | not_covered | unclear
+  problem_type          TEXT,
+  positions             TEXT,            -- JSON: [{position_no, code, name, quantity, unit, verified, unit_mismatch, ...}]
+  operations_included   TEXT,            -- JSON: string[]
+  operations_missing    TEXT,            -- JSON: string[]
+  exclusions            TEXT,            -- JSON: string[]
+  unit_note             TEXT,
+  quantity_note         TEXT,
+  confidence            REAL,
+  created_at            TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_requirement_matches_run
+  ON requirement_matches(analysis_run_id, match_key);
+CREATE INDEX IF NOT EXISTS idx_requirement_matches_tender ON requirement_matches(tender_id);
+
+-- Подтверждение инженера по связи (переживает прогоны, ключ — match_key):
+-- confirmed | rejected | adjusted + заметка. Лексическая связь без
+-- подтверждения не считается доказательством количественного покрытия.
+CREATE TABLE IF NOT EXISTS requirement_match_confirmations (
+  id          TEXT PRIMARY KEY,
+  tender_id   TEXT NOT NULL,
+  match_key   TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  note        TEXT,
+  updated_at  TEXT NOT NULL,
+  updated_by  TEXT,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_requirement_match_confirm
+  ON requirement_match_confirmations(tender_id, match_key);
+
 CREATE TABLE IF NOT EXISTS work_checklist_items (
   id                TEXT PRIMARY KEY,
   tender_id         TEXT NOT NULL,
@@ -97,6 +142,47 @@ CREATE TABLE IF NOT EXISTS company_conditions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conditions_tender ON company_conditions(tender_id);
+
+-- Матрица покрытия существенных условий (Стадия 3): статус каждой темы
+-- (условие компании или тема покрытия) по итогам агрегирования всех частей ТЗ.
+-- Снимок прогона: одна строка на (analysis_run_id, topic_key), история прогонов
+-- сохраняется. Статусы агента: matches | contradicts | ambiguous | missing.
+CREATE TABLE IF NOT EXISTS condition_coverage (
+  id               TEXT PRIMARY KEY,
+  tender_id        TEXT NOT NULL,
+  analysis_run_id  TEXT NOT NULL,
+  topic_key        TEXT NOT NULL,   -- 'cond:<idx>' | 'topic:<slug>'
+  topic_name       TEXT NOT NULL,
+  kind             TEXT NOT NULL,   -- 'condition' | 'topic'
+  status           TEXT NOT NULL,
+  evidence         TEXT,            -- JSON: [{segment, status, fragment, section_path}]
+  resolution       TEXT,            -- предложенное действие для missing
+  criticality      TEXT,
+  created_at       TEXT NOT NULL,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_condition_coverage_run
+  ON condition_coverage(analysis_run_id, topic_key);
+CREATE INDEX IF NOT EXISTS idx_condition_coverage_tender ON condition_coverage(tender_id);
+
+-- Знание инженера о покрытии (переживает прогоны): «есть только в другом
+-- документе», «требует проверки проекта договора», «неприменимо к тендеру»
+-- + выбранное действие. Наложение поверх снимка агента при чтении.
+CREATE TABLE IF NOT EXISTS condition_coverage_overrides (
+  id          TEXT PRIMARY KEY,
+  tender_id   TEXT NOT NULL,
+  topic_key   TEXT NOT NULL,
+  status      TEXT,
+  resolution  TEXT,
+  note        TEXT,
+  updated_at  TEXT NOT NULL,
+  updated_by  TEXT,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_condition_coverage_override
+  ON condition_coverage_overrides(tender_id, topic_key);
 
 CREATE TABLE IF NOT EXISTS risk_templates (
   id              TEXT PRIMARY KEY,

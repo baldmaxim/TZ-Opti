@@ -17,6 +17,7 @@ const { buildDraftIssues } = require('../unifiedAnalysis/unifiedIssueBuilder');
 const { buildIssueReviews } = require('../critic/criticService');
 const { buildClusters } = require('../clustering/clusteringService');
 const { buildSelfAnalysis } = require('../selfAnalysis/selfAnalysisService');
+const { runChallengerStep } = require('./challengerStep');
 const { STATUS, severityOf } = require('../analysis/resultStatus');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const qualificationShadow = require('../qualification/qualificationShadowService');
@@ -31,13 +32,20 @@ const {
 } = require('./pipelineManifest');
 
 // Шаги прогона в порядке зависимости (каждый читает слой предыдущего).
-// optional: self-analysis — единственный шаг с LLM-вызовом, нужен не на каждой
-// пересборке, поэтому его можно отключить флагом withSelfAnalysis=false.
+// Опциональные шаги (LLM-вызовы, не нужны на каждой пересборке):
+//   challenger     — независимый поиск пропусков основных стадий поверх
+//                    СОБРАННЫХ кластеров (включается флагом withChallenger:
+//                    основной поток «Анализ ТЗ» включает его вместе с QC);
+//                    находки публикуются снимком Стадии 5 и пересборкой слоёв
+//                    становятся обычными замечаниями с решением инженера;
+//   self_analysis  — QC КАЧЕСТВА существующих кластеров (пропусков не ищет —
+//                    это работа challenger'а), флаг withSelfAnalysis.
 const PIPELINE_STEPS = [
   { key: 'draft_issues', label: 'Единый анализатор (draft_issues)', optional: false },
   { key: 'critic', label: 'Critic — значимость для ГП', optional: false },
   { key: 'clustering', label: 'Кластеризация замечаний', optional: false },
-  { key: 'self_analysis', label: 'Self-analysis — QC итога (Стадия 5)', optional: true },
+  { key: 'challenger', label: 'Challenger — независимый поиск пропусков (Стадия 5)', optional: true, flag: 'withChallenger' },
+  { key: 'self_analysis', label: 'Self-analysis — QC итога (Стадия 5)', optional: true, flag: 'withSelfAnalysis' },
 ];
 
 // Слои для статуса свежести — signals добавлены первым элементом как корень
@@ -52,9 +60,14 @@ const LAYER_TABLES = [
 
 // --- Чистое ядро (офлайн-тесты, без БД) --------------------------------------
 
-// Какие шаги войдут в прогон.
-function planSteps({ withSelfAnalysis = true } = {}) {
-  return PIPELINE_STEPS.filter((s) => withSelfAnalysis || !s.optional).map((s) => s.key);
+// Какие шаги войдут в прогон. withChallenger по умолчанию ВЫКЛЮЧЕН (шаг дорог:
+// LLM-скан + пересборка слоёв) — его явно включает вызывающий (контроллер
+// конвейера включает вместе с with_self_analysis, см. pipelineController).
+function planSteps({ withSelfAnalysis = true, withChallenger = false } = {}) {
+  const flags = { withSelfAnalysis, withChallenger };
+  return PIPELINE_STEPS
+    .filter((s) => !s.optional || flags[s.flag])
+    .map((s) => s.key);
 }
 
 // Свёртка отчёта прогона: ok — все шаги done; failed_step — первый сбой.
@@ -205,6 +218,7 @@ const STEP_RUNNERS = {
   draft_issues: buildDraftIssues,
   critic: buildIssueReviews,
   clustering: buildClusters,
+  challenger: runChallengerStep,
   self_analysis: buildSelfAnalysis,
 };
 

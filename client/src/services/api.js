@@ -93,9 +93,18 @@ export const api = {
     return request(`/tenders/${tenderId}/documents`, { method: 'POST', body: fd, isForm: true });
   },
   deleteDocument: (id) => request(`/documents/${id}`, { method: 'DELETE' }),
+  // Манифест тендерного пакета: сводка + правка манифест-полей документа.
+  getManifest: (tenderId) => request(`/tenders/${tenderId}/manifest`),
+  updateDocumentManifest: (documentId, patch) =>
+    request(`/documents/${documentId}/manifest`, { method: 'PATCH', body: patch }),
   documentDownloadUrl: (id) => `${BASE}/documents/${id}/download`,
   // Извлечённый текст документа (для панели исходного ТЗ на рецензии).
   getDocumentText: (id) => request(`/documents/${id}/text`),
+
+  // Карта сопоставления «требование ТЗ ↔ позиции ВОР» (Стадия 1) + решение инженера.
+  getVorRequirements: (tenderId) => request(`/tenders/${tenderId}/vor/requirements`),
+  confirmVorRequirement: (tenderId, matchKey, patch) =>
+    request(`/tenders/${tenderId}/vor/requirements/${encodeURIComponent(matchKey)}`, { method: 'PATCH', body: patch }),
 
   // Локи разделов подготовки
   getSetupLocks: (tenderId) => request(`/tenders/${tenderId}/setup/locks`),
@@ -118,6 +127,10 @@ export const api = {
   patchCondition: (tenderId, idx, data) => request(`/tenders/${tenderId}/conditions/${idx}`, { method: 'PATCH', body: data }),
   removeConditionOverride: (tenderId, idx) => request(`/tenders/${tenderId}/conditions/${idx}/override`, { method: 'DELETE' }),
   resetConditions: (tenderId) => request(`/tenders/${tenderId}/conditions/reset`, { method: 'POST' }),
+  // Матрица покрытия существенных условий (Стадия 3) + override инженера.
+  getConditionsCoverage: (tenderId) => request(`/tenders/${tenderId}/conditions/coverage`),
+  setCoverageOverride: (tenderId, topicKey, patch) =>
+    request(`/tenders/${tenderId}/conditions/coverage/${encodeURIComponent(topicKey)}`, { method: 'PATCH', body: patch }),
 
   // Риски — стандартная библиотека + кастомные + per-tender overlay
   listRisks: (tenderId) => request(`/tenders/${tenderId}/risks`),

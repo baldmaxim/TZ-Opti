@@ -8,13 +8,16 @@
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 
-// Стадия -> тип сигнала. Стадия 5 (самоанализ) пока не эмитит сигналов:
-// в схеме слоя для неё нет типа (добавим на следующих шагах архитектуры).
+// Стадия -> тип сигнала. Стадия 5 эмитит сигналы challenger-находок
+// (независимый поиск пропусков, pipeline/challengerStep): его цитатные находки
+// идут в конвейер тем же путём, что у стадий 1–4. QC-заметки самоанализа
+// сигналов по-прежнему не порождают (они пишутся в self_analysis_results).
 const STAGE_SIGNAL_TYPE = {
   1: 'coverage',
   2: 'decision',
   3: 'condition',
   4: 'risk',
+  5: 'challenger',
 };
 
 function signalTypeForStage(stage) {

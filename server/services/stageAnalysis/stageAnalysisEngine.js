@@ -5,6 +5,7 @@ const { badRequest } = require('../../utils/errors');
 const {
   getTzText,
   getDocumentByType,
+  getDocumentsByType,
 } = require('../tzActiveTextService');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { runStage1Llm } = require('./stage1_llm');
@@ -87,14 +88,28 @@ async function buildContextForStage(tenderId, stage, { runId, configVersion = nu
     }),
   };
   if (stage === 1) {
-    const vorDoc = await getDocumentByType(tenderId, 'vor');
-    // Основной путь — СТРУКТУРНЫЕ позиции ВОР (vor_items): номер, шифр, раздел,
-    // наименование, единица, количество, координаты. ensureVorItems ленивo
-    // импортирует таблицу, если её загрузили до появления структурного импорта.
-    // vorText остаётся фолбэком для ВОР не таблицей (pdf/docx).
-    const { items } = await ensureVorItems(tenderId, vorDoc);
+    // ВСЕ актуальные по манифесту ВОР (корпус 1, корпус 2, …) — superseded-
+    // редакции исключены. Основной путь — СТРУКТУРНЫЕ позиции ВОР (vor_items):
+    // номер, шифр, раздел, наименование, единица, количество, координаты.
+    // ensureVorItems лениво импортирует таблицы, загруженные до появления
+    // структурного импорта. vorText остаётся фолбэком для ВОР не таблицей
+    // (pdf/docx); при нескольких ВОР части размечаются заголовком документа.
+    const vorDocs = await getDocumentsByType(tenderId, 'vor');
+    const { items } = await ensureVorItems(tenderId, vorDocs);
     ctx.vorItems = items;
-    ctx.vorText = vorDoc ? (vorDoc.extracted_text || '') : '';
+    ctx.vorDocuments = vorDocs.map((d) => ({
+      id: d.id, name: d.name, revision_label: d.revision_label || null,
+      applicability: d.applicability || null,
+    }));
+    ctx.vorText = vorDocs
+      .map((d) => {
+        const text = d.extracted_text || '';
+        if (vorDocs.length === 1) return text;
+        const scope = d.applicability ? ` (${d.applicability})` : '';
+        return text ? `=== ВОР: ${d.name}${scope} ===\n${text}` : '';
+      })
+      .filter(Boolean)
+      .join('\n\n');
     ctx.checklist = await db.queryAll('SELECT * FROM work_checklist_items WHERE tender_id = ?', tenderId);
   }
   if (stage === 2) {
@@ -133,6 +148,13 @@ async function buildContextForStage(tenderId, stage, { runId, configVersion = nu
 // падает, а прогон стадии завершается как failed (finalizeStageRun — тот же
 // прогон, что был начат до оркестратора).
 async function runStage5SelfAnalysis(ctx) {
+  // Механизмы Стадии 5 разделены (см. pipeline/challengerStep +
+  // selfAnalysisService): challenger — независимый поиск пропусков, QC —
+  // качество существующих кластеров. ЗДЕСЬ (legacy-запуск стадии 5 как стадии)
+  // идёт ТОЛЬКО QC: challenger-шаг сам публикует снимок стадии 5, и его прогон
+  // столкнулся бы с прогоном ЭТОЙ стадии (вытеснение/перехват указателя).
+  // Challenger включает конвейер основного потока (pipelineController:
+  // with_self_analysis → with_challenger).
   const report = await runPipeline(ctx.tenderId, { withSelfAnalysis: true });
   if (!report.ok) {
     const reason = report.error
@@ -430,12 +452,7 @@ async function runStageWork(tenderId, stage, control, { runId, documentsRevision
       // qa_entries пуст — пробуем авто-импортировать из загруженного на вкладке
       // «Документация» Q&A-файла. Это типичный кейс: пользователь залил .xlsx,
       // но импорт по какой-то причине не отработал.
-      const qaDoc = await db.queryOne(
-        `SELECT * FROM documents
-         WHERE tender_id = ? AND doc_type = 'qa'
-         ORDER BY uploaded_at DESC LIMIT 1`,
-        tenderId,
-      );
+      const qaDoc = await getDocumentByType(tenderId, 'qa');
       if (qaDoc?.file_path) {
         try {
           await importQaXlsx(tenderId, qaDoc.file_path, { originalName: qaDoc.name || null });

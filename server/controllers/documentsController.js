@@ -10,16 +10,49 @@ const { importQaXlsx } = require('../services/qaImportService');
 const { importVorFile } = require('../services/vor/vorImportService');
 const { isSpreadsheet } = require('../services/vor/vorReader');
 const { UPLOAD_ROOT } = require('../middleware/upload');
+const manifestService = require('../services/documents/manifestService');
+const { normalizeManifestPatch, annotateDocuments } = require('../services/documents/manifestModel');
 
-const ALLOWED_TYPES = ['tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa', 'other'];
+// Типы тендерного пакета: помимо входов анализа — договор, график и
+// спецификации (манифест хранит их редакции/статусы для будущей междокументной
+// сверки).
+const ALLOWED_TYPES = [
+  'tz', 'pd_rd', 'vor', 'checklist', 'company_conditions', 'risks', 'qa',
+  'contract', 'schedule', 'specification', 'other',
+];
 
 exports.listForTender = async (req, res) => {
   const tenderId = req.params.id;
   const rows = await db.queryAll(
-    'SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status FROM documents WHERE tender_id = ? ORDER BY uploaded_at DESC',
+    `SELECT id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment,
+            processing_status, revision_label, actuality_status, doc_date, conflict_priority,
+            applicability, supersedes_document_id
+       FROM documents WHERE tender_id = ? ORDER BY uploaded_at DESC`,
     tenderId,
   );
-  res.json({ items: rows });
+  // manifest_status/superseded_by — эффективный статус с учётом обратных
+  // ссылок замены (у самого документа статус мог остаться не обновлённым).
+  res.json({ items: annotateDocuments(rows) });
+};
+
+// GET /api/tenders/:id/manifest — манифест тендерного пакета: группы по типам,
+// статусы актуальности, цепочки замены, предупреждения разметки.
+exports.getManifest = async (req, res) => {
+  const tenderId = req.params.id;
+  const tenderRow = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
+  if (!tenderRow) throw notFound('Тендер не найден');
+  res.json(await manifestService.getManifest(tenderId));
+};
+
+// PATCH /api/documents/:id/manifest — редакция / статус / дата / приоритет /
+// применимость / ссылка замены.
+exports.updateManifest = async (req, res) => {
+  const { document, manifest } = await manifestService.updateDocumentManifest(
+    req.params.id,
+    req.body || {},
+    { actor: req.principal || null, requestId: req.requestId || null },
+  );
+  res.json({ ok: true, document, manifest });
 };
 
 exports.upload = async (req, res) => {
@@ -36,6 +69,14 @@ exports.upload = async (req, res) => {
   const version = (req.body.version || '1').toString();
   const comment = (req.body.comment || '').toString();
 
+  // Манифест-поля можно задать сразу при загрузке (редакция, дата документа,
+  // применимость к корпусу/разделу, статус). Кривое значение — 400 до записи.
+  const manifestKeys = ['revision_label', 'doc_date', 'applicability', 'actuality_status', 'conflict_priority'];
+  const rawManifest = {};
+  for (const k of manifestKeys) if (k in req.body) rawManifest[k] = req.body[k];
+  const { value: mf, errors: mfErrors } = normalizeManifestPatch(rawManifest);
+  if (mfErrors.length) throw badRequest(mfErrors.join('; '));
+
   // Происхождение файла считает middleware/upload.js (карантин → проверки):
   // SHA-256, размер и вердикт антивируса сохраняются вместе с документом.
   const scan = req.fileScan || {};
@@ -43,8 +84,9 @@ exports.upload = async (req, res) => {
   await db.queryRun(
     `
     INSERT INTO documents (id, tender_id, doc_type, name, file_path, mime_type, version, uploaded_at, comment, processing_status,
-                           sha256, size_bytes, av_status, uploaded_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                           sha256, size_bytes, av_status, uploaded_by,
+                           revision_label, actuality_status, doc_date, conflict_priority, applicability)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     id,
     tenderId,
@@ -59,6 +101,11 @@ exports.upload = async (req, res) => {
     scan.size || null,
     scan.av_status || null,
     (req.principal && req.principal.subject) || null,
+    mf.revision_label || null,
+    mf.actuality_status || 'actual',
+    mf.doc_date || null,
+    mf.conflict_priority ?? null,
+    mf.applicability || null,
   );
 
   const row = await db.queryOne(
@@ -147,6 +194,9 @@ exports.remove = async (req, res) => {
   if (row.doc_type === 'vor') {
     await db.queryRun('DELETE FROM vor_items WHERE tender_id = ? AND document_id = ?', row.tender_id, id);
   }
+  // Ссылки замены на удаляемый документ снимаем — висячая ссылка в манифесте
+  // выглядела бы как предупреждение без способа его убрать.
+  await db.queryRun('UPDATE documents SET supersedes_document_id = NULL WHERE supersedes_document_id = ?', id);
   await db.queryRun('DELETE FROM documents WHERE id = ?', id);
   res.json({ ok: true });
 };

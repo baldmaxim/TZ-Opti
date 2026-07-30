@@ -147,7 +147,7 @@ test('detectContradictions: легаси хвост |edit трактуется �
 
 // --- normalizeLlmFinding: валидация типа / cluster_id / confidence --------------
 
-test('normalizeLlmFinding отбрасывает несуществующий cluster_id и чужой тип', () => {
+test('normalizeLlmFinding: cluster_id обязателен — вывод без валидного id отбрасывается', () => {
   const ids = new Set(['c1']);
   const ok = normalizeLlmFinding(
     { finding_type: 'weak_cluster', cluster_id: 'c1', comment: 'x', suggested_improvement: 'y', confidence: 0.8 },
@@ -156,13 +156,18 @@ test('normalizeLlmFinding отбрасывает несуществующий cl
   assert.equal(ok.cluster_id, 'c1');
   assert.equal(ok.source, 'llm');
 
-  const bad = normalizeLlmFinding(
-    { finding_type: 'nonsense', cluster_id: 'ghost', comment: 'x', confidence: 5 },
+  // Прежде такие выводы становились «глобальными» (cluster_id=null) и не
+  // попадали в bundle ни одного кластера — терялись для инженера. Теперь LLM-QC
+  // оценивает только существующие кластеры (пропуски ищет challenger).
+  assert.equal(normalizeLlmFinding({ finding_type: 'weak_cluster', cluster_id: 'ghost', comment: 'x' }, ids), null);
+  assert.equal(normalizeLlmFinding({ finding_type: 'weak_cluster', cluster_id: '', comment: 'x' }, ids), null);
+
+  const coerced = normalizeLlmFinding(
+    { finding_type: 'nonsense', cluster_id: 'c1', comment: 'x', confidence: 5 },
     ids,
   );
-  assert.equal(bad.finding_type, 'missed_coverage'); // дефолт при неизвестном типе
-  assert.equal(bad.cluster_id, null); // несуществующий id → null
-  assert.equal(bad.confidence, 1); // 5 → клампится в [0,1]
+  assert.equal(coerced.finding_type, 'weak_cluster'); // дефолт при неизвестном типе — кластерный
+  assert.equal(coerced.confidence, 1); // 5 → клампится в [0,1]
 });
 
 // --- assembleFindings: дедуп эвристик + LLM ------------------------------------

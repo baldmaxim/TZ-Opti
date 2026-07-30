@@ -3,8 +3,13 @@
 // Импорт ВОР в БД: файл xls/xlsx → позиции (vor_items) + отчёт разбора.
 //
 // Одна позиция ведомости = одна строка таблицы со всеми координатами (лист,
-// строка Excel, адреса ячеек). Импорт ИДЕМПОТЕНТЕН: позиции тендера заменяются
-// целиком в одной транзакции.
+// строка Excel, адреса ячеек). Импорт ИДЕМПОТЕНТЕН и СКОУПЛЕН ДОКУМЕНТОМ:
+// в одной транзакции заменяются позиции ЭТОГО файла, а не всего тендера —
+// в тендере одновременно живёт несколько ВОР (корпус 1, корпус 2, …), и
+// переимпорт одного корпуса не стирает ведомость другого.
+//
+// Чтение (loadVorItems) отдаёт позиции только АКТУАЛЬНЫХ по манифесту
+// документов ВОР: superseded-редакция исключается вместе со своими позициями.
 
 const fs = require('fs');
 const db = require('../../db/connection');
@@ -12,6 +17,7 @@ const { newId, nowIso } = require('../../utils/ids');
 const { badRequest } = require('../../utils/errors');
 const { parseGrids } = require('./vorParser');
 const { isSpreadsheet, readGridsFromFile } = require('./vorReader');
+const { selectActiveDocuments } = require('../documents/manifestModel');
 
 const INSERT_CHUNK = 200;
 
@@ -97,7 +103,12 @@ async function importVorFile(tenderId, { documentId = null, filePath }) {
   }
   const importedAt = nowIso();
   await db.transaction(async (tx) => {
-    await tx.queryRun('DELETE FROM vor_items WHERE tender_id = ?', tenderId);
+    // Скоуп удаления — ЭТОТ документ: позиции других ВОР тендера не трогаем.
+    // IS NOT DISTINCT FROM покрывает и legacy-строки без document_id.
+    await tx.queryRun(
+      'DELETE FROM vor_items WHERE tender_id = ? AND document_id IS NOT DISTINCT FROM ?',
+      tenderId, documentId || null,
+    );
     await insertItems(tx, parsed.items, { tenderId, documentId, importedAt });
   });
 
@@ -130,6 +141,7 @@ function mapRow(row) {
   };
   return {
     id: row.id,
+    document_id: row.document_id || null,
     order_idx: row.order_idx,
     sheet_name: row.sheet_name || '',
     sheet_index: row.sheet_index,
@@ -151,32 +163,70 @@ function mapRow(row) {
   };
 }
 
+// Актуальные по манифесту документы ВОР тендера (в порядке релевантности).
+async function activeVorDocuments(tenderId) {
+  const docs = await db.queryAll('SELECT * FROM documents WHERE tender_id = ?', tenderId);
+  return selectActiveDocuments(docs, 'vor');
+}
+
+// Позиции ВСЕХ актуальных ВОР тендера. Позиции superseded-редакций остаются в
+// БД (история), но в анализ и API не попадают. Legacy-строки без document_id
+// (импорт до скоупинга) считаются актуальными. Порядок: документы в порядке
+// манифеста, внутри документа — порядок листа.
 async function loadVorItems(tenderId) {
   const rows = await db.queryAll(
     'SELECT * FROM vor_items WHERE tender_id = ? ORDER BY order_idx ASC',
     tenderId,
   );
-  return rows.map(mapRow);
+  const active = await activeVorDocuments(tenderId);
+  const rank = new Map(active.map((d, i) => [d.id, i]));
+  return rows
+    .map(mapRow)
+    .filter((it) => !it.document_id || rank.has(it.document_id))
+    .sort((a, b) => {
+      const ra = a.document_id ? rank.get(a.document_id) : rank.size;
+      const rb = b.document_id ? rank.get(b.document_id) : rank.size;
+      return ra - rb || a.order_idx - b.order_idx;
+    });
 }
 
-// Ленивая самопочинка: позиций нет, а документ ВОР — таблица на диске →
-// импортируем прямо сейчас. Нужно для ВОР, загруженных до появления
-// структурного импорта: инженеру не приходится перезаливать файл.
-// Ошибка импорта НЕ роняет анализ — стадия 1 продолжит на текстовом фолбэке.
-async function ensureVorItems(tenderId, vorDoc) {
+// Ленивая самопочинка: у актуального документа ВОР нет своих позиций, а файл —
+// таблица на диске → импортируем прямо сейчас. Нужно для ВОР, загруженных до
+// появления структурного импорта (и для скоупинга по документам). Принимает
+// один документ или список; ошибка импорта НЕ роняет анализ — стадия 1
+// продолжит на текстовом фолбэке.
+async function ensureVorItems(tenderId, vorDocOrDocs) {
+  const vorDocs = (Array.isArray(vorDocOrDocs) ? vorDocOrDocs : [vorDocOrDocs]).filter(Boolean);
+  if (!vorDocs.length) return { items: await loadVorItems(tenderId), imported: false };
+
+  const counts = await db.queryAll(
+    'SELECT document_id, COUNT(*) AS c FROM vor_items WHERE tender_id = ? GROUP BY document_id',
+    tenderId,
+  );
+  const haveItems = new Set(counts.filter((r) => Number(r.c) > 0).map((r) => r.document_id || null));
+
+  let imported = false;
+  const errors = [];
+  for (const doc of vorDocs) {
+    if (haveItems.has(doc.id)) continue;
+    // Legacy: позиции без document_id уже есть, и это единственный ВОР —
+    // не плодим дубли поверх них.
+    if (haveItems.has(null) && vorDocs.length === 1) continue;
+    if (!isSpreadsheet(doc.name || doc.file_path, doc.mime_type)) continue;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await importVorFile(tenderId, { documentId: doc.id, filePath: doc.file_path });
+      imported = true;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[vor] отложенный импорт ВОР не удался (${doc.id}): ${err.message}`);
+      errors.push(err.message);
+    }
+  }
   const items = await loadVorItems(tenderId);
-  if (items.length || !vorDoc) return { items, imported: false };
-  if (!isSpreadsheet(vorDoc.name || vorDoc.file_path, vorDoc.mime_type)) {
-    return { items, imported: false };
-  }
-  try {
-    await importVorFile(tenderId, { documentId: vorDoc.id, filePath: vorDoc.file_path });
-    return { items: await loadVorItems(tenderId), imported: true };
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[vor] отложенный импорт ВОР не удался (${vorDoc.id}): ${err.message}`);
-    return { items, imported: false, error: err.message };
-  }
+  const out = { items, imported };
+  if (errors.length) out.error = errors.join('; ');
+  return out;
 }
 
 async function deleteVorItems(tenderId) {
@@ -189,6 +239,7 @@ module.exports = {
   parseVorFile,
   loadVorItems,
   ensureVorItems,
+  activeVorDocuments,
   deleteVorItems,
   unitSummary,
 };

@@ -10,16 +10,14 @@ const { renderReviewMd } = require('../services/mdReview/renderer');
 const { dedupeExportDecisions } = require('../services/review/consolidation');
 const clusterReview = require('../services/review/clusterReviewService');
 const analysisRuns = require('../services/analysisRuns/analysisRunsService');
+const { pickPrimaryDocument } = require('../services/documents/manifestModel');
 
 async function getTzOriginal(tenderId) {
   // Для экспорта в .docx нужен именно .docx-файл (не .md и не .pdf).
-  // Слот ТЗ может содержать оба формата параллельно — выбираем только .docx.
-  return db.queryOne(
-    `SELECT * FROM documents
-     WHERE tender_id = ? AND doc_type = 'tz' AND LOWER(name) LIKE '%.docx'
-     ORDER BY uploaded_at DESC LIMIT 1`,
-    tenderId,
-  );
+  // Слот ТЗ может содержать оба формата параллельно — выбираем только .docx,
+  // актуальный по манифесту пакета (superseded-редакция не экспортируется).
+  const docs = await db.queryAll('SELECT * FROM documents WHERE tender_id = ?', tenderId);
+  return pickPrimaryDocument(docs, 'tz', { match: /\.docx$/i });
 }
 
 // Legacy-fallback loader: решения по issues (review_decisions.issue_id). Используется

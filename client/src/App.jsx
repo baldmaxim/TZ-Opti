@@ -14,6 +14,7 @@ import AnalysisRunPage from './pages/analysis/AnalysisRunPage';
 import SummaryPage from './pages/result/SummaryPage';
 import ReviewPage from './pages/result/ReviewPage';
 import ExportPage from './pages/result/ExportPage';
+import VorMatchingPage from './pages/result/VorMatchingPage';
 import SignalsPage from './pages/debug/SignalsPage';
 import DraftIssuesPage from './pages/debug/DraftIssuesPage';
 import IssueReviewsPage from './pages/debug/IssueReviewsPage';
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="setup/risks" element={<RisksPage />} />
           <Route path="setup/qa" element={<QaPage />} />
           <Route path="summary" element={<SummaryPage />} />
+          <Route path="vor-matching" element={<VorMatchingPage />} />
           {/* Legacy / admin: прежний 5-стадийный хаб и пер-стадийные страницы (не в основном flow) */}
           <Route path="legacy/stages" element={<AnalysisOverview />} />
           <Route path="stage/:n" element={<StagePage />} />

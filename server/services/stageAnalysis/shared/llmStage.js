@@ -377,7 +377,9 @@ async function runLlmStage(ctx, cfg) {
   const mapped = [];
   results.forEach((arr, idx) => {
     for (const raw of arr || []) {
-      const m = mapFinding ? mapFinding(raw) : { ...raw };
+      // idx вторым аргументом: стадии с побочным учётом (матрица покрытия
+      // Стадии 3) знают, из какой части ТЗ пришла находка.
+      const m = mapFinding ? mapFinding(raw, idx) : { ...raw };
       if (!m) continue;
       m.segments = [idx];
       mapped.push(m);

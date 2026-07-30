@@ -55,7 +55,10 @@ async function enqueueStageAnalysis(tenderId, stage, opts = {}) {
 // (иначе прогон навсегда останется в статусе running).
 async function enqueuePipeline(tenderId, opts = {}) {
   const { documentsRevisionId, configVersion } = await snapshotContext(tenderId);
-  const keys = planSteps({ withSelfAnalysis: opts.withSelfAnalysis !== false });
+  const keys = planSteps({
+    withSelfAnalysis: opts.withSelfAnalysis !== false,
+    withChallenger: Boolean(opts.withChallenger),
+  });
   const tasks = [
     { taskKey: 'begin', taskType: 'pipeline_begin', seq: 0, maxAttempts: 3, payload: {} },
     ...keys.map((key, i) => ({
@@ -77,7 +80,12 @@ async function enqueuePipeline(tenderId, opts = {}) {
     createdBy: opts.createdBy || null,
     // mode пишем в payload задания: begin-задача может исполняться в другом
     // процессе, а режим (production | debug) обязан быть тем же, что запросили.
-    payload: { with_self_analysis: opts.withSelfAnalysis !== false, steps: keys, mode: resolveMode(opts) },
+    payload: {
+      with_self_analysis: opts.withSelfAnalysis !== false,
+      with_challenger: Boolean(opts.withChallenger),
+      steps: keys,
+      mode: resolveMode(opts),
+    },
     busyMessage: 'Пересборка конвейера уже выполняется. Дождитесь завершения.',
     tasks,
   });

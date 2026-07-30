@@ -16,8 +16,9 @@
 //      старый прогон остаётся активным и не архивированным, кандидат не
 //      активирован, workflow не 'reviewing', частичных строк нет, чужие
 //      прогоны не тронуты.
-//   3. Границы: стадии 1–4 без сигналов не публикуются, стадия 5 публикуется без
-//      них; завершённый / проваленный / архивированный кандидат, чужой тендер,
+//   3. Границы: стадии 1–5 без сигналов при находках не публикуются (стадия 5 —
+//      challenger-сигналы; пустой её снимок публикуется с 0 сигналов);
+//      завершённый / проваленный / архивированный кандидат, чужой тендер,
 //      несуществующий и уже опубликованный прогон отклоняются без записи.
 
 // Настройки читаются модулями при загрузке — задаём ДО require() движка.
@@ -412,17 +413,46 @@ test('стадии 1–4: публикация без signals отклоняет
   }
 });
 
-test('стадия 5: публикуется без signals (QC сигналов не эмитит)', OPTS, async () => {
+test('стадия 5: пустой challenger-снимок публикуется с 0 сигналов, находки дают сигналы', OPTS, async () => {
+  // «Независимая проверка пропусков ничего не нашла» — валидный снимок: 0 находок,
+  // 0 сигналов (общее правило «пустые сигналы допустимы при 0 находок»).
   const ctx = await resetScenario({ stage: 5 });
   let report = null;
   await ctx.db.transaction(async (tx) => {
-    report = await publishStageResult({ tx, ...publishArgs(ctx, { issues: [], signals: null }) });
+    report = await publishStageResult({ tx, ...publishArgs(ctx, { issues: [], signals: (r) => r }) });
   });
-  assert.equal(report.signals.skipped, true);
+  assert.equal(report.signals.written, 0);
   assert.equal(await analysisRuns.getActiveStageRunId(TENDER_ID, 5), ctx.newRunId);
   assert.equal((await analysisRuns.getRun(ctx.newRunId)).status, 'completed');
   assert.equal(await workflowStatus(ctx.db, 5), 'reviewing');
   assert.equal(await count(ctx.db, 'analysis_signals', ctx.newRunId), 0);
+
+  // Challenger-находки — снимок С СИГНАЛАМИ (тип 'challenger'): именно через них
+  // пропуски становятся обычными замечаниями конвейера.
+  const ctx2 = await resetScenario({ stage: 5 });
+  await ctx2.db.transaction(async (tx) => {
+    await publishStageResult({
+      tx,
+      ...publishArgs(ctx2, {
+        issues: [{
+          problem_type: 'пропущенный_риск',
+          source_fragment: 'Подрядчик обязан выполнить пусконаладку всех систем.',
+          paragraph_index: 3,
+          basis: 'ПНР не выделена в объёме и не оценена — прямой недоучёт.',
+          criticality: 'high',
+          suggested_action: 'clarify',
+        }],
+        signals: (records) => records,
+      }),
+    });
+  });
+  assert.equal(await count(ctx2.db, 'analysis_signals', ctx2.newRunId), 1);
+  const sig = await ctx2.db.queryOne(
+    'SELECT signal_type, analysis_stage FROM analysis_signals WHERE analysis_run_id = ?',
+    ctx2.newRunId,
+  );
+  assert.equal(sig.signal_type, 'challenger');
+  assert.equal(Number(sig.analysis_stage), 5);
 });
 
 // --- 4. Непубликуемые кандидаты -----------------------------------------------------

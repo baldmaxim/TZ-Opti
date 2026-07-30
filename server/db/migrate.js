@@ -131,6 +131,14 @@ async function backfillAnalysisSnapshots() {
     const s = {};
     const count = async (sql) => Number((await tx.queryRun(sql)).changes || 0);
 
+    // Миграцию могут запустить НЕСКОЛЬКО процессов одновременно (сервер +
+    // отдельный воркер на старте, параллельные тестовые файлы). Backfill из
+    // нескольких зависимых шагов (вставка синтетических прогонов → разметка
+    // строк по ним) должен идти строго по одному: транзакционный advisory-lock
+    // сериализует конкурентов, второй просто дождётся и увидит IS NULL-драйверы
+    // уже пустыми.
+    await tx.queryRun(`SELECT pg_advisory_xact_lock(hashtext('tzopti:migration:backfill'))`);
+
     // 1. Указатель стадии по РЕАЛЬНОМУ прогону — там, где указателя ещё нет. Это
     //    база, обновлённая с версии, где issues.analysis_run_id уже был, а
     //    analysis_active_runs ещё не было: снимки есть, «актуального» среди них
@@ -173,12 +181,19 @@ async function backfillAnalysisSnapshots() {
       ON CONFLICT (tender_id, scope) DO NOTHING`);
 
     // 4. Разметка legacy-строк стадий (issues + signals) своим stage-прогоном.
+    //    EXISTS-гард: помечаем только строки, чей синтетический прогон реально
+    //    существует, — если параллельная сессия успела удалить тендер вместе с
+    //    его прогонами между шагами, разметка их пропустит, а не упадёт на FK.
     s.issues = await count(`
       UPDATE issues SET analysis_run_id = 'runbf_s' || analysis_stage || '_' || tender_id
-       WHERE analysis_run_id IS NULL AND analysis_stage IS NOT NULL`);
+       WHERE analysis_run_id IS NULL AND analysis_stage IS NOT NULL
+         AND EXISTS (SELECT 1 FROM analysis_runs r
+                      WHERE r.id = 'runbf_s' || issues.analysis_stage || '_' || issues.tender_id)`);
     s.signals = await count(`
       UPDATE analysis_signals SET analysis_run_id = 'runbf_s' || COALESCE(analysis_stage, 1) || '_' || tender_id
-       WHERE analysis_run_id IS NULL`);
+       WHERE analysis_run_id IS NULL
+         AND EXISTS (SELECT 1 FROM analysis_runs r
+                      WHERE r.id = 'runbf_s' || COALESCE(analysis_signals.analysis_stage, 1) || '_' || analysis_signals.tender_id)`);
 
     // 5. Производные слои конвейера: синтетический pipeline-прогон + указатель.
     s.pipeline_runs = await count(`
@@ -194,7 +209,9 @@ async function backfillAnalysisSnapshots() {
       ON CONFLICT (tender_id, scope) DO NOTHING`);
     for (const table of DERIVED_TABLES) {
       s[table] = await count(
-        `UPDATE ${table} SET analysis_run_id = 'runbf_' || tender_id WHERE analysis_run_id IS NULL`,
+        `UPDATE ${table} SET analysis_run_id = 'runbf_' || tender_id
+          WHERE analysis_run_id IS NULL
+            AND EXISTS (SELECT 1 FROM analysis_runs r WHERE r.id = 'runbf_' || ${table}.tender_id)`,
       );
     }
 
@@ -590,6 +607,17 @@ async function runMigration() {
     `);
     console.log('[migrate] characteristics.sort_order backfilled');
   }
+
+  // Манифест тендерного пакета: у каждого документа — редакция, статус
+  // актуальности, дата, приоритет при противоречии, применимость (корпус/раздел)
+  // и ссылка на заменённый документ. Выбор входа анализа идёт по этим полям
+  // (services/documents/manifestModel.js), а не «последний загруженный».
+  await ensureColumn('documents', 'revision_label', 'TEXT');
+  await ensureColumn('documents', 'actuality_status', "TEXT DEFAULT 'actual'");
+  await ensureColumn('documents', 'doc_date', 'TEXT');
+  await ensureColumn('documents', 'conflict_priority', 'INTEGER');
+  await ensureColumn('documents', 'applicability', 'TEXT');
+  await ensureColumn('documents', 'supersedes_document_id', 'TEXT');
 
   console.log('[migrate] schema applied');
 }

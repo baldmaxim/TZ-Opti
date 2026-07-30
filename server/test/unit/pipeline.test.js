@@ -29,14 +29,26 @@ const { STATUS, severityOf } = require('../../services/analysis/resultStatus');
 
 // --- planSteps ----------------------------------------------------------------
 
-test('planSteps: по умолчанию все шаги в порядке зависимости', () => {
+test('planSteps: по умолчанию QC включён, challenger — нет (дорогой явный шаг)', () => {
   assert.deepEqual(planSteps(), ['draft_issues', 'critic', 'clustering', 'self_analysis']);
 });
 
-test('planSteps: withSelfAnalysis=false исключает только опциональный QC-шаг', () => {
+test('planSteps: withSelfAnalysis=false исключает QC-шаг', () => {
   assert.deepEqual(planSteps({ withSelfAnalysis: false }), ['draft_issues', 'critic', 'clustering']);
-  // прочие шаги не помечены опциональными — выключить их нельзя
-  assert.equal(PIPELINE_STEPS.filter((s) => s.optional).length, 1);
+  // обязательные шаги не помечены опциональными — выключить их нельзя
+  assert.equal(PIPELINE_STEPS.filter((s) => !s.optional).length, 3);
+});
+
+test('planSteps: withChallenger вставляет challenger МЕЖДУ кластеризацией и QC', () => {
+  assert.deepEqual(
+    planSteps({ withSelfAnalysis: true, withChallenger: true }),
+    ['draft_issues', 'critic', 'clustering', 'challenger', 'self_analysis'],
+  );
+  // challenger можно включить и без QC (только поиск пропусков)
+  assert.deepEqual(
+    planSteps({ withSelfAnalysis: false, withChallenger: true }),
+    ['draft_issues', 'critic', 'clustering', 'challenger'],
+  );
 });
 
 // --- summarizeRun ---------------------------------------------------------------

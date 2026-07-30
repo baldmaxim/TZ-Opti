@@ -4,6 +4,7 @@ import { api } from '../../services/api';
 import { formatDateTime } from '../../utils/format';
 import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
+import ManifestPanel from './ManifestPanel';
 
 const SLOTS = [
   {
@@ -20,11 +21,11 @@ const SLOTS = [
   {
     type: 'vor',
     label: 'ВОР',
-    hint: 'Ведомость объёмов работ',
+    hint: 'Ведомости объёмов работ (несколько: по корпусам/секциям)',
     accept: '.xlsx,.xls,.csv,.pdf',
     badge: 'ВОР',
     color: 'purple',
-    multiple: false,
+    multiple: true,
   },
 ];
 // Примечание: слоты ПД/РД и Q&A намеренно убраны из «Документации». ПД/РД не
@@ -45,6 +46,7 @@ export default function DocumentsPage() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyType, setBusyType] = useState(null);
+  const [manifestReload, setManifestReload] = useState(0);
 
   const load = async () => {
     if (!tenderId) return;
@@ -105,6 +107,7 @@ export default function DocumentsPage() {
         toastSuccess(`${slot.label}: загружено`);
       }
       await load();
+      setManifestReload((n) => n + 1);
       await Promise.all([refreshTender(), refreshDocuments()]);
     } catch (err) {
       toastError(err.message);
@@ -118,6 +121,7 @@ export default function DocumentsPage() {
       await api.deleteDocument(doc.id);
       toastSuccess('Документ удалён');
       await load();
+      setManifestReload((n) => n + 1);
       await Promise.all([refreshTender(), refreshDocuments()]);
     } catch (err) { toastError(err.message); }
   };
@@ -128,7 +132,8 @@ export default function DocumentsPage() {
         <h2 className="text-lg font-semibold">Документы тендера</h2>
         <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
           Входные документы для анализа ТЗ. ТЗ — отдельные подслоты для Word/PDF и
-          Markdown-копии (для AI). ВОР — один файл (повторная загрузка заменяет предыдущий).
+          Markdown-копии (для AI). ВОР может быть несколько (по корпусам) — актуальность,
+          редакции и замены размечаются в манифесте ниже.
         </p>
       </div>
 
@@ -146,6 +151,15 @@ export default function DocumentsPage() {
           />
         ))}
       </div>
+
+      <ManifestPanel
+        tenderId={tenderId}
+        reloadKey={manifestReload}
+        onChanged={async () => {
+          await load();
+          await Promise.all([refreshTender(), refreshDocuments()]);
+        }}
+      />
 
       {loading && items.length === 0 && (
         <div className="text-center text-gray-500 dark:text-gray-400 text-sm py-2">Загрузка…</div>

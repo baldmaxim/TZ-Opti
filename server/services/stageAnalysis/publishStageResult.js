@@ -34,9 +34,11 @@ const { writeSignalsForStage } = require('../signals/signalWriter');
 const { newId } = require('../../utils/ids');
 
 // Стадии-добытчики: их находки идут в конвейер ТОЛЬКО через слой signals, поэтому
-// снимок без сигналов для них — молча потерянный анализ. Стадия 5 (QC) сигналов
-// не эмитит по определению (signalTypeForStage(5) === null).
-const SIGNAL_STAGES = Object.freeze([1, 2, 3, 4]);
+// снимок без сигналов для них — молча потерянный анализ. Стадия 5 тоже эмитит
+// сигналы (challenger-находки, pipeline/challengerStep); пустой снимок стадии 5
+// («независимая проверка пропусков не нашла») публикуется с 0 сигналов — это
+// разрешает общее правило «пустые сигналы допустимы при 0 находок».
+const SIGNAL_STAGES = Object.freeze([1, 2, 3, 4, 5]);
 
 // Допустимые значения tender_stage_state.stageN_status.
 const WORKFLOW_STATUSES = stageState.STAGE_STATUSES;
@@ -204,8 +206,8 @@ function assertSignalsPresent(stage, resolved, issueCount) {
 async function writeSignals(tx, { tenderId, stage, analysisRunId, signals, issueRecords }) {
   const resolved = await resolveSignals(signals, issueRecords);
 
-  // Стадия 5 (QC над итогом) сигналов не эмитит — их отсутствие здесь НОРМА,
-  // а не сбой публикации (см. signalWriter.signalTypeForStage).
+  // Стадия вне SIGNAL_STAGES (все 1–5 теперь эмитят) — отсутствие сигналов
+  // норма, а не сбой публикации (см. signalWriter.signalTypeForStage).
   if (!SIGNAL_STAGES.includes(stage)) {
     const passed = Array.isArray(resolved) ? resolved.length : 0;
     return {
@@ -287,7 +289,7 @@ async function assertActivatable(tx, { tenderId, stage, analysisRunId, issueReco
     );
   }
 
-  // Стадия 5 сигналов не эмитит — активируется без них (это норма, а не пробел).
+  // Стадия вне SIGNAL_STAGES — активируется без сигналов (норма, не пробел).
   if (!SIGNAL_STAGES.includes(stage)) {
     return { issues: issuesInDb, signals: 0, signals_required: false };
   }

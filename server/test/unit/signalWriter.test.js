@@ -89,13 +89,23 @@ test('передана tx: все запросы слоя идут через н
   assert.equal(tx.inserts().length, 2);
 });
 
-test('стадия без типа сигнала (5) ничего не пишет и не трогает транзакцию', async () => {
+test('стадия без типа сигнала (вне 1–5) ничего не пишет и не трогает транзакцию', async () => {
+  const tx = fakeTx();
+  const res = await writeSignalsForStage({
+    tenderId: TENDER, stage: 6, analysisRunId: RUN, signals: [record('issue-1')], tx, strict: true,
+  });
+  assert.deepEqual(res, { written: 0, skipped: true, run_id: RUN });
+  assert.equal(tx.calls.length, 0);
+});
+
+test('стадия 5 (challenger) эмитит сигналы типа challenger', async () => {
   const tx = fakeTx();
   const res = await writeSignalsForStage({
     tenderId: TENDER, stage: 5, analysisRunId: RUN, signals: [record('issue-1')], tx, strict: true,
   });
-  assert.deepEqual(res, { written: 0, skipped: true, run_id: RUN });
-  assert.equal(tx.calls.length, 0);
+  assert.equal(res.written, 1);
+  const insert = tx.inserts()[0];
+  assert.ok(insert.params.includes('challenger'), 'signal_type = challenger');
 });
 
 // --- strict: ошибка доходит до вызывающего ---------------------------------------

@@ -53,11 +53,14 @@ const SCOPE_CRITERIA = new Set(['expands_scope', 'new_obligation']);
 // null-outcome правил здесь нет — «спорное» это отсутствие сработавшего правила.
 const RULES = [
   // --- Невалидные замечания ------------------------------------------------
+  // Исключение: находка «условие отсутствует» (signals.condition_gap) безъякорна
+  // ПО ОПРЕДЕЛЕНИЮ — она указывает на пробел, а не на формулировку; её судьбу
+  // решают правила ниже (condition_gap / последствие), а не отсутствие цитаты.
   {
     key: 'no_anchor',
     outcome: 'reject_invalid',
     reason: 'Не на что указать: в замечании нет ни цитаты ТЗ, ни пункта, ни абзаца.',
-    test: (a) => !a.signals.has_quote && !a.signals.has_place,
+    test: (a) => !a.signals.has_quote && !a.signals.has_place && !a.signals.condition_gap,
   },
   {
     key: 'duplicate',
@@ -150,6 +153,22 @@ const RULES = [
       && consequenceRank(a.business_consequence) >= consequenceRank('high'),
     outcomeFor: (a) =>
       a.business_consequence === 'critical' ? 'publish_critical' : 'publish_working',
+  },
+  // Отсутствующее существенное условие: пробел найден агрегацией по ВСЕМ частям
+  // ТЗ против реестра условий компании (детерминированный шаг), обоснование
+  // обязательно. Тяжёлые темы (critical/high последствие) публикуются без
+  // модели; medium остаётся спорным — решит LLM-критик (или полка «На
+  // проверку», если критик выключен, — fail-closed).
+  {
+    key: 'condition_gap',
+    outcome: null,
+    reason: 'Существенное условие отсутствует в ТЗ и пакете — правильная реакция (запрос/допущение/договор), а не правка текста.',
+    test: (a) =>
+      a.signals.condition_gap
+      && a.signals.has_basis
+      && consequenceRank(a.business_consequence) >= consequenceRank('high'),
+    outcomeFor: (a) =>
+      (a.business_consequence === 'critical' ? 'publish_critical' : 'publish_working'),
   },
   {
     key: 'strong_critical',

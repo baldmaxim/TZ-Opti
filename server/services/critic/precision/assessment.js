@@ -108,12 +108,24 @@ function consequenceFromImpacts(impacts, materialWeight = 0) {
   return 'none';
 }
 
+// Типы проблем, у которых якоря в ТЗ НЕТ ПО ОПРЕДЕЛЕНИЮ: «условие отсутствует»
+// указывает не на формулировку, а на ПРОБЕЛ. Доказательство такой находки —
+// реестр существенных условий компании + детерминированная агрегация по всем
+// частям ТЗ (тема не затронута нигде), а не цитата. Без обоснования (basis)
+// льгота не действует — безосновательный пробел остаётся 'none' и отклоняется.
+const CONDITION_GAP_TYPES = new Set(['условие_отсутствует']);
+
 // Доказательность по СТРУКТУРЕ находки. none — когда указывать не на что:
 // ни цитаты, ни абзаца, ни обоснования. Заявленное агентом значение может
 // только понизить оценку (fail-closed) — поднять её агент не вправе.
-function evidenceFromStructure({ anchored, hasQuote, hasPlace, hasBasis, corroboration = 1, declared = null }) {
+// registryGap=true (тип из CONDITION_GAP_TYPES) — отсутствие цитаты штатно:
+// с обоснованием такая находка получает 'medium' (реестр + полная сверка).
+function evidenceFromStructure({
+  anchored, hasQuote, hasPlace, hasBasis, corroboration = 1, declared = null, registryGap = false,
+}) {
   let level;
-  if (!hasQuote && !hasPlace) level = 'none';
+  if (registryGap) level = hasBasis ? 'medium' : 'none';
+  else if (!hasQuote && !hasPlace) level = 'none';
   else if (!anchored && !hasBasis) level = 'none';
   else if (!anchored || !hasBasis) level = 'weak';
   else level = Number(corroboration) >= 2 ? 'strong' : 'medium';
@@ -185,6 +197,7 @@ function buildAssessment(draft, review = {}, context = {}) {
   const hasPlace = draft.paragraph_index != null || Boolean((draft.tz_clause || '').trim());
   const hasBasis = Boolean((draft.basis || '').trim());
   const anchored = draft.paragraph_index != null && hasQuote;
+  const conditionGap = CONDITION_GAP_TYPES.has(draft.problem_type);
 
   const impacts = impactsFromWeights(review.dimension_weights);
   const materialWeight = typeof review.material_weight === 'number' ? review.material_weight : 0;
@@ -197,6 +210,7 @@ function buildAssessment(draft, review = {}, context = {}) {
     hasBasis,
     corroboration: review.corroboration || 1,
     declared: review.declared_evidence || null,
+    registryGap: conditionGap,
   });
 
   const text = textOf(draft);
@@ -214,6 +228,7 @@ function buildAssessment(draft, review = {}, context = {}) {
       has_quote: hasQuote,
       has_place: hasPlace,
       has_basis: hasBasis,
+      condition_gap: conditionGap,
       corroboration: review.corroboration || 1,
       material_weight: materialWeight,
       criteria: Array.isArray(review.criteria) ? review.criteria : [],
@@ -246,6 +261,7 @@ module.exports = {
   NOVELTY,
   IMPACT_LEVELS,
   IMPACT_KEYS,
+  CONDITION_GAP_TYPES,
   // ранги/сравнение
   evidenceRank,
   consequenceRank,

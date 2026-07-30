@@ -2,16 +2,22 @@
 // Единый вид для основного экрана «Самоанализ» и debug-страницы.
 
 export const SELF_ANALYSIS_TYPE_LABEL = {
-  missed_coverage: 'Пропуск',
-  weak_cluster: 'Слабый кластер',
+  missed_coverage: 'Пропуск при сборке',
+  weak_cluster: 'Слабое основание',
+  no_consequence: 'Нет последствия',
   cluster_contradiction: 'Противоречие',
-  needs_enrichment: 'Усилить',
+  duplicate_cluster: 'Дубль',
+  overstated_criticality: 'Завышенная критичность',
+  needs_enrichment: 'Усилить рекомендацию',
 };
 
 const TYPE_CLASS = {
   missed_coverage: 'bg-purple-100 dark:bg-purple-900/40 text-purple-800 dark:text-purple-300',
   weak_cluster: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300',
+  no_consequence: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300',
   cluster_contradiction: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300',
+  duplicate_cluster: 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300',
+  overstated_criticality: 'bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-300',
   needs_enrichment: 'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300',
 };
 

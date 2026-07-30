@@ -5,6 +5,13 @@ const { newId } = require('../utils/ids');
 const { notFound, badRequest } = require('../utils/errors');
 const { renderConditions } = require('../services/conditionsRenderer');
 const { getOrCreate } = require('./setupParamsController');
+const coverageService = require('../services/conditions/coverageService');
+const {
+  STATUS_LABELS,
+  RESOLUTION_LABELS,
+  COVERAGE_STATUSES,
+  RESOLUTIONS,
+} = require('../services/stageAnalysis/conditionCoverage');
 
 async function getOverlayMap(tenderId) {
   const rows = await db.queryAll(
@@ -117,4 +124,39 @@ exports.removeOverride = async (req, res) => {
 exports.reset = async (req, res) => {
   await db.queryRun('DELETE FROM company_conditions WHERE tender_id = ?', req.params.id);
   res.json({ ok: true });
+};
+
+// GET /api/tenders/:id/conditions/coverage — матрица покрытия существенных
+// условий: снимок актуального прогона Стадии 3 (?run_id= — конкретного) с
+// наложенными override инженера + словари статусов/действий для UI.
+exports.coverage = async (req, res) => {
+  const tenderRow = await db.queryOne('SELECT id FROM tenders WHERE id = ?', req.params.id);
+  if (!tenderRow) throw notFound('Тендер не найден');
+  const runId = (req.query.run_id || '').toString().trim() || null;
+  const data = await coverageService.getCoverage(req.params.id, { runId });
+  res.json({
+    ...data,
+    dictionaries: {
+      statuses: COVERAGE_STATUSES.map((v) => ({ value: v, label: STATUS_LABELS[v] })),
+      resolutions: RESOLUTIONS.map((v) => ({ value: v, label: RESOLUTION_LABELS[v] })),
+    },
+  });
+};
+
+// PATCH /api/tenders/:id/conditions/coverage/:topicKey — знание инженера:
+// статус (в т.ч. «в другом документе» / «проверка договора» / «неприменимо»)
+// и/или действие. Пустые status+resolution+note снимают override.
+exports.coverageOverride = async (req, res) => {
+  const tenderRow = await db.queryOne('SELECT id FROM tenders WHERE id = ?', req.params.id);
+  if (!tenderRow) throw notFound('Тендер не найден');
+  const topicKey = (req.params.topicKey || '').toString();
+  if (!topicKey) throw badRequest('Не указана тема покрытия');
+  const body = req.body || {};
+  const data = await coverageService.setOverride(
+    req.params.id,
+    topicKey,
+    { status: body.status ?? null, resolution: body.resolution ?? null, note: body.note ?? null },
+    req.principal || null,
+  );
+  res.json({ ok: true, ...data });
 };

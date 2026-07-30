@@ -3,19 +3,22 @@
 // Слой self-analysis — пятый шаг новой архитектуры анализа ТЗ
 // (signals → draft_issues → critic → clustering → SELF-ANALYSIS).
 //
-// НОВАЯ роль Стадии 5 «Самоанализ ТЗ»: не второй хаотичный поток issues по тексту
-// «с нуля», а QUALITY-CONTROL / COMPLETENESS-CHECK над уже собранным ИТОГОМ.
+// Роль слоя: QUALITY-CONTROL над уже собранным ИТОГОМ. Пропуски разбора ищет
+// ОТДЕЛЬНЫЙ challenger-агент (pipeline/challengerStep) — его находки становятся
+// обычными замечаниями; здесь — только заметки О КАЧЕСТВЕ разборa.
 // Вход: исходный ТЗ + issue_clusters + issue_reviews + signals. Выход —
-// self_analysis_results: замечания О РАЗБОРЕ четырёх типов:
-//   • missed_coverage       — что могли пропустить (аспект ТЗ без кластера);
-//   • weak_cluster          — где кластеры слабые (тонкое основание / нет рекомендации);
-//   • cluster_contradiction — где противоречие между кластерами одного места ТЗ;
-//   • needs_enrichment      — где усилить basis / review_comment / suggested_redaction.
+// self_analysis_results:
+//   • missed_coverage        — ЭВРИСТИКА (machine-fact): категория сигналов
+//     потерялась при сборке (LLM-QC этот тип больше не выдаёт);
+//   • weak_cluster           — слабое основание;
+//   • no_consequence         — нет последствия для ГП;
+//   • needs_enrichment       — неконкретная рекомендация у важного кластера;
+//   • duplicate_cluster      — дубль требования;
+//   • cluster_contradiction  — конфликтующие рекомендации одного места ТЗ;
+//   • overstated_criticality — завышенная критичность.
 //
-// НЕ дублирует Стадию 4 (та ищет типовые риски в ТЕКСТЕ) — здесь оценка качества
-// сборки. ПАРАЛЛЕЛЬНЫЙ слой: не трогает issues/review/export. Эвристики —
-// ЧИСТЫЕ функции (тестируются без БД, как clustering/critic); LLM-обогащение —
-// best-effort поверх них.
+// ПАРАЛЛЕЛЬНЫЙ слой: не трогает issues/review/export. Эвристики — ЧИСТЫЕ функции
+// (тестируются без БД); LLM-обогащение — best-effort поверх них.
 
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
@@ -25,7 +28,7 @@ const unified = require('../unifiedAnalysis/unifiedIssueBuilder');
 const { listSignals } = require('../signals/signalWriter');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { getTzText } = require('../tzActiveTextService');
-const { runSelfAnalysisLlm, FINDING_TYPES, QC_STATUS } = require('../stageAnalysis/stage5_llm');
+const { runSelfAnalysisLlm, LLM_FINDING_TYPES, QC_STATUS } = require('../stageAnalysis/stage5_llm');
 const { makeStageSegmentStore } = require('../stageAnalysis/segments/segmentStore');
 const { FAMILY } = require('../analysis/actions');
 const { STATUS } = require('../analysis/resultStatus');
@@ -221,14 +224,18 @@ function runHeuristics(clusters, signalStats) {
 }
 
 // Нормализация одной LLM-находки к записи self_analysis_results.
+// LLM-QC оценивает ТОЛЬКО существующие кластеры (пропуски ищет challenger),
+// поэтому cluster_id ОБЯЗАТЕЛЕН: вывод про несуществующий/пустой кластер
+// отбрасывается (null), а не превращается в «глобальную» заметку без адресата —
+// прежние такие заметки не попадали в bundle кластера и терялись для инженера.
 function normalizeLlmFinding(raw, clusterIds) {
-  const ft = FINDING_TYPES.includes(raw && raw.finding_type) ? raw.finding_type : 'missed_coverage';
+  const ft = LLM_FINDING_TYPES.includes(raw && raw.finding_type) ? raw.finding_type : 'weak_cluster';
   const cidRaw = (raw && raw.cluster_id) || '';
-  const cid = cidRaw && clusterIds.has(cidRaw) ? cidRaw : null;
+  if (!cidRaw || !clusterIds.has(cidRaw)) return null;
   let conf = Number(raw && raw.confidence);
   if (!Number.isFinite(conf)) conf = 0.5;
   conf = Math.max(0, Math.min(1, conf));
-  return finding(ft, cid, String((raw && raw.comment) || '').trim(), String((raw && raw.suggested_improvement) || '').trim(), {
+  return finding(ft, cidRaw, String((raw && raw.comment) || '').trim(), String((raw && raw.suggested_improvement) || '').trim(), {
     confidence: conf,
     source: 'llm',
   });
@@ -374,7 +381,9 @@ async function buildSelfAnalysis(tenderId, runId) {
     console.warn(`[selfAnalysis] LLM-QC: ${outcome.llm_status} — ${outcome.llm_reason || 'без причины'}`);
   }
   const clusterIds = new Set(clusters.map((c) => c.id));
-  const llm = ((qc && qc.findings) || []).map((r) => normalizeLlmFinding(r, clusterIds));
+  const llm = ((qc && qc.findings) || [])
+    .map((r) => normalizeLlmFinding(r, clusterIds))
+    .filter(Boolean); // без валидного cluster_id вывод QC отбрасывается
 
   const findings = assembleFindings(heuristic, llm).map((f) => ({ id: newId(), tender_id: tenderId, ...f }));
 

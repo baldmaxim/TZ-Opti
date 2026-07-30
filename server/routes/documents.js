@@ -8,6 +8,10 @@ const asyncHandler = require('../utils/asyncHandler');
 const router = express.Router();
 
 router.get('/tenders/:id/documents', asyncHandler(ctrl.listForTender));
+// Манифест тендерного пакета: чтение — сводка по тендеру, запись — манифест-поля
+// одного документа (редакция / статус / дата / приоритет / применимость / замена).
+router.get('/tenders/:id/manifest', asyncHandler(ctrl.getManifest));
+router.patch('/documents/:id/manifest', asyncHandler(ctrl.updateManifest));
 // Файл принимается в карантин (acceptSingle) и попадает в папку тендера
 // только после проверок формата, сигнатуры и антивируса (documentScreening).
 router.post('/tenders/:id/documents', acceptSingle('file'), asyncHandler(documentScreening), asyncHandler(ctrl.upload));

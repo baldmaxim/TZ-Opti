@@ -28,6 +28,7 @@ export const STEPS = [
   stageStep(4),
   stageStep(5),
   { id: 'summary', section: 'result', label: 'Итог', tail: 'summary' },
+  { id: 'vor-matching', section: 'result', label: 'Покрытие ВОР', tail: 'vor-matching' },
   { id: 'review', section: 'result', label: 'Рецензия', tail: 'review' },
   { id: 'export', section: 'result', label: 'Экспорт', tail: 'export' },
 ];
@@ -44,11 +45,11 @@ export function findStep(id) {
 }
 
 export function stepFromPath(pathname) {
-  const m = pathname.match(/\/tenders\/[^/]+\/(setup\/([^/?#]+)|stage\/(\d+)|summary|review|export)/);
+  const m = pathname.match(/\/tenders\/[^/]+\/(setup\/([^/?#]+)|stage\/(\d+)|summary|vor-matching|review|export)/);
   if (!m) return null;
   if (m[2]) return STEPS.find((s) => s.sub === m[2]) || null;
   if (m[3]) return STEPS.find((s) => s.stage === Number(m[3])) || null;
-  if (['summary', 'review', 'export'].includes(m[1])) {
+  if (['summary', 'vor-matching', 'review', 'export'].includes(m[1])) {
     return STEPS.find((s) => s.tail === m[1]) || null;
   }
   return null;

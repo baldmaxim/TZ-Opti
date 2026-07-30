@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const db = require('../db/connection');
 const { parseMdToBlocks } = require('./mdParser');
+const { selectActiveDocuments, pickPrimaryDocument } = require('./documents/manifestModel');
 
 // Текст ТЗ для стадий анализа.
 //
@@ -18,21 +19,29 @@ const { parseMdToBlocks } = require('./mdParser');
 // анализа. Прежний механизм tz_excluded_ranges (урезание активного текста между
 // стадиями) демонтирован; таблица оставлена в БД как legacy-история.
 
-async function getTzMdDocument(tenderId) {
-  return db.queryOne(
-    `SELECT * FROM documents
-     WHERE tender_id = ? AND doc_type = 'tz' AND LOWER(name) LIKE '%.md'
-     ORDER BY uploaded_at DESC LIMIT 1`,
-    tenderId,
-  );
+// Выбор документов — через МАНИФЕСТ пакета (documents/manifestModel.js), а не
+// «последний загруженный»: superseded исключён, informational уступает actual,
+// дальше — приоритет при противоречии, дата документа, дата загрузки.
+async function listAllDocuments(tenderId) {
+  return db.queryAll('SELECT * FROM documents WHERE tender_id = ?', tenderId);
 }
 
+async function getTzMdDocument(tenderId) {
+  const docs = await listAllDocuments(tenderId);
+  return pickPrimaryDocument(docs, 'tz', { match: /\.md$/i });
+}
+
+// Первичный актуальный документ типа (для слотов «один файл»).
 async function getDocumentByType(tenderId, docType) {
-  return db.queryOne(
-    `SELECT * FROM documents WHERE tender_id = ? AND doc_type = ? ORDER BY uploaded_at DESC LIMIT 1`,
-    tenderId,
-    docType,
-  );
+  const docs = await listAllDocuments(tenderId);
+  return pickPrimaryDocument(docs, docType);
+}
+
+// ВСЕ актуальные документы типа в порядке релевантности — для типов, где
+// одновременно действует несколько файлов (ВОР по корпусам, Q&A по раундам).
+async function getDocumentsByType(tenderId, docType) {
+  const docs = await listAllDocuments(tenderId);
+  return selectActiveDocuments(docs, docType);
 }
 
 // --- Идентификаторы ревизии / узла / текста (чистые, детерминированные) -------
@@ -166,6 +175,7 @@ module.exports = {
   getTzMdDocument,
   getTzSourceDocument,
   getDocumentByType,
+  getDocumentsByType,
   // чистое ядро (офлайн-тесты)
   hashText,
   normalizeText,

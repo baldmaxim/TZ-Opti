@@ -32,6 +32,13 @@ const {
   catalogStats,
 } = require('../vor/vorCatalog');
 const { buildMatchIndex, selectCandidates, crossReference } = require('../vor/vorMatchIndex');
+const {
+  normalizeVorMatch,
+  resolvePositions,
+  buildMatchRow,
+  mergeMatchRows,
+} = require('../vor/requirementMatchModel');
+const requirementMatchService = require('../vor/requirementMatchService');
 
 const RESPONSE_SCHEMA = attachMateriality({
   type: 'object',
@@ -59,7 +66,54 @@ const RESPONSE_SCHEMA = attachMateriality({
           },
           problem_type: {
             type: 'string',
-            enum: ['не_учтено_в_кп', 'не_учтено_в_вор', 'не_в_обоих', 'статус_не_определён'],
+            enum: ['не_учтено_в_кп', 'не_учтено_в_вор', 'не_в_обоих', 'статус_не_определён', 'учтено_частично'],
+          },
+          vor_match: {
+            type: 'object',
+            additionalProperties: true,
+            description:
+              'СТРУКТУРНОЕ сопоставление требования с ведомостью: какие позиции ВОР его покрывают ' +
+              'и какие операции требования в них входят. Обязательно для vor-связанных находок; ' +
+              'для БЕССПОРНО покрытых агрегированной позицией требований возвращай отдельную запись ' +
+              'со status=covered (она не станет замечанием, но попадёт в карту сопоставления).',
+            properties: {
+              status: { type: 'string', enum: ['covered', 'partial', 'not_covered', 'unclear'] },
+              positions: {
+                type: 'array',
+                description: 'Позиции ВОР, покрывающие требование (номер/шифр/наименование ИЗ ведомости).',
+                items: {
+                  type: 'object',
+                  additionalProperties: true,
+                  properties: {
+                    position_no: { type: 'string' },
+                    code: { type: 'string' },
+                    name: { type: 'string' },
+                    quantity: { type: 'number' },
+                    unit: { type: 'string' },
+                  },
+                },
+              },
+              operations_included: {
+                type: 'array', items: { type: 'string' },
+                description: 'Операции требования, ВХОДЯЩИЕ в состав указанных позиций.',
+              },
+              operations_missing: {
+                type: 'array', items: { type: 'string' },
+                description: 'Операции требования, которых в позициях НЕТ (усиления, закладные, заделка…).',
+              },
+              exclusions: {
+                type: 'array', items: { type: 'string' },
+                description: 'Что явно исключено из состава позиций (по примечаниям ведомости).',
+              },
+              unit_note: {
+                type: 'string',
+                description: 'Несовпадение единиц измерения / пересчёт (м² ↔ м³ ↔ шт) — если есть.',
+              },
+              quantity_note: {
+                type: 'string',
+                description: 'Сомнения в количественном покрытии: коэффициенты, отходы, агрегированный объём.',
+              },
+            },
           },
           criticality: {
             type: 'string',
@@ -173,7 +227,30 @@ function buildSegmentUserMessage({ tzText, vorText, checklist, crossText, partId
 // только тогда, когда её не нашёл НИ ОДИН проход: берём ПЕРЕСЕЧЕНИЕ находок.
 // Иначе позиция, лежащая в пакете №2, всё равно была бы объявлена пропущенной
 // проходом по пакету №1 — ровно та ошибка, ради которой пакеты и вводились.
+//
+// Две поправки против хрупкости сведения:
+//   • цитаты сопоставляются НЕ только точным равенством: модель в разных
+//     проходах может дать цитату разной длины — вложенная цитата того же места
+//     (контейнмент нормализованных строк) считается той же находкой, а не
+//     «пакет работу нашёл» (иначе находка терялась из-за длины цитаты);
+//   • covered-записи (vor_match.status='covered' — «требование покрыто вот этой
+//     позицией») сводятся ОБЪЕДИНЕНИЕМ, а не пересечением: покрытие подтверждает
+//     тот пакет, который ВИДЕЛ позицию, — остальные пакеты её не видели.
 const fragmentKey = (f) => String((f && f.fragment) || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const CONTAINMENT_MIN_LEN = 15;
+
+const isCoveredRecord = (f) => Boolean(f && f.vor_match && String(f.vor_match.status || '').toLowerCase() === 'covered');
+
+// Ключ или его контейнмент-совпадение в карте seen (обе строки достаточно длинные).
+function findFuzzy(seen, key) {
+  if (seen.has(key)) return seen.get(key);
+  if (key.length < CONTAINMENT_MIN_LEN) return undefined;
+  for (const [otherKey, val] of seen) {
+    if (otherKey.length < CONTAINMENT_MIN_LEN) continue;
+    if (otherKey.includes(key) || key.includes(otherKey)) return val;
+  }
+  return undefined;
+}
 
 const CRIT_ORDER = { low: 0, medium: 1, high: 2, critical: 3 };
 function strongerCriticality(a, b) {
@@ -189,20 +266,31 @@ function intersectPasses(lists) {
   if (!arrays.length) return [];
   if (arrays.length === 1) return arrays[0];
 
+  // covered-записи: объединение по всем проходам (дедуп по цитате).
+  const covered = new Map();
+  for (const arr of arrays) {
+    for (const f of arr) {
+      if (!isCoveredRecord(f)) continue;
+      const key = fragmentKey(f);
+      if (key && !covered.has(key)) covered.set(key, f);
+    }
+  }
+
+  const gaps = arrays.map((arr) => arr.filter((f) => !isCoveredRecord(f)));
   const first = new Map();
-  for (const f of arrays[0]) {
+  for (const f of gaps[0]) {
     const key = fragmentKey(f);
     if (!key || first.has(key)) continue;
     first.set(key, { ...f, vor_batches_confirmed: 1 });
   }
-  for (let i = 1; i < arrays.length; i += 1) {
+  for (let i = 1; i < gaps.length; i += 1) {
     const seen = new Map();
-    for (const f of arrays[i]) {
+    for (const f of gaps[i]) {
       const key = fragmentKey(f);
       if (key) seen.set(key, f);
     }
     for (const [key, merged] of [...first]) {
-      const other = seen.get(key);
+      const other = findFuzzy(seen, key);
       if (!other) {
         first.delete(key); // этот пакет ВОР работу нашёл → это не пробел покрытия
         continue;
@@ -214,7 +302,7 @@ function intersectPasses(lists) {
       }
     }
   }
-  return [...first.values()];
+  return [...first.values(), ...covered.values()];
 }
 
 // ── Подготовка ВОР ───────────────────────────────────────────────────────────
@@ -352,6 +440,30 @@ async function runStage1Llm(context) {
     }));
   }
 
+  // Карта сопоставления «требование ↔ позиции ВОР»: mapFinding собирает
+  // заявленные моделью связи (в т.ч. covered-записи, которые находками не
+  // становятся), после прогона они сверяются с каталогом ведомости и пишутся
+  // снимком прогона (requirement_matches).
+  const matchAccumulator = [];
+  const mapFinding = (f, segmentIndex) => {
+    const match = normalizeVorMatch(f && f.vor_match);
+    if (match) {
+      matchAccumulator.push({
+        fragment: (f.fragment || '').trim(),
+        sectionPath: f.section_path || null,
+        match,
+        confidence: typeof f.confidence === 'number' ? f.confidence : null,
+        problemType: f.problem_type || null,
+        segmentIndex,
+      });
+      // covered — не находка-проблема: требование покрыто, связь идёт только в карту.
+      if (match.status === 'covered') return null;
+      // Частичное покрытие: позиция есть, но операции требования в неё не входят.
+      if (match.status === 'partial' && !f.problem_type) f.problem_type = 'учтено_частично';
+    }
+    return f;
+  };
+
   const issues = await runLlmStage(context, {
     sourceDocumentId: context.sourceDocumentId,
     systemMsg,
@@ -363,9 +475,37 @@ async function runStage1Llm(context) {
     issueDefaults: { suggestedAction: 'clarify', confidence: 0.7 },
     analysisNote: notes.length ? notes.join(' ') : null,
     logTag: 'stage1_llm',
+    mapFinding,
     buildUserMessage: buildPassesForSegment,
     combinePasses: intersectPasses,
   });
+
+  // Карта сопоставления — снимок ЭТОГО прогона стадии. planOnly (карта
+  // затронутого) LLM не звал — аккумулятор пуст, писать нечего. Числа и единицы
+  // в карте детерминированно берутся из КАТАЛОГА ведомости (resolvePositions);
+  // сбой записи не роняет стадию.
+  if (!context.planOnly && matchAccumulator.length && context.analysisRunId) {
+    const rows = mergeMatchRows(matchAccumulator.map((m) => buildMatchRow({
+      fragment: m.fragment,
+      sectionPath: m.sectionPath,
+      match: m.match,
+      resolvedPositions: resolvePositions(m.match, entries),
+      confidence: m.confidence,
+      problemType: m.problemType,
+      segmentIndex: m.segmentIndex,
+    })));
+    await requirementMatchService
+      .saveMatches(context.tenderId, context.analysisRunId, rows)
+      .then((r) => {
+        // eslint-disable-next-line no-console
+        console.log(`[stage1_llm] карта сопоставления ТЗ↔ВОР: строк ${r.saved}`);
+        issues.requirement_matches = { saved: r.saved };
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[stage1_llm] карта сопоставления не записана: ${e.message}`);
+      });
+  }
 
   // Сводка по ВОР — в отчёт прогона стадии (видно инженеру рядом с находками).
   const maxBatches = perSegment.reduce((m, s) => Math.max(m, s.batches), 0);

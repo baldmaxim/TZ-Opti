@@ -1,9 +1,12 @@
 'use strict';
 
-// Стадия 5 — LLM-агент в НОВОЙ роли: self-analysis как quality-control над
-// итогом анализа. Вход — исходный ТЗ + готовые КЛАСТЕРЫ замечаний (а не «текст
-// ТЗ с нуля»). Агент отвечает на 4 вопроса о качестве сборки:
-//   missed_coverage · weak_cluster · cluster_contradiction · needs_enrichment.
+// Стадия 5 (QC) — LLM-агент качества итога. Вход — исходный ТЗ + готовые
+// КЛАСТЕРЫ замечаний. Агент проверяет ТОЛЬКО качество существующих кластеров:
+//   weak_cluster · no_consequence · needs_enrichment · duplicate_cluster ·
+//   cluster_contradiction · overstated_criticality.
+// Пропуски разбора ищет ОТДЕЛЬНЫЙ challenger-агент (stage5Challenger) — здесь
+// их нет по определению (прежнее противоречие «не ищи заново, но найди
+// пропущенное» снято).
 //
 // Здесь только Stage-5-специфика LLM-вызова: схема ответа, сериализация входа,
 // прогон модели ПО ЧАСТЯМ ТЗ (той же иерархической сегментацией, что и стадии
@@ -19,7 +22,21 @@ const { STATUS } = require('../analysis/resultStatus');
 
 const hashOf = (s) => crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 16);
 
-const FINDING_TYPES = ['missed_coverage', 'weak_cluster', 'cluster_contradiction', 'needs_enrichment'];
+// Типы, которые выдаёт LLM-QC: только КАЧЕСТВО существующих кластеров
+// (основание / последствие / рекомендация / дубль / конфликт / критичность).
+// Пропуски (missed_coverage) LLM-QC больше НЕ ищет — это работа независимого
+// challenger-агента (stage5Challenger), чьи находки становятся обычными
+// замечаниями. missed_coverage остаётся ТОЛЬКО у детерминированной эвристики
+// (категории сигналов, потерянные при сборке, — selfAnalysisService).
+const LLM_FINDING_TYPES = [
+  'weak_cluster',
+  'no_consequence',
+  'needs_enrichment',
+  'duplicate_cluster',
+  'cluster_contradiction',
+  'overstated_criticality',
+];
+const FINDING_TYPES = ['missed_coverage', ...LLM_FINDING_TYPES];
 
 // Исход LLM-шага QC. Три первых — общий контракт результата (resultStatus):
 // completed (все части ТЗ посчитаны) · completed_with_warnings (часть упала) ·
@@ -46,12 +63,12 @@ const RESPONSE_SCHEMA = {
         additionalProperties: false,
         required: ['finding_type', 'cluster_id', 'comment', 'suggested_improvement', 'confidence'],
         properties: {
-          finding_type: { type: 'string', enum: FINDING_TYPES },
+          finding_type: { type: 'string', enum: LLM_FINDING_TYPES },
           cluster_id: {
             type: 'string',
             description:
-              'Точный id кластера из переданного списка, к которому относится замечание. ' +
-              'Пустая строка для missed_coverage (замечание про весь ТЗ / пропуск).',
+              'ОБЯЗАТЕЛЬНО: точный id кластера из переданного списка, к которому относится вывод. ' +
+              'Вывод без валидного cluster_id отбрасывается.',
           },
           comment: { type: 'string', description: 'Что именно не так с разбором (на русском).' },
           suggested_improvement: {
@@ -120,12 +137,12 @@ function buildSelfAnalysisUserMessage({ tzText, clusters, signalStats, partIdx =
     tz || '(пусто)',
     '',
     '---',
-    'Проверь ПОЛНОТУ и КАЧЕСТВО разбора (не ищи замечания в тексте заново):',
-    'что могли пропустить (missed_coverage), где кластеры слабые (weak_cluster),',
-    'где противоречие между кластерами (cluster_contradiction), где усилить',
-    'basis/review_comment/suggested_redaction (needs_enrichment). cluster_id —',
-    'точный id из списка выше; для missed_coverage — пустая строка. Верни JSON',
-    'по схеме (поле findings).',
+    'Проверь КАЧЕСТВО разбора (пропуски НЕ ищи — это работа challenger-агента):',
+    'слабое основание (weak_cluster), нет последствия (no_consequence),',
+    'неконкретная рекомендация (needs_enrichment), дубли (duplicate_cluster),',
+    'конфликтующие рекомендации (cluster_contradiction), завышенная критичность',
+    '(overstated_criticality). cluster_id — точный id из списка выше, обязателен.',
+    'Верни JSON по схеме (поле findings).',
   ].join('\n');
 }
 
@@ -290,6 +307,7 @@ async function runSelfAnalysisLlm({
 
 module.exports = {
   FINDING_TYPES,
+  LLM_FINDING_TYPES,
   QC_STATUS,
   RESPONSE_SCHEMA,
   SEGMENT_TOKENS,

@@ -4,6 +4,7 @@ import { toastError, toastSuccess } from '../../store/useToastStore';
 import { useTenderStore } from '../../store/useTenderStore';
 import ParamsPanel from '../../components/conditions/ParamsPanel';
 import ConditionsList from '../../components/conditions/ConditionsList';
+import CoveragePanel from '../../components/conditions/CoveragePanel';
 
 const SECTION = 'conditions';
 
@@ -168,6 +169,8 @@ export default function ConditionsPage() {
         onPatch={handlePatchCondition}
         onResetOverride={handleResetOverride}
       />
+
+      <CoveragePanel tenderId={tenderId} />
 
       {!locked && (
         <div>

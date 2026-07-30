@@ -25,10 +25,17 @@ async function ensureTender(tenderId) {
 exports.run = async (req, res) => {
   await ensureTender(req.params.id);
   const withSelfAnalysis = !(req.body && req.body.with_self_analysis === false);
+  // Challenger (независимый поиск пропусков, Стадия 5) идёт В ПАРЕ с QC:
+  // основной поток «Анализ ТЗ» запрашивает with_self_analysis=true и получает
+  // оба механизма. Явный with_challenger в теле перекрывает связку.
+  const withChallenger = req.body && req.body.with_challenger != null
+    ? Boolean(req.body.with_challenger)
+    : withSelfAnalysis;
   const mode = pipeline.resolveMode(req.body || {});
   if (req.body && (req.body.async === true || req.body.async === 'true')) {
     const out = await jobService.enqueuePipeline(req.params.id, {
       withSelfAnalysis,
+      withChallenger,
       mode,
       idempotencyKey: req.get('Idempotency-Key') || req.body.idempotency_key || null,
     });
@@ -36,7 +43,7 @@ exports.run = async (req, res) => {
       ok: true, queued: true, mode, deduped: out.deduped || null, job: await queue.describeJob(out.job.id),
     });
   }
-  const report = await pipeline.runPipeline(req.params.id, { withSelfAnalysis, mode });
+  const report = await pipeline.runPipeline(req.params.id, { withSelfAnalysis, withChallenger, mode });
   return res.json(report);
 };
 

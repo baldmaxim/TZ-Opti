@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
 const { computeRevisionId } = require('../tzActiveTextService');
+const { manifestRevisionSuffix } = require('../documents/manifestModel');
 
 const SCOPE_PIPELINE = 'pipeline';
 const stageScope = (stage) => `stage:${stage}`;
@@ -616,9 +617,20 @@ async function clearStagePointers(tenderId, fromStage, tx) {
 // той же механикой, что и на загрузку нового файла. Прямой SELECT (не сервис
 // agreedVersion) — чтобы не создавать цикл импортов.
 async function currentDocumentsRevision(tenderId, tx) {
-  const docs = await exec(tx).queryAll(
-    'SELECT id, version, extracted_text FROM documents WHERE tender_id = ?', tenderId,
+  // Манифест-поля (статус актуальности, приоритет, замена, редакция, дата,
+  // применимость) — часть ВХОДА анализа: их изменение меняет ревизию набора той
+  // же механикой, что и новая загрузка. Для документов с дефолтной разметкой
+  // суффикс пустой — ревизии нетронутых тендеров не меняются.
+  const raw = await exec(tx).queryAll(
+    `SELECT id, version, extracted_text, actuality_status, revision_label, doc_date,
+            conflict_priority, applicability, supersedes_document_id
+       FROM documents WHERE tender_id = ?`, tenderId,
   );
+  const docs = raw.map((d) => ({
+    id: d.id,
+    version: `${d.version || '1'}${manifestRevisionSuffix(d)}`,
+    extracted_text: d.extracted_text,
+  }));
   const agreed = await exec(tx).queryOne(
     `SELECT id, version_no, md_text FROM tz_agreed_versions
       WHERE tender_id = ? AND status = 'active' ORDER BY version_no DESC LIMIT 1`,

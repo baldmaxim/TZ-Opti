@@ -237,10 +237,10 @@ test('перевод статуса идёт той же транзакцией,
   assert.equal(seen[0].opts.to, 'reviewing');
 });
 
-test('стадия 5 тоже переводится в reviewing (после активации без сигналов)', async () => {
+test('стадия 5 тоже переводится в reviewing (пустой challenger-снимок, 0 сигналов)', async () => {
   const tx = fakeTx({ run: runRow({ stage: 5 }) });
   const report = await publishStageResult({
-    tx, tenderId: TENDER, stage: 5, analysisRunId: RUN, issues: [], signals: null,
+    tx, tenderId: TENDER, stage: 5, analysisRunId: RUN, issues: [], signals: [],
   });
   assert.equal(report.workflow.stage, 5);
   assert.equal(report.workflow.to, 'reviewing');
@@ -385,19 +385,26 @@ test('стадии 1–4: находок нет — пустой массив с
   assert.ok(tx.steps().includes('move-pointer'));
 });
 
-test('стадия 5: активируется без signals — шаг сигналов явно пропускается', async () => {
+test('стадия 5: сигналы теперь ОБЯЗАТЕЛЬНЫ как у добытчиков — challenger-находки не теряются', async () => {
+  // Пустой снимок (0 находок) публикуется с пустым массивом сигналов…
   const tx = fakeTx({ run: runRow({ stage: 5 }) });
   const report = await publishStageResult({
-    tx, tenderId: TENDER, stage: 5, analysisRunId: RUN, issues: [], signals: null,
+    tx, tenderId: TENDER, stage: 5, analysisRunId: RUN, issues: [], signals: [],
   });
-
-  assert.equal(report.signals.skipped, true);
-  assert.match(report.signals.reason, /сигналов не эмитит/);
-  assert.ok(!tx.steps().includes('clear-signals'));
-  assert.ok(!tx.steps().includes('count-signals'));
-  assert.equal(report.verified.signals_required, false);
+  assert.equal(report.signals.written, 0);
+  assert.equal(report.verified.signals_required, true);
   assert.equal(report.activated, true);
   assert.equal(tx.calls.find((c) => /INSERT INTO analysis_active_runs/.test(c.sql)).params[1], 'stage:5');
+
+  // …а вовсе БЕЗ сигналов (null) публикация отклоняется, как у стадий 1–4:
+  // снимок с находками, но без сигналов был бы невидим конвейеру.
+  const tx2 = fakeTx({ run: runRow({ stage: 5 }) });
+  await assert.rejects(
+    () => publishStageResult({
+      tx: tx2, tenderId: TENDER, stage: 5, analysisRunId: RUN, issues: [], signals: null,
+    }),
+    /сигналы обязательны/,
+  );
 });
 
 // --- Сбой шага останавливает публикацию (активации не происходит) ------------------

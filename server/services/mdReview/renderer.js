@@ -4,6 +4,7 @@ const db = require('../../db/connection');
 const { decisionVisual, resolveRedaction, resolveActionTarget } = require('../review/decisionModel');
 const clusterReview = require('../review/clusterReviewService');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
+const { pickPrimaryDocument } = require('../documents/manifestModel');
 
 // Помечает только выбранную подчасть внутри фрагмента (delete/edit на части):
 // возвращает текст фрагмента, где `part` обёрнут wrapFn, остальное не тронуто.
@@ -34,22 +35,16 @@ function markPartInFragment(fragment, part, wrapFn) {
  * (у кластера нет единой стадии).
  */
 
+// Выбор — по манифесту пакета (superseded-редакции исключены), а не по
+// «последнему загруженному».
 async function getTzMdDocument(tenderId) {
-  return db.queryOne(
-    `SELECT * FROM documents
-     WHERE tender_id = ? AND doc_type = 'tz' AND LOWER(name) LIKE '%.md'
-     ORDER BY uploaded_at DESC LIMIT 1`,
-    tenderId,
-  );
+  const docs = await db.queryAll('SELECT * FROM documents WHERE tender_id = ?', tenderId);
+  return pickPrimaryDocument(docs, 'tz', { match: /\.md$/i });
 }
 
 async function getTzDocxDocument(tenderId) {
-  return db.queryOne(
-    `SELECT * FROM documents
-     WHERE tender_id = ? AND doc_type = 'tz' AND LOWER(name) NOT LIKE '%.md'
-     ORDER BY uploaded_at DESC LIMIT 1`,
-    tenderId,
-  );
+  const docs = await db.queryAll('SELECT * FROM documents WHERE tender_id = ?', tenderId);
+  return pickPrimaryDocument(docs, 'tz', { match: /^(?!.*\.md$).*$/i });
 }
 
 // Решения от кластеров (основной путь): тот же источник, что у docx-экспорта

@@ -60,6 +60,10 @@ const RULES = [
   // --- документы ---------------------------------------------------------
   r('GET', '/tenders/:tenderId/documents', 'tender.read', 'document.list', READ, 'tender', 'document'),
   r('POST', '/tenders/:tenderId/documents', 'document.upload', 'document.upload', WRITE, 'tender', 'document'),
+  // Манифест тендерного пакета: чтение сводки и правка манифест-полей документа
+  // (редакция / статус актуальности / дата / приоритет / применимость / замена).
+  r('GET', '/tenders/:tenderId/manifest', 'tender.read', 'document.manifest', READ, 'tender', 'document'),
+  r('PATCH', '/documents/:documentId/manifest', 'document.upload', 'document.manifest_update', WRITE, 'document', 'document'),
   r('GET', '/documents/:documentId/download', 'document.read', 'document.download', READ, 'document', 'document'),
   r('GET', '/documents/:documentId/text', 'document.read', 'document.text', READ, 'document', 'document'),
   r('DELETE', '/documents/:documentId', 'document.delete', 'document.delete', WRITE, 'document', 'document'),
@@ -72,6 +76,10 @@ const RULES = [
   r('DELETE', '/tenders/:tenderId/checklist/:itemId', 'setup.write', 'checklist.delete', WRITE, 'tender', 'checklist'),
 
   r('GET', '/tenders/:tenderId/conditions', 'tender.read', 'conditions.list', READ, 'tender', 'conditions'),
+  // Матрица покрытия существенных условий (Стадия 3): чтение снимка + override
+  // инженера (в другом документе / проверка договора / неприменимо / действие).
+  r('GET', '/tenders/:tenderId/conditions/coverage', 'tender.read', 'conditions.coverage', READ, 'tender', 'conditions'),
+  r('PATCH', '/tenders/:tenderId/conditions/coverage/:topicKey', 'setup.write', 'conditions.coverage.override', WRITE, 'tender', 'conditions'),
   r('PATCH', '/tenders/:tenderId/conditions/:idx', 'setup.write', 'conditions.update', WRITE, 'tender', 'conditions'),
   r('DELETE', '/tenders/:tenderId/conditions/:idx/override', 'setup.write', 'conditions.override.delete', WRITE, 'tender', 'conditions'),
   r('POST', '/tenders/:tenderId/conditions/reset', 'setup.write', 'conditions.reset', WRITE, 'tender', 'conditions'),
@@ -110,6 +118,10 @@ const RULES = [
   r('GET', '/tenders/:tenderId/vor', 'tender.read', 'vor.list', READ, 'tender', 'vor'),
   r('GET', '/tenders/:tenderId/vor/summary', 'tender.read', 'vor.summary', READ, 'tender', 'vor'),
   r('GET', '/tenders/:tenderId/vor/matching', 'tender.read', 'vor.matching', READ, 'tender', 'vor'),
+  // Карта сопоставления ТЗ↔ВОР: чтение — просмотр, PATCH — решение инженера
+  // (подтверждение/отклонение связи = часть работы над решениями).
+  r('GET', '/tenders/:tenderId/vor/requirements', 'tender.read', 'vor.requirements', READ, 'tender', 'vor'),
+  r('PATCH', '/tenders/:tenderId/vor/requirements/:matchKey', 'decision.write', 'vor.requirements.confirm', DECISION, 'tender', 'vor'),
   r('GET', '/tenders/:tenderId/vor/preview', 'tender.read', 'vor.preview', READ, 'tender', 'vor'),
   r('POST', '/tenders/:tenderId/vor/reimport', 'analysis.run', 'vor.reimport', ANALYSIS, 'tender', 'vor'),
 

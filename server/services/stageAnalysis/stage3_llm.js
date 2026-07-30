@@ -1,16 +1,20 @@
 'use strict';
 
-// Стадия 3 — LLM-агент: ТЗ vs существенные условия компании.
-// ОСНОВА — условия компании (источник истины): отрендеренные стандартные условия
-// с учётом параметров тендера и per-tender override. Агент ищет в ТЗ места,
-// которые им ПРОТИВОРЕЧАТ, и выносит на рассмотрение:
-//   противоречит         → ТЗ говорит несовместимое (Issue с цитатой ТЗ)
-//   отражено_корректно   → пропускаем
-// Условия, которых в ТЗ нет вовсе, НЕ флагаются (отсутствие договорного условия
-// в техническом ТЗ — норма). Большое ТЗ сверяется ЧАСТЯМИ (иерархическая
-// сегментация): справочник условий повторяется в каждой части, поэтому «весь
-// текст в одном контексте» больше не требуется; повторы со стыков и связи между
-// разделами снимает финальная межраздельная сверка
+// Стадия 3 — LLM-агент: ТЗ vs существенные условия компании + ПОКРЫТИЕ.
+// ОСНОВА — условия компании (источник истины) и темы покрытия
+// (conditionCoverage.COVERAGE_TOPICS). По каждой ЗАТРОНУТОЙ в части ТЗ теме
+// агент выставляет статус:
+//   противоречит   → ТЗ говорит несовместимое (Issue с цитатой ТЗ)
+//   соответствует  → тема есть и не противоречит (идёт в матрицу покрытия)
+//   неоднозначно   → тема затронута, но сформулирована двусмысленно (Issue)
+// Тему, не затронутую в части, агент НЕ возвращает — «отсутствует» считается
+// только агрегацией по ВСЕМ частям (пересечение, как «нет в ВОР» у Стадии 1):
+// тема, не затронутая нигде, становится БЕЗЪЯКОРНОЙ находкой
+// «условие_отсутствует» с правильным действием (запрос Заказчику / допущение /
+// условие КП / проверка договора / резерв риска), а не требованием править
+// текст. Матрица покрытия пишется в condition_coverage (coverageService).
+// Большое ТЗ сверяется ЧАСТЯМИ (иерархическая сегментация): справочник
+// повторяется в каждой части; повторы со стыков снимает межраздельная сверка
 // (shared/crossSegmentReview.js). Промт — в stage3Prompts.js.
 // Контракт: (context) → Issue[]
 
@@ -24,6 +28,14 @@ const {
 } = require('../conditionsRenderer');
 const { renderSegment, runLlmStage, buildIssue, locateInBlocks } = require('./shared/llmStage');
 const { attachMateriality } = require('./shared/materialityFields');
+const {
+  buildTopicList,
+  aggregateCoverage,
+  buildMissingFinding,
+  normalizePartStatus,
+  PART_STATUS,
+} = require('./conditionCoverage');
+const coverageService = require('../conditions/coverageService');
 
 const RESPONSE_SCHEMA = attachMateriality({
   type: 'object',
@@ -38,18 +50,18 @@ const RESPONSE_SCHEMA = attachMateriality({
         properties: {
           condition_name: {
             type: 'string',
-            description: 'Наименование условия из справочника (скопируй дословно).',
+            description: 'Наименование условия или темы из справочника (скопируй дословно).',
           },
           status: {
             type: 'string',
-            enum: ['противоречит', 'отражено_корректно'],
+            enum: ['противоречит', 'соответствует', 'неоднозначно'],
             description:
-              'противоречит — ТЗ затрагивает тему условия и задаёт несовместимое со стандартом компании; отражено_корректно — тема есть и не противоречит (фильтруется). Условия, не затронутые в ТЗ, НЕ возвращай.',
+              'противоречит — ТЗ затрагивает тему и задаёт несовместимое со стандартом компании; соответствует — тема затронута и не противоречит; неоднозначно — тема затронута, но сформулирована двусмысленно/неполно. Темы, не затронутые в этой части ТЗ, НЕ возвращай.',
           },
           fragment: {
             type: 'string',
             description:
-              'Для status=противоречит — ДОСЛОВНАЯ цитата из ТЗ, которая противоречит условию (обязательна). Для отражено_корректно — пустая строка.',
+              'ДОСЛОВНАЯ цитата из ТЗ, где тема затронута. Для «противоречит» и «неоднозначно» — обязательна; для «соответствует» — желательна (короткая).',
           },
           section_path: {
             type: 'string',
@@ -113,23 +125,32 @@ async function loadConditions(tenderId) {
   return out;
 }
 
-function formatConditions(conds) {
+function formatTopics(topics) {
+  const conds = topics.filter((t) => t.kind === 'condition');
+  const themes = topics.filter((t) => t.kind === 'topic');
   const lines = [];
   conds.forEach((c, i) => {
     lines.push(`### ${i + 1}. ${c.name}`);
-    if (c.text) lines.push(`Стандарт компании: ${c.text}`);
-    if (c.comment) lines.push(`Примечание компании: ${c.comment}`);
+    if (c.standard_text) lines.push(`Стандарт компании: ${c.standard_text}`);
+    if (c.desc) lines.push(`Примечание компании: ${c.desc}`);
     lines.push('');
   });
+  if (themes.length) {
+    lines.push('### Темы покрытия (у компании нет стандартного текста — важно, СКАЗАНО ли об этом в ТЗ вообще):');
+    themes.forEach((t) => {
+      lines.push(`- ${t.name} — ${t.desc}`);
+    });
+    lines.push('');
+  }
   return lines.join('\n').trim();
 }
 
 function buildUserMessage({ tzText, condsText, partIdx, partTotal }) {
   const partNote =
     partTotal > 1
-      ? `## ТЗ — часть ${partIdx}/${partTotal} (markdown)\n\nЭто ФРАГМЕНТ ТЗ. Проверяй условия против приведённого ниже ` +
-        'текста; остальные части ТЗ проверяются отдельно. Условие, тема которого в этой части ' +
-        'не затронута, просто не возвращай (в другой части оно может быть затронуто).'
+      ? `## ТЗ — часть ${partIdx}/${partTotal} (markdown)\n\nЭто ФРАГМЕНТ ТЗ. Проверяй условия и темы против приведённого ниже ` +
+        'текста; остальные части ТЗ проверяются отдельно. Тему, которая в этой части ' +
+        'не затронута, просто не возвращай (в другой части она может быть затронута).'
       : '## ТЗ (markdown, целиком)';
   return [
     partNote,
@@ -137,37 +158,69 @@ function buildUserMessage({ tzText, condsText, partIdx, partTotal }) {
     tzText && tzText.trim() ? tzText : '(пусто)',
     '',
     '---',
-    '## Существенные условия компании (справочник)',
+    '## Существенные условия компании и темы покрытия (справочник)',
     '',
     condsText,
     '',
     '---',
-    'Пройди условия и найди в тексте ТЗ места, ПРОТИВОРЕЧАЩИЕ условиям компании',
-    '(status=противоречит, с дословной цитатой ТЗ). Условия, не затронутые в ТЗ,',
-    'не возвращай. Верни в JSON по схеме (поле findings).',
+    'Пройди справочник и по КАЖДОЙ теме, ЗАТРОНУТОЙ в приведённом тексте ТЗ,',
+    'верни статус: противоречит (с дословной цитатой), неоднозначно (с цитатой)',
+    'или соответствует. Темы, не затронутые в этом тексте, не возвращай — их',
+    'отсутствие по всему документу посчитает система. Верни JSON (поле findings).',
   ].join('\n');
 }
 
-// Нормализатор находки Стадии 3 → стандартная находка для buildIssue. Выход —
-// только противоречия (status=противоречит с дословной цитатой ТЗ). Всё прочее
-// (отражено_корректно, пустая цитата) отбрасывается: без цитаты это не
-// «упоминание в ТЗ», а отсутствие темы — не находка Стадии 3.
-function makeMapFinding(byName) {
-  return function mapFinding(f) {
-    if (f.status !== 'противоречит') return null;
+// Нормализатор находки Стадии 3 → стандартная находка для buildIssue.
+// Побочный эффект (сознательный): КАЖДЫЙ ответ модели, включая «соответствует»,
+// записывается в аккумулятор покрытия coverage — по нему после прогона считается
+// агрегированный статус каждой темы (в т.ч. «отсутствует»).
+// Находками становятся:
+//   противоречит  → Issue «условие_противоречит» (цитата обязательна);
+//   неоднозначно  → Issue «условие_неоднозначно» (цитата обязательна);
+//   соответствует → только матрица покрытия, Issue нет.
+function makeMapFinding(byName, coverage) {
+  return function mapFinding(f, segmentIndex) {
+    const status = normalizePartStatus(f.status);
     const fragment = (f.fragment || '').trim();
-    if (!fragment) return null;
     const name = (f.condition_name || '').trim();
-    const cond = byName.get(name) || null;
+    if (!status || !name) return null;
+    coverage.push({
+      name,
+      status,
+      fragment,
+      section_path: f.section_path || '',
+      segment: segmentIndex ?? null,
+    });
+    if (status === PART_STATUS.MATCHES) return null;
+    if (!fragment) return null; // противоречие/неоднозначность без цитаты не локализуема
+    const topic = byName.get(name.toLowerCase()) || null;
+    const standardText = topic && topic.standard_text;
+
+    if (status === PART_STATUS.AMBIGUOUS) {
+      return {
+        fragment,
+        section_path: f.section_path || '',
+        problem_type: 'условие_неоднозначно',
+        risk_category: 'существенные_условия',
+        criticality: f.criticality || (topic && topic.criticality) || 'medium',
+        suggested_action: 'clarify',
+        suggested_redaction: f.suggested_redaction || standardText || null,
+        review_comment:
+          f.review_comment ||
+          `Тема «${name}» затронута в ТЗ, но сформулирована неоднозначно — запросить уточнение у Заказчика.`,
+        basis: f.basis || `Формулировка ТЗ по теме «${name}» допускает разночтения.`,
+        confidence: typeof f.confidence === 'number' ? f.confidence : 0.6,
+      };
+    }
 
     return {
       fragment,
       section_path: f.section_path || '',
       problem_type: 'условие_противоречит',
       risk_category: 'существенные_условия',
-      criticality: (cond && cond.criticality) || f.criticality || 'high',
+      criticality: (topic && topic.criticality) || f.criticality || 'high',
       suggested_action: 'replace',
-      suggested_redaction: f.suggested_redaction || (cond && cond.text) || null,
+      suggested_redaction: f.suggested_redaction || standardText || null,
       review_comment:
         f.review_comment ||
         `ТЗ противоречит существенному условию компании «${name}». Вынести на рассмотрение / привести в соответствие.`,
@@ -186,20 +239,22 @@ async function runStage3Llm(context) {
   }
 
   const conds = await loadConditions(tenderId);
+  // Справочник стадии = условия компании + темы покрытия (COVERAGE_TOPICS).
+  // Даже при пустом реестре условий стадия работает: темы покрытия — договорные
+  // вопросы, отсутствие которых опасно для ГП независимо от настройки условий.
+  const topics = buildTopicList(
+    conds.map((c, i) => ({ idx: i + 1, name: c.name, text: c.text, comment: c.comment, criticality: c.criticality })),
+  );
   const promptVariant = resolveVariant();
   const systemMsg = buildSystemPrompt(promptVariant);
   // eslint-disable-next-line no-console
   console.log(
-    `[stage3_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} условий: ${conds.length}`,
+    `[stage3_llm] model=${getModel()} promptVariant=${promptVariant} blocks=${blocks.length} ` +
+      `условий: ${conds.length}, тем покрытия: ${topics.length - conds.length}`,
   );
-  if (!conds.length) {
-    const issues = [];
-    issues.analysisNote = 'Нет существенных условий для этого тендера — Стадия 3 пропущена.';
-    return issues;
-  }
 
-  const condsText = formatConditions(conds);
-  const byName = new Map(conds.map((c) => [c.name, c]));
+  const condsText = formatTopics(topics);
+  const byName = new Map(topics.map((t) => [t.name.trim().toLowerCase(), t]));
   const tzBudget = CHAR_BUDGET - condsText.length - SCAFFOLD_OVERHEAD - systemMsg.length;
   if (tzBudget <= 0) {
     const err = new Error('Справочник условий превышает бюджет контекста.');
@@ -207,7 +262,8 @@ async function runStage3Llm(context) {
     throw err;
   }
 
-  return runLlmStage(context, {
+  const coverageRecords = []; // аккумулятор ответов модели по всем частям
+  const issues = await runLlmStage(context, {
     sourceDocumentId: context.sourceDocumentId,
     systemMsg,
     schema: RESPONSE_SCHEMA,
@@ -218,10 +274,55 @@ async function runStage3Llm(context) {
     issueDefaults: { suggestedAction: 'replace', confidence: 0.7 },
     logTag: 'stage3_llm',
     keepUnlocated: false,
-    mapFinding: makeMapFinding(byName),
+    mapFinding: makeMapFinding(byName, coverageRecords),
     buildUserMessage: (segment, partIdx, partTotal) =>
       buildUserMessage({ tzText: renderSegment(segment), condsText, partIdx, partTotal }),
   });
+
+  // planOnly (карта затронутого): LLM не вызывался, аккумулятор пуст — считать
+  // «всё отсутствует» и трогать матрицу нельзя.
+  if (context.planOnly) return issues;
+
+  // Агрегация по всем частям: «отсутствует» — только если тема не затронута
+  // НИ В ОДНОЙ части. Инженерские override (не применимо / в другом документе /
+  // проверка договора) закрывают тему — находка по ней не эмитится.
+  const coverage = aggregateCoverage(topics, coverageRecords);
+  const overrides = await coverageService.getOverrides(tenderId).catch(() => new Map());
+  const segmentsTotal = (issues.segmentation && issues.segmentation.segments) || 0;
+
+  let missingCount = 0;
+  for (const topic of topics) {
+    const row = coverage.get(topic.topic_key);
+    if (!row || row.status !== 'missing') continue;
+    if (overrides.has(topic.topic_key)) continue;
+    missingCount += 1;
+    issues.push(
+      buildIssue({
+        sourceDocumentId: context.sourceDocumentId,
+        finding: buildMissingFinding(topic, { segmentsTotal }),
+        located: null, // безъякорная находка: цитаты в ТЗ нет по определению
+        riskCategory: 'существенные_условия',
+        defaults: { suggestedAction: 'clarify', confidence: 0.6 },
+      }),
+    );
+  }
+  // eslint-disable-next-line no-console
+  console.log(
+    `[stage3_llm] покрытие: тем ${topics.length}, записей модели ${coverageRecords.length}, ` +
+      `отсутствует ${missingCount} (override закрыл ${[...coverage.values()].filter((r) => r.status === 'missing').length - missingCount})`,
+  );
+
+  // Матрица покрытия — снимок ЭТОГО прогона (analysis_run_id). Best-effort:
+  // сбой записи не роняет стадию (находки уже собраны).
+  if (context.analysisRunId) {
+    await coverageService
+      .saveCoverage(tenderId, context.analysisRunId, [...coverage.values()])
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[stage3_llm] матрица покрытия не записана: ${e.message}`);
+      });
+  }
+  return issues;
 }
 
 module.exports = { runStage3Llm, buildIssue, locateInBlocks };

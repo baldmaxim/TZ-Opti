@@ -400,10 +400,13 @@ test('обязательный Markdown-вход: без .md ТЗ оценка =
      VALUES ('run-no-md', ?, NULL, 'pipeline', ?, ?, 'completed')`,
     TENDER_NO_MD, nowIso(), nowIso(),
   );
+  // occurrence_count задаём явно: миграция добивает NULL → 1 (backfill), а
+  // параллельный тестовый файл может прогнать runMigration между снимком «до»
+  // и чтением «после» — сравнение ловило бы чужую правку, а не evaluateRun.
   await db.queryRun(
     `INSERT INTO issue_clusters
-       (id, tender_id, analysis_run_id, cluster_title, verdict, overall_impact_level, created_at)
-     VALUES ('cl-no-md', ?, 'run-no-md', 'Замечание без ТЗ', 'publish', 'high', ?)`,
+       (id, tender_id, analysis_run_id, cluster_title, verdict, overall_impact_level, occurrence_count, created_at)
+     VALUES ('cl-no-md', ?, 'run-no-md', 'Замечание без ТЗ', 'publish', 'high', 1, ?)`,
     TENDER_NO_MD, nowIso(),
   );
   const clusterBefore = await db.queryOne('SELECT * FROM issue_clusters WHERE id = ?', 'cl-no-md');

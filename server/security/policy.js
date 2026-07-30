@@ -138,6 +138,13 @@ const RULES = [
   r('POST', '/tenders/:tenderId/review/carryovers/confirm', 'decision.write', 'review.carryovers.confirm', DECISION, 'tender', 'cluster'),
   r('GET', '/tenders/:tenderId/review/clusters/:clusterId', 'tender.read', 'review.cluster.get', READ, 'tender', 'cluster'),
   r('POST', '/tenders/:tenderId/review/clusters/:clusterId/decision', 'decision.write', 'review.cluster.decide', DECISION, 'tender', 'cluster'),
+  // Согласованные версии ТЗ: формирование/активация — решение инженера
+  // (decision.write), чтение — как рецензия.
+  r('POST', '/tenders/:tenderId/agreed-versions', 'decision.write', 'agreed_version.create', DECISION, 'tender', 'agreed_version'),
+  r('GET', '/tenders/:tenderId/agreed-versions', 'tender.read', 'agreed_version.list', READ, 'tender', 'agreed_version'),
+  r('GET', '/tenders/:tenderId/agreed-versions/:versionId', 'tender.read', 'agreed_version.get', READ, 'tender', 'agreed_version'),
+  r('POST', '/tenders/:tenderId/agreed-versions/:versionId/activate', 'decision.write', 'agreed_version.activate', DECISION, 'tender', 'agreed_version'),
+  r('POST', '/tenders/:tenderId/agreed-versions/:versionId/archive', 'decision.write', 'agreed_version.archive', DECISION, 'tender', 'agreed_version'),
   // Shadow-квалификация замечаний (gate качества, параллельный слой; production
   // не меняет). Чтение — как рецензия; override — решение инженера; rerun —
   // повторная оценка (analysis, но НЕ пересчёт замечаний).

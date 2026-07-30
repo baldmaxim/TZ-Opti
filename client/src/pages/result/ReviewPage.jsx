@@ -20,6 +20,7 @@ import { useWizardState } from '../../hooks/useWizardState';
 import EmptyState from '../../components/ui/EmptyState';
 import GateNotice from '../../components/wizard/GateNotice';
 import CarryoverPanel from '../../components/review/CarryoverPanel';
+import AgreedVersionsPanel from '../../components/review/AgreedVersionsPanel';
 import ReviewTabs from '../../components/review/ReviewTabs';
 import ReviewStatsBar from '../../components/review/ReviewStatsBar';
 import DocumentPane from '../../components/review/DocumentPane';
@@ -320,6 +321,12 @@ export default function ReviewPage() {
       />
 
       <CarryoverPanel key={carryKey} tenderId={tenderId} onConfirmed={() => loadClusters()} />
+
+      <AgreedVersionsPanel
+        tenderId={tenderId}
+        decidedCount={clusters.filter((c) => c.decision).length}
+        onChanged={() => loadClusters()}
+      />
 
       {clusters.length === 0 ? (
         <EmptyState

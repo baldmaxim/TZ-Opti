@@ -527,6 +527,32 @@ CREATE TABLE IF NOT EXISTS tz_excluded_ranges (
 
 CREATE INDEX IF NOT EXISTS idx_excluded_tender ON tz_excluded_ranges(tender_id);
 
+-- СОГЛАСОВАННЫЕ ВЕРСИИ ТЗ (agreed versions). Решения кластерной рецензии
+-- материализуются в новый .md-текст; активная версия становится ВХОДОМ
+-- следующего раунда анализа (через getTzSourceDocument + currentDocumentsRevision).
+-- Снимок применённых решений (applied_decisions) неизменяем: экспорт конкретной
+-- версии идёт от него, а не от живых решений. Цепочка версий — через
+-- base_agreed_version_id (NULL = построена от оригинального .md).
+CREATE TABLE IF NOT EXISTS tz_agreed_versions (
+  id                     TEXT PRIMARY KEY,
+  tender_id              TEXT NOT NULL,
+  version_no             INTEGER NOT NULL,           -- 1,2,3… на тендер
+  base_document_id       TEXT,                       -- documents.id исходного .md
+  base_revision_id       TEXT,                       -- ревизия базы (оригинал или прошлая agreed)
+  base_agreed_version_id TEXT,                       -- цепочка версий
+  analysis_run_id        TEXT NOT NULL,              -- pipeline-прогон, решения которого применены
+  applied_decisions      TEXT NOT NULL,              -- JSON-снимок решений (формат loadClusterDecisions)
+  build_report           TEXT,                       -- JSON {applied/skipped/failed/conflicts, perDecision[]}
+  md_text                TEXT NOT NULL,              -- материализованный .md
+  revision_id            TEXT NOT NULL,              -- computeRevisionId синтетического документа
+  status                 TEXT DEFAULT 'draft',       -- 'draft' | 'active' | 'archived'
+  created_at             TEXT NOT NULL,
+  created_by             TEXT,
+  FOREIGN KEY (tender_id) REFERENCES tenders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agreed_versions_tender ON tz_agreed_versions(tender_id, status);
+
 CREATE TABLE IF NOT EXISTS tender_custom_risks (
   id          TEXT PRIMARY KEY,
   tender_id   TEXT NOT NULL,

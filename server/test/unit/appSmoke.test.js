@@ -117,7 +117,7 @@ test('зарегистрированы все публичные /api-маршр
   const app = createApp({ logger: false });
   const stack = app._router.stack; // express 4: таблица маршрутов
   const mounted = stack.filter((l) => l.name === 'router').length;
-  assert.equal(mounted, 25, 'ожидается 25 смонтированных /api-роутеров (+auth, +audit, +admin, +qualification)');
+  assert.equal(mounted, 26, 'ожидается 26 смонтированных /api-роутеров (+auth, +audit, +admin, +qualification, +agreedVersions)');
 
   const paths = [];
   for (const layer of stack) {

@@ -47,6 +47,7 @@ const stagesRouter = require('./routes/stages');
 const decisionsRouter = require('./routes/decisions');
 const reviewRouter = require('./routes/review');
 const clusterReviewRouter = require('./routes/clusterReview');
+const agreedVersionsRouter = require('./routes/agreedVersions');
 const qualificationRouter = require('./routes/qualification');
 const exportRouter = require('./routes/export');
 const setupLocksRouter = require('./routes/setupLocks');
@@ -117,6 +118,7 @@ function createApp({ logger = 'dev', security = {} } = {}) {
   app.use('/api', decisionsRouter);
   app.use('/api', reviewRouter);
   app.use('/api', clusterReviewRouter);
+  app.use('/api', agreedVersionsRouter);
   app.use('/api', qualificationRouter);
   app.use('/api', exportRouter);
   app.use('/api', setupLocksRouter);

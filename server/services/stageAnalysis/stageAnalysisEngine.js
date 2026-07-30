@@ -57,10 +57,20 @@ async function buildContextForStage(tenderId, stage, { runId, configVersion = nu
   if (missingMd || !tzDoc) {
     throw badRequest('Загрузите .md-копию ТЗ в слот «ТЗ → Markdown» — анализ ведётся только по .md.');
   }
+  // Источником может быть согласованная версия (синтетический документ
+  // 'agr:…' — его нет в documents): FK-ссылки issues ведут на исходный .md,
+  // а если тот удалён — остаются пустыми.
+  let sourceDocumentId = tzDoc.id;
+  if (tzDoc.agreed_version_id) {
+    const base = tzDoc.base_document_id
+      ? await db.queryOne('SELECT id FROM documents WHERE id = ?', tzDoc.base_document_id)
+      : null;
+    sourceDocumentId = base ? base.id : null;
+  }
   const ctx = {
     tenderId,
     analysisRunId: runId || null,
-    sourceDocumentId: tzDoc.id,
+    sourceDocumentId,
     paragraphs,
     blocks,
     activeText,

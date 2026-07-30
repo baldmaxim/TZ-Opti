@@ -26,7 +26,9 @@ async function getPipeline() {
   return _pipelineCache;
 }
 
-// Block = { index, type, level?, text, section_path: string[] }
+// Block = { index, type, level?, text, section_path: string[], md_start?, md_end? }
+// md_start/md_end — смещения узла в СЫРОЙ md-строке (position remark-узла):
+// по ним билдер согласованной версии правит исходный markdown без потери разметки.
 async function parseMdToBlocks(mdText) {
   const text = (mdText || '').toString();
   if (!text.trim()) return [];
@@ -40,7 +42,15 @@ async function parseMdToBlocks(mdText) {
 
   const currentSectionPath = () => headingStack.map((h) => h.text);
 
-  const pushBlock = (type, text, extra = {}) => {
+  const offsetsOf = (node) => {
+    const start = node && node.position && node.position.start && node.position.start.offset;
+    const end = node && node.position && node.position.end && node.position.end.offset;
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start
+      ? { md_start: start, md_end: end }
+      : {};
+  };
+
+  const pushBlock = (type, text, node, extra = {}) => {
     const trimmed = (text || '').trim();
     if (!trimmed) return;
     blocks.push({
@@ -48,6 +58,7 @@ async function parseMdToBlocks(mdText) {
       type,
       text: trimmed,
       section_path: currentSectionPath(),
+      ...offsetsOf(node),
       ...extra,
     });
   };
@@ -73,17 +84,18 @@ async function parseMdToBlocks(mdText) {
           level: node.depth,
           text: txt,
           section_path: sectionPath,
+          ...offsetsOf(node),
         });
         return;
       }
       case 'paragraph': {
-        pushBlock('paragraph', toString(node));
+        pushBlock('paragraph', toString(node), node);
         return;
       }
       case 'list': {
         // Каждый элемент списка — отдельный блок list_item.
         for (const item of node.children || []) {
-          pushBlock('list_item', toString(item));
+          pushBlock('list_item', toString(item), item);
         }
         return;
       }
@@ -91,17 +103,17 @@ async function parseMdToBlocks(mdText) {
         // Каждая строка таблицы — отдельный блок table_row, ячейки через ' | '.
         for (const row of node.children || []) {
           const cells = (row.children || []).map((c) => toString(c).trim());
-          pushBlock('table_row', cells.join(' | '));
+          pushBlock('table_row', cells.join(' | '), row);
         }
         return;
       }
       case 'code': {
-        pushBlock('code', node.value || '');
+        pushBlock('code', node.value || '', node);
         return;
       }
       case 'blockquote': {
         // Цитаты складываем как обычные параграфы — для substring-поиска и LLM это эквивалентно.
-        pushBlock('paragraph', toString(node));
+        pushBlock('paragraph', toString(node), node);
         return;
       }
       case 'thematicBreak':
@@ -112,7 +124,7 @@ async function parseMdToBlocks(mdText) {
       default: {
         // Неизвестный узел — пробуем извлечь текст.
         const txt = toString(node).trim();
-        if (txt) pushBlock(node.type || 'paragraph', txt);
+        if (txt) pushBlock(node.type || 'paragraph', txt, node);
       }
     }
   };

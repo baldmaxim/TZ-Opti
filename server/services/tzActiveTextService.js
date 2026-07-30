@@ -101,8 +101,37 @@ function normalizeAndMerge(rawRanges, len) {
 
 // --- Чтение текста ТЗ ---------------------------------------------------------
 
+// Источник текста для анализа: АКТИВНАЯ согласованная версия ТЗ (если есть) —
+// синтетический документ с собственной ревизией, иначе — последний .md слота tz.
+// Прямой SELECT (не agreedVersionService) — чтобы не создавать цикл импортов.
+async function getTzSourceDocument(tenderId) {
+  const agreed = await db.queryOne(
+    `SELECT id, tender_id, version_no, md_text, created_at, base_document_id
+       FROM tz_agreed_versions
+      WHERE tender_id = ? AND status = 'active' ORDER BY version_no DESC LIMIT 1`,
+    tenderId,
+  );
+  if (agreed) {
+    return {
+      id: `agr:${agreed.id}`,
+      tender_id: agreed.tender_id,
+      doc_type: 'tz',
+      name: `ТЗ (согласованная версия ${agreed.version_no}).md`,
+      version: `agreed-${agreed.version_no}`,
+      extracted_text: agreed.md_text || '',
+      uploaded_at: agreed.created_at,
+      processing_status: 'extracted',
+      agreed_version_id: agreed.id,
+      // Исходный .md-документ (для FK-ссылок вроде issues.source_document_id:
+      // синтетический id 'agr:…' в documents не существует).
+      base_document_id: agreed.base_document_id || null,
+    };
+  }
+  return getTzMdDocument(tenderId);
+}
+
 async function getTzText(tenderId) {
-  const doc = await getTzMdDocument(tenderId);
+  const doc = await getTzSourceDocument(tenderId);
   if (!doc) {
     return {
       document: null,
@@ -135,6 +164,7 @@ async function getTzText(tenderId) {
 
 module.exports = {
   getTzMdDocument,
+  getTzSourceDocument,
   getDocumentByType,
   // чистое ядро (офлайн-тесты)
   hashText,

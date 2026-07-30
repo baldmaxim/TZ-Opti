@@ -583,10 +583,26 @@ async function clearStagePointers(tenderId, fromStage, tx) {
 }
 
 // Текущие ревизия документов / версия конфигурации тендера (для beginRun/activate).
+// В набор входит АКТИВНАЯ согласованная версия ТЗ (tz_agreed_versions): её
+// активация = новая ревизия документов — стадии/manifest/кэш реагируют на неё
+// той же механикой, что и на загрузку нового файла. Прямой SELECT (не сервис
+// agreedVersion) — чтобы не создавать цикл импортов.
 async function currentDocumentsRevision(tenderId, tx) {
   const docs = await exec(tx).queryAll(
     'SELECT id, version, extracted_text FROM documents WHERE tender_id = ?', tenderId,
   );
+  const agreed = await exec(tx).queryOne(
+    `SELECT id, version_no, md_text FROM tz_agreed_versions
+      WHERE tender_id = ? AND status = 'active' ORDER BY version_no DESC LIMIT 1`,
+    tenderId,
+  );
+  if (agreed) {
+    docs.push({
+      id: `agr:${agreed.id}`,
+      version: `agreed-${agreed.version_no}`,
+      extracted_text: agreed.md_text || '',
+    });
+  }
   return computeDocumentsRevision(docs);
 }
 const currentConfigVersion = () => computeConfigVersion(process.env);

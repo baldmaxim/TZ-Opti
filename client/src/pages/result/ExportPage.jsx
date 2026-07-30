@@ -27,19 +27,34 @@ export default function ExportPage() {
   const [reportErr, setReportErr] = useState(null);
   const [loadingReport, setLoadingReport] = useState(false);
 
+  // Источник экспорта: снимок согласованной версии ТЗ или живые решения.
+  // По умолчанию — активная версия (если есть): экспорт воспроизводим.
+  const [agreedVersions, setAgreedVersions] = useState([]);
+  const [versionId, setVersionId] = useState(''); // '' = живые решения
+
+  useEffect(() => {
+    if (!tenderId || exportStep?.status === 'locked') return;
+    api.listAgreedVersions(tenderId)
+      .then((data) => {
+        setAgreedVersions(data.items || []);
+        if (data.active_id) setVersionId(data.active_id);
+      })
+      .catch(() => setAgreedVersions([]));
+  }, [tenderId, exportStep?.status]);
+
   const loadReport = useCallback(async () => {
     if (!tenderId) return;
     setLoadingReport(true);
     setReportErr(null);
     try {
-      setReport(await api.exportDocxReport(tenderId));
+      setReport(await api.exportDocxReport(tenderId, null, versionId || null));
     } catch (e) {
       setReportErr(e.message);
       setReport(null);
     } finally {
       setLoadingReport(false);
     }
-  }, [tenderId]);
+  }, [tenderId, versionId]);
 
   useEffect(() => {
     if (tenderId && exportStep?.status !== 'locked') loadReport();
@@ -56,7 +71,7 @@ export default function ExportPage() {
     {
       title: 'ТЗ.docx с правками и комментариями',
       desc: 'Главный артефакт. Берётся исходный ТЗ.docx, в него вносятся настоящие правки Word (Track Changes) и комментарии по принятым решениям.',
-      get: () => api.downloadExportDocx(tenderId),
+      get: () => api.downloadExportDocx(tenderId, null, versionId || null),
       primary: true,
     },
     {
@@ -90,6 +105,29 @@ export default function ExportPage() {
       <p className="text-sm text-gray-600 dark:text-gray-400">
         Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Доступен после сборки анализа ТЗ; качество результата выше, когда принята рецензия по кластерам.
       </p>
+
+      {agreedVersions.length > 0 && (
+        <div className="card p-3 flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-medium">Источник решений для Word:</span>
+          <select
+            className="input text-sm"
+            value={versionId}
+            onChange={(e) => setVersionId(e.target.value)}
+          >
+            {agreedVersions.map((v) => (
+              <option key={v.id} value={v.id}>
+                Согласованная версия {v.version_no}
+                {v.status === 'active' ? ' (активная)' : v.status === 'archived' ? ' (архив)' : ' (черновик)'}
+              </option>
+            ))}
+            <option value="">Текущие решения рецензии (живые)</option>
+          </select>
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            Экспорт версии идёт от её неизменяемого снимка решений и воспроизводим
+            независимо от дальнейшей рецензии.
+          </span>
+        </div>
+      )}
       {items.map((it) => (
         <div key={it.title} className={`card p-4 flex items-center justify-between gap-3 ${it.primary ? 'border-brand-300 bg-brand-50/40' : ''}`}>
           <div>
@@ -120,8 +158,10 @@ export default function ExportPage() {
         {report?.source && (
           <div className="text-xs mt-2">
             Источник решений:{' '}
-            <span className={`px-1.5 py-0.5 rounded ${report.source === 'clusters' ? 'text-brand-700 bg-brand-50' : 'text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700'}`}>
-              {report.source === 'clusters' ? 'кластеры (основной путь)' : 'находки стадий (legacy-fallback)'}
+            <span className={`px-1.5 py-0.5 rounded ${report.source !== 'issues' ? 'text-brand-700 bg-brand-50' : 'text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700'}`}>
+              {report.source === 'agreed_version'
+                ? `снимок согласованной версии${report.agreed_version ? ` ${report.agreed_version.version_no}` : ''}`
+                : report.source === 'clusters' ? 'кластеры (основной путь)' : 'находки стадий (legacy-fallback)'}
             </span>
           </div>
         )}

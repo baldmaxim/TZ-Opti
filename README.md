@@ -378,8 +378,11 @@ stage-прогонов**, `started_at` / `finished_at`. Узкая колонк�
 > `signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export`.
 > Инженер принимает **одно решение на кластер**; из кластерных решений собираются ВСЕ выгрузки:
 > `.docx` с Track Changes, HTML-preview, review.md, CSV/JSON/summary.md и экраны «Рецензия»/«Итог».
+> Решения рецензии материализуются в **согласованную версию ТЗ** (`tz_agreed_versions`):
+> активная версия — вход следующего раунда анализа (пересчитываются только изменённые
+> части) и база экспорта конкретной версии (`?version_id=`).
 > Issue-level путь (`issues` + `review_decisions.issue_id`) остаётся для пер-стадийной рецензии
-> внутри стадий 1–4 (включая `tz_excluded_ranges`) и как **legacy-fallback** выгрузок — когда
+> внутри стадий 1–4 (read-only: на текст анализа не влияет) и как **legacy-fallback** выгрузок — когда
 > кластеров/кластерных решений нет или запрошен явный `?source=issues` (фактический источник —
 > в заголовке `X-Export-Source`). Подробности потоков и source-of-truth — в
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).

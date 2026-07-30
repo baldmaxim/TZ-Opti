@@ -200,7 +200,40 @@ Excel-number → number; единицы «кв.м»/«м²»/«куб.м»/«п.
 
 **Исход self-analysis явный — ложного успеха на эвристиках нет.** `runSelfAnalysisLlm` НЕ бросает, а возвращает `{ status, findings, segmentation, reason }`; `selfAnalysisService.resolveSelfAnalysisOutcome` (чистая, fail-closed) сводит его в исход слоя: **N/N** частей → `completed`; **1..N-1/N** → `completed_with_warnings` + `failed_parts` (`partial:true`); **0/N** → `failed` и `buildSelfAnalysis` БРОСАЕТ (`code='SELF_ANALYSIS_FAILED'`) — прогон стадии становится failed, шаг конвейера — failed (страж в `runPipelineStep`: `summary.status==='failed'` роняет шаг). Два исхода «QC не запускался» — не сбой: `not_applicable` (кластеров нет, модель не зовём) и `skipped` (нет `OPENAI_API_KEY`; помечается warning, не зелёным). Клиент: `stageToast` в `client/src/utils/analysisResult.js` — success зелёный, warning ЖЁЛТЫЙ, сбой/обрыв красный (`_pollStage` в `useTenderStore`). Тесты — `server/test/unit/selfAnalysis.test.js` (0/N, 1/N, N/N, пустые кластеры, LLM не настроен), `clientAnalysisResult.test.js` (warning-toast), `pipeline.test.js`.
 
-После стадий 1–4 решения с действием `delete` / `remove_from_scope` исключают фрагменты из активного текста для следующих стадий.
+**Вход анализа НЕИЗМЕНЯЕМ.** Все стадии 1–5 читают один и тот же текст (`getTzText`,
+`tzActiveTextService.js`) — решения инженера на него не влияют. Прежний механизм
+`tz_excluded_ranges` (урезание активного текста между стадиями) демонтирован; таблица
+осталась в БД как legacy-история, код её не пишет и не читает. Влияние решений —
+только через **согласованную версию ТЗ** (см. ниже).
+
+**Согласованная версия ТЗ (`tz_agreed_versions`, `server/services/agreedVersion/`).**
+Решения кластерной рецензии материализуются в новый .md: чистый билдер
+`agreedTextBuilder.js` правит СЫРУЮ md-строку по offset-якорям блоков
+(`mdParser` отдаёт `md_start`/`md_end`), `delete`/`remove_from_scope` — ко ВСЕМ
+вхождениям кластера (`evidence_fragments`), `edit` — ко всем при дословном совпадении
+цели (иначе только representative, остальные в отчёт `skipped_occurrence`),
+`accept`/`reject` текст не меняют; операции сливаются и применяются справа налево
+(дрейф координат исключён), конфликты и ненайденные фрагменты — в `build_report`.
+Версия создаётся draft (`POST /api/tenders/:id/agreed-versions`), активация
+(`…/activate`, одна active на тендер) делает её ВХОДОМ следующего раунда анализа:
+`getTzSourceDocument` отдаёт синтетический документ версии, `currentDocumentsRevision`
+включает её в ревизию набора — manifest/кэш/carry-over реагируют штатной механикой
+ревизий. Снимок `applied_decisions` неизменяем; цепочка версий — `base_agreed_version_id`.
+Экспорт конкретной версии — `?version_id=` в `/export/docx[/report]` (решения из
+снимка ВСЕЙ цепочки, заголовок `X-Agreed-Version`; правки «по правкам» прошлого
+раунда в оригинальном .docx ложатся fallback-комментарием). UI: панель версий на
+ReviewPage, селектор источника на ExportPage.
+
+**Селективный пересчёт.** Кэш частей переиспользуется МЕЖДУ ревизиями по
+`input_hash` + `config_version` (`segmentStore.getCompletedByHash` + прогрев в текущую
+ревизию): после активации версии заново считаются только изменённые части, нетронутые
+поднимаются из кэша без LLM (в истории — `source='cache'`). Карта затронутого —
+`GET /api/tenders/:id/pipeline/impact` (`agreedVersion/impactService.js`,
+planOnly-режим `runLlmStage`: нарезка и хэши без LLM и записи) — ОЦЕНКА, не гарантия:
+жадная упаковка частей может каскадно сдвинуть нарезку хвоста. «Незатронутая стадия»
+всё равно перепрогоняется (новый снимок против новой ревизии), но целиком из кэша.
+Carry-over: решения прошлого прогона, чья правка вошла в активную версию, отдаются
+секцией `materialized` («учтено в тексте»), а не как потерянные.
 
 **Зоны ответственности и сборка итога.** Каждый агент 1–4 пишет ТОЛЬКО в свой домен `problem_type` — единый реестр `server/services/review/stageDomains.js` (Stage1 покрытие расчёта; Stage2 Q&A+характеристики; Stage3 условия; Stage4 риски); движок логирует находки вне домена (`off_domain` в summary). Слой сборки `server/services/review/consolidation.js` (`consolidate(tenderId)`) сводит находки разных стадий, указывающие на одно место ТЗ (абзац + перекрытие char-диапазонов; фолбэк — цитата), в группы: **primary** по критичности (тай-брейк — порядок стадий), прочие — `related`, конфликты помечаются (решает инженер). Один итог: `GET /api/tenders/:id/review/consolidated` → экран «Итог» (`client/src/pages/result/SummaryPage.jsx`). Экспорт берёт **одно** решение на место (primary; дубли попадают в отчёт экспорта как `skipped`) через `dedupeExportDecisions`. Тесты слоя — `server/test/consolidation.test.js`.
 
@@ -345,9 +378,10 @@ DELETE+INSERT в уже выданном инженеру снимке. Тепе
 (`archiveStageRunsFrom`), снимает указатель pipeline (`clearPipelinePointer` — входы
 производного снимка отозваны), возвращает workflow-состояние и пишет событие
 `stage.reset` в `audit_log` (что снято / что сохранено). `analysis_runs`, `issues`,
-`analysis_signals` и `review_decisions` остаются в БД; чистятся только ПРОЕКЦИИ —
-`tz_excluded_ranges` (иначе активный текст остался бы урезанным) и `analysis_segments` (кэш
-частей). **Физическое удаление — только admin-purge:** `services/admin/purgeService.js`
+`analysis_signals` и `review_decisions` остаются в БД; **кэш частей
+(`analysis_segments`) тоже НЕ чистится** — он скоуплен ревизией и гейтится
+`input_hash`+`config_version` (рассинхрон невозможен), на нём держится селективный
+пересчёт. **Физическое удаление — только admin-purge:** `services/admin/purgeService.js`
 (чистое ядро `selectRunsToPurge`), CLI `npm run purge -- --tender <id> [--confirm <id>]
 [--keep-last N] [--older-than ISO]` и `GET|POST /api/admin/tenders/:id/analysis-history/purge`
 (право `admin.system`). Инварианты purge: актуальный (по указателю) и `running` прогон не

@@ -214,7 +214,20 @@ export const api = {
       method: 'POST',
       body: { with_self_analysis: withSelfAnalysis, mode },
     }),
+  // Асинхронная сборка: сервер отвечает 202 сразу ({job: {...}}), конвейер идёт
+  // заданием очереди. Синхронный runPipeline держит HTTP-запрос на всё время
+  // сборки (20+ минут на большом ТЗ) и упирается в server.requestTimeout —
+  // основной flow обязан использовать этот вариант + опрос getJob.
+  runPipelineAsync: (tenderId, { withSelfAnalysis = true, mode = 'production' } = {}) =>
+    request(`/tenders/${tenderId}/pipeline/run`, {
+      method: 'POST',
+      body: { with_self_analysis: withSelfAnalysis, mode, async: true },
+    }),
   getPipelineStatus: (tenderId) => request(`/tenders/${tenderId}/pipeline/status`),
+
+  // Задание очереди (стадия/конвейер): статус, задачи, прогресс; отчёт
+  // финализатора конвейера — в job.result.
+  getJob: (jobId) => request(`/jobs/${jobId}`),
 
   // Решения (legacy issue-level — внутри стадий 1–4)
   patchIssue: (id, data) => request(`/issues/${id}`, { method: 'PATCH', body: data }),
@@ -248,6 +261,21 @@ export const api = {
   confirmCarryovers: (tenderId, selections) =>
     request(`/tenders/${tenderId}/review/carryovers/confirm`, { method: 'POST', body: { selections } }),
 
+  // Согласованные версии ТЗ: решения рецензии → материализованный .md; активная
+  // версия — вход следующего раунда анализа и база экспорта конкретной версии.
+  createAgreedVersion: (tenderId) =>
+    request(`/tenders/${tenderId}/agreed-versions`, { method: 'POST' }),
+  listAgreedVersions: (tenderId) => request(`/tenders/${tenderId}/agreed-versions`),
+  getAgreedVersion: (tenderId, versionId) =>
+    request(`/tenders/${tenderId}/agreed-versions/${versionId}`),
+  activateAgreedVersion: (tenderId, versionId) =>
+    request(`/tenders/${tenderId}/agreed-versions/${versionId}/activate`, { method: 'POST' }),
+  archiveAgreedVersion: (tenderId, versionId) =>
+    request(`/tenders/${tenderId}/agreed-versions/${versionId}/archive`, { method: 'POST' }),
+  // Карта затронутого (dry-run): какие части каких стадий пересчитаются при
+  // запуске анализа по текущему входу. Оценка (estimate), без LLM и записи.
+  getPipelineImpact: (tenderId) => request(`/tenders/${tenderId}/pipeline/impact`),
+
   // Превью + экспорт
   reviewPreviewUrl: (tenderId) => `${BASE}/tenders/${tenderId}/review/preview`,
   // Legacy-fallback: сводный вид по issues (группы находок + конфликты + вердикты).
@@ -261,8 +289,11 @@ export const api = {
   exportReviewMdUrl: (tenderId, stage = null) =>
     `${BASE}/tenders/${tenderId}/export/review.md${stage ? `?stage=${stage}` : ''}`,
   // Dry-run отчёт «что попало в Word, а что нет» (без скачивания файла).
-  exportDocxReport: (tenderId, stage = null) =>
-    request(`/tenders/${tenderId}/export/docx/report${stage ? `?stage=${stage}` : ''}`),
+  // versionId — экспорт от снимка конкретной согласованной версии ТЗ.
+  exportDocxReport: (tenderId, stage = null, versionId = null) => {
+    const qs = stage ? `?stage=${stage}` : (versionId ? `?version_id=${encodeURIComponent(versionId)}` : '');
+    return request(`/tenders/${tenderId}/export/docx/report${qs}`);
+  },
 
   // --- скачивание защищённых файлов ---------------------------------------
   // Эндпоинты закрыты Bearer-токеном, поэтому файл забирается запросом с
@@ -270,8 +301,10 @@ export const api = {
   // оставлены для показа адреса, но переходить по ним напрямую нельзя.
   downloadDocument: (id, name) => download(`/documents/${id}/download`, name),
   downloadQaExport: (tenderId) => download(`/tenders/${tenderId}/qa/export`, 'qa.xlsx'),
-  downloadExportDocx: (tenderId, stage = null) =>
-    download(`/tenders/${tenderId}/export/docx${stage ? `?stage=${stage}` : ''}`, 'ТЗ-с-правками.docx'),
+  downloadExportDocx: (tenderId, stage = null, versionId = null) => {
+    const qs = stage ? `?stage=${stage}` : (versionId ? `?version_id=${encodeURIComponent(versionId)}` : '');
+    return download(`/tenders/${tenderId}/export/docx${qs}`, 'ТЗ-с-правками.docx');
+  },
   downloadExportCsv: (tenderId) => download(`/tenders/${tenderId}/export/issues.csv`, 'issues.csv'),
   downloadExportJson: (tenderId) => download(`/tenders/${tenderId}/export/issues.json`, 'issues.json'),
   downloadExportSummary: (tenderId) => download(`/tenders/${tenderId}/export/summary.md`, 'summary.md'),

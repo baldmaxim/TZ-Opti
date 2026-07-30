@@ -22,15 +22,24 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
   решения инженера по кластерам и все выгрузки.
 - **Issue-level backbone (legacy-fallback)** — таблица `issues` + `review_decisions(issue_id)`.
   Здесь живут находки стадий 1–4 как редактируемые записи и пер-стадийная рецензия
-  внутри стадий (она же управляет `tz_excluded_ranges`). Как путь финальной рецензии и
-  выгрузок используется только fallback-ом: когда кластеров/кластерных решений нет
-  (конвейер не собран, старый тендер) или запрошен явный `?source=issues`.
+  внутри стадий (read-only-legacy: на текст анализа она больше НЕ влияет — механизм
+  `tz_excluded_ranges` демонтирован, вход анализа неизменяем). Как путь финальной
+  рецензии и выгрузок используется только fallback-ом: когда кластеров/кластерных
+  решений нет (конвейер не собран, старый тендер) или запрошен явный `?source=issues`.
+
+Влияние решений инженера на следующий раунд анализа — только через **согласованную
+версию ТЗ** (`tz_agreed_versions`, `server/services/agreedVersion/`): решения
+кластерной рецензии материализуются в новый .md, активная версия становится входом
+анализа (новая ревизия документов) и базой экспорта (`?version_id=`); пересчитываются
+только изменённые части (кросс-ревизионный кэш по `input_hash`), карта затронутого —
+`GET /pipeline/impact`. Подробности — в CLAUDE.md, блоки «Согласованная версия ТЗ» и
+«Селективный пересчёт».
 
 ```
         ┌──────────────────── ISSUE-LEVEL BACKBONE (legacy-fallback) ─────────────────────────┐
         │                                                                                     │
-Стадии 1–4 ──▶ issues ──▶ review_decisions(issue_id) ──▶ пер-стадийная рецензия,             │
-(LLM-агенты)     │         tz_excluded_ranges; consolidation ──▶ fallback выгрузок            │
+Стадии 1–4 ──▶ issues ──▶ review_decisions(issue_id) ──▶ пер-стадийная рецензия (read-only), │
+(LLM-агенты)     │         consolidation ──▶ fallback выгрузок                                │
         │        │                                                                            │
         └────────┼────────────────────────────────────────────────────────────────────────-─┘
                  │ writeSignalsForStage (авто, best-effort)
@@ -86,7 +95,7 @@ signals → draft_issues → issue_reviews → issue_clusters → review_decisio
 | Что попадёт в `.docx` (Track Changes) | **primary:** `issue_clusters` + `review_decisions.cluster_id` (`clusterReviewService.loadClusterDecisions`). **fallback:** `issues` + `review_decisions.issue_id` (когда кластерных решений нет или `?source=issues`) | — |
 | HTML-preview / review.md / CSV / JSON / summary.md (этап 7) | **primary:** те же кластерные решения (`loadClusterReviewRows` / `loadClusterDecisions`); фактический источник — в `X-Export-Source` и шапке файла. **fallback:** issue-level, когда кластеров нет или `?source=issues` | — |
 | Экран «Итог» / финальная «Рецензия» | `review/clusterReviewService.js` `listReviewClusters(tenderId)` поверх `issue_clusters` | consolidation.js — legacy-fallback |
-| Исключение фрагментов из активного текста для следующих стадий | `tz_excluded_ranges` (пишется в `finishStage` по `delete`/`remove_from_scope` issue-level решений стадий 1–4) | — |
+| Влияние решений на следующий раунд анализа | `tz_agreed_versions` (`agreedVersion/agreedVersionService.js`): активная согласованная версия = вход анализа (новая ревизия документов) | `tz_excluded_ranges` — демонтировано, таблица legacy |
 | Ранжирование/группировка/полнота находок (аналитика) | конвейер: `analysis_signals` → … → `self_analysis_results` | — |
 | **Показывать ли замечание инженеру** (материальность) | `review/materiality.js` (матрица `impact_level` × `evidence_level` → `verdict`), считает `critic/criticScoring.js`; свёртка на кластер — `clustering/clusteringService.js` | `criticality` агента и `confidence` модели — легаси-сортировка (`score`, `display_priority`), на публикацию НЕ влияют |
 | **Последнее слово о публикации** (фильтрация draft_issues) | `critic/precision/` — precision-критик: уровень 1 детерминированные жёсткие фильтры (`hardFilters.js`), уровень 2 отдельная LLM-проверка спорных (`llmCritic.js`). Исход в `issue_reviews.critic_outcome`, карта из 9 измерений в `critic_assessment` | оценка материальности — только ВХОД критика; при сбое критика спорные medium/low не публикуются (`verdict='verify'`) |
@@ -161,8 +170,8 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
    копируются в `analysis_signals`. Сбой этого писателя не роняет стадию.
 4. Клиент опрашивает `GET /api/tenders/:id/stages` (`stageN_status`: `open|running|reviewing|finished`).
 5. Инженер проходит таблицу: `PATCH /api/issues/:id` и `POST /api/issues/:id/decision`
-   (пишет `review_decisions`). `POST …/stages/:n/finish` фиксирует стадию, применяет
-   `tz_excluded_ranges` для `delete`/`remove_from_scope` и разлочивает следующую стадию.
+   (пишет `review_decisions`). `POST …/stages/:n/finish` фиксирует стадию и разлочивает
+   следующую (чистый гейт статусов: на текст анализа решения не влияют).
    Возврат назад — `POST …/stages/:n/reset` (каскадный сброс стадий ≥ N).
 
 **C. Стадия 5 — QC над итогом (новая роль).** `POST /api/tenders/:id/self-analysis/build`
@@ -209,7 +218,8 @@ Q&A. Эндпоинты: `documents`, `checklist`, `conditions`, `risks`, `qa`, 
 снимает указатели стадий ≥ N (+ архивирует их прогоны), снимает указатель pipeline,
 возвращает статусы стадий и пишет `stage.reset` в `audit_log`; `analysis_runs`, `issues`,
 `analysis_signals`, `review_decisions`, `analysis_run_segments` (история выполнения частей)
-НЕ удаляются — чистятся только проекции: `tz_excluded_ranges` и `analysis_segments` (кэш частей). Физическое удаление — единственная точка:
+и `analysis_segments` (кэш частей — скоуплен ревизией, гейтится `input_hash`, основа
+селективного пересчёта) НЕ удаляются. Физическое удаление — единственная точка:
 `services/admin/purgeService.js` (CLI `npm run purge`, `GET|POST
 /api/admin/tenders/:id/analysis-history/purge`, право `admin.system`); dry-run по умолчанию,
 удаление по `confirm === tenderId`, актуальный и `running` прогон неудаляемы, `keep_last`

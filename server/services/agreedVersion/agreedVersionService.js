@@ -210,6 +210,57 @@ async function createAgreedVersion(tenderId, { actor = null, requestId = null } 
   return rowToVersion(row);
 }
 
+// Снимок решений → строки экспорта (формат loadClusterDecisions:
+// { issue, decision_kind, final_comment, edited_redaction, target_text }).
+// Чистая функция: экспорт версии идёт от СНИМКА, а не от живых решений.
+function snapshotToExportRows(applied) {
+  return (applied || [])
+    .filter((d) => d && d.decision && d.decision !== 'reject')
+    .map((d) => ({
+      issue: {
+        id: d.cluster_id || null,
+        analysis_stage: null,
+        cluster_id: d.cluster_id || null,
+        source_fragment: d.representative_fragment || null,
+        source_clause: d.tz_clause || null,
+        paragraph_index: d.paragraph_index ?? null,
+        problem_type: d.problem_type || null,
+        suggested_action: null,
+        suggested_redaction: d.suggested_redaction || null,
+        review_comment: null,
+      },
+      decision_kind: d.decision,
+      final_comment: d.final_comment || null,
+      edited_redaction: d.edited_redaction || d.suggested_redaction || null,
+      target_text: d.target_text || null,
+    }));
+}
+
+// Решения ВСЕЙ цепочки версии (оригинал → … → версия) в формате экспорта.
+// docx-экспорт применяет их к оригинальному .docx: track changes показывают
+// путь «оригинал → согласованная версия». Решения раунда 2, сделанные по
+// тексту, ВСТАВЛЕННОМУ правками раунда 1, в оригинале не найдутся — quoteLocator
+// честно отдаст их Word-комментарием (status='fallback').
+async function loadExportDecisions(tenderId, versionId) {
+  const chain = [];
+  let cur = await db.queryOne(
+    'SELECT * FROM tz_agreed_versions WHERE id = ? AND tender_id = ?', versionId, tenderId,
+  );
+  if (!cur) throw notFound('Согласованная версия не найдена');
+  const target = cur;
+  while (cur) {
+    chain.unshift(cur); // от корня к вершине: правки ранних раундов применяются первыми
+    cur = cur.base_agreed_version_id
+      ? await db.queryOne(
+        'SELECT * FROM tz_agreed_versions WHERE id = ? AND tender_id = ?',
+        cur.base_agreed_version_id, tenderId,
+      )
+      : null;
+  }
+  const rows = chain.flatMap((v) => snapshotToExportRows(parseJson(v.applied_decisions, [])));
+  return { version: rowToVersion(target), rows, chain_length: chain.length };
+}
+
 async function getVersion(tenderId, versionId, { withText = false } = {}) {
   const row = await db.queryOne(
     'SELECT * FROM tz_agreed_versions WHERE id = ? AND tender_id = ?',
@@ -281,7 +332,9 @@ async function archiveVersion(tenderId, versionId, { actor = null, requestId = n
 module.exports = {
   // чистое ядро — см. agreedTextBuilder.js
   versionAsDocument,
+  snapshotToExportRows,
   // DB
+  loadExportDecisions,
   createAgreedVersion,
   getVersion,
   listVersions,

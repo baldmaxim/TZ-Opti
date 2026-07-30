@@ -214,3 +214,29 @@ test('цепочка версий: повторный build поверх рез�
   assert.ok(!second.mdText.includes('вывоз мусора'), 'правка первой версии сохранена');
   assert.ok(second.mdText.includes('5 лет'), 'правка второй версии применена');
 });
+
+// --- Снимок решений → строки экспорта (agreedVersionService, чистая) -----------
+
+const { snapshotToExportRows } = require('../../services/agreedVersion/agreedVersionService');
+
+test('snapshotToExportRows: формат совпадает с loadClusterDecisions, reject отброшен', () => {
+  const rows = snapshotToExportRows([
+    {
+      cluster_id: 'c1', decision: 'delete', representative_fragment: 'фрагмент',
+      tz_clause: 'п. 1.1', paragraph_index: 3, problem_type: 'не_учтено_в_кп',
+      final_comment: 'вне объёма', target_text: null, edited_redaction: null, suggested_redaction: null,
+    },
+    { cluster_id: 'c2', decision: 'reject', representative_fragment: 'х' },
+    {
+      cluster_id: 'c3', decision: 'edit', representative_fragment: 'старый текст',
+      edited_redaction: null, suggested_redaction: 'новый текст',
+    },
+  ]);
+  assert.equal(rows.length, 2, 'reject не экспортируется');
+  assert.equal(rows[0].decision_kind, 'delete');
+  assert.equal(rows[0].issue.source_fragment, 'фрагмент');
+  assert.equal(rows[0].issue.source_clause, 'п. 1.1');
+  assert.equal(rows[0].issue.paragraph_index, 3);
+  assert.equal(rows[0].final_comment, 'вне объёма');
+  assert.equal(rows[1].edited_redaction, 'новый текст', 'edit без правки инженера берёт suggested_redaction');
+});

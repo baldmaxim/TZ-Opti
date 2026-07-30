@@ -67,6 +67,20 @@ async function prepareDocxExport(tenderId, query) {
   if (!fs.existsSync(tz.file_path)) throw notFound('Файл ТЗ отсутствует на диске');
   const stage = query.stage ? Number(query.stage) : null;
 
+  // Привязка к КОНКРЕТНОЙ согласованной версии (?version_id=): решения берутся
+  // из НЕИЗМЕНЯЕМОГО снимка applied_decisions всей цепочки версии, а не из живых
+  // review_decisions — экспорт воспроизводим независимо от дальнейшей рецензии.
+  if (query.version_id) {
+    // eslint-disable-next-line global-require
+    const agreedVersions = require('../services/agreedVersion/agreedVersionService');
+    const snap = await agreedVersions.loadExportDecisions(tenderId, query.version_id);
+    const author = (query.author || tender.owner || 'TZ-Opti').toString();
+    return {
+      tender, tz, stage: null, decisions: snap.rows, author,
+      source: 'agreed_version', agreedVersion: snap.version,
+    };
+  }
+
   // Этап 6: основной путь — решения по кластерам (issue_clusters → review_decisions.cluster_id).
   // Fallback на legacy issue-level решения, если кластерных решений нет (старый тендер /
   // конвейер не собран). Явный ?source=issues принудительно включает legacy-путь.
@@ -81,7 +95,7 @@ async function prepareDocxExport(tenderId, query) {
   }
 
   const author = (query.author || tender.owner || 'TZ-Opti').toString();
-  return { tender, tz, stage, decisions, author, source };
+  return { tender, tz, stage, decisions, author, source, agreedVersion: null };
 }
 
 function setReportHeaders(res, summary) {
@@ -98,7 +112,7 @@ function setReportHeaders(res, summary) {
 //     дубли уходят в отчёт со статусом skipped (dedupeExportDecisions).
 // Возвращает { buffer, report }; report.source проставляется для прозрачности.
 function buildDedupedExport(tzPath, decisions, meta, source = 'issues') {
-  if (source === 'clusters') {
+  if (source === 'clusters' || source === 'agreed_version') {
     const { buffer, report } = exportReviewedDocx(tzPath, decisions, meta);
     report.source = source;
     return { buffer, report };
@@ -123,14 +137,16 @@ function buildDedupedExport(tzPath, decisions, meta, source = 'issues') {
 }
 
 exports.docx = async (req, res) => {
-  const { tender, tz, stage, decisions, author, source } = await prepareDocxExport(req.params.id, req.query);
+  const { tender, tz, stage, decisions, author, source, agreedVersion } =
+    await prepareDocxExport(req.params.id, req.query);
   const { buffer, report } = buildDedupedExport(tz.file_path, decisions, { author, date: new Date() }, source);
 
   const safeTitle = (tender.title || 'tender').replace(/[^a-zA-Zа-яА-Я0-9_-]+/g, '_').slice(0, 60);
-  const suffix = stage ? `__stage${stage}` : '';
+  const suffix = stage ? `__stage${stage}` : (agreedVersion ? `__v${agreedVersion.version_no}` : '');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeTitle)}${suffix}__review.docx"`);
   res.setHeader('X-Export-Source', source);
+  if (agreedVersion) res.setHeader('X-Agreed-Version', `${agreedVersion.id}:${agreedVersion.version_no}`);
   setReportHeaders(res, report.summary);
   res.send(buffer);
 };
@@ -138,7 +154,7 @@ exports.docx = async (req, res) => {
 // Dry-run: строит экспорт в памяти и возвращает только JSON-отчёт «что легло /
 // через комментарий / не легло / дубликат» — без бинарника. Для показа в портале.
 exports.docxReport = async (req, res) => {
-  const { tz, decisions, author, source } = await prepareDocxExport(req.params.id, req.query);
+  const { tz, decisions, author, source, agreedVersion } = await prepareDocxExport(req.params.id, req.query);
   const { report } = buildDedupedExport(tz.file_path, decisions, { author, date: new Date() }, source);
   const issueById = new Map(decisions.map((d) => [d.issue.id, d.issue]));
   const items = report.items.map((it) => {
@@ -150,7 +166,12 @@ exports.docxReport = async (req, res) => {
       fragment: (iss.source_fragment || '').slice(0, 160),
     };
   });
-  res.json({ summary: report.summary, items, source });
+  res.json({
+    summary: report.summary,
+    items,
+    source,
+    agreed_version: agreedVersion ? { id: agreedVersion.id, version_no: agreedVersion.version_no } : null,
+  });
 };
 
 // CSV/JSON/summary — cluster-primary с issue-fallback (диспетчеры exportService);

@@ -66,6 +66,41 @@ test('resolvePositions: количество и единица — ФАКТ ве
   assert.equal(ghost.verified, false, 'позиции «усиление проёмов» в ведомости нет — связь не доказана');
 });
 
+test('resolvePositions: несколько ВОР — catalog_entry_id решает, одинаковый номер позиции без ID не приписывается произвольному документу', () => {
+  const entries = [
+    {
+      entry_id: 'vc_aaaaaaaaaa', document_id: 'doc-k1', document_name: 'ВОР-К1.xlsx',
+      applicability: 'корпус 1', name: 'Устройство перегородок из ПГП', unit: 'м2',
+      quantity: 5000, positions: ['1'], refs: [],
+    },
+    {
+      entry_id: 'vc_bbbbbbbbbb', document_id: 'doc-k2', document_name: 'ВОР-К2.xlsx',
+      applicability: 'корпус 2', name: 'Устройство перегородок из ПГП', unit: 'м2',
+      quantity: 7000, positions: ['1'], refs: [],
+    },
+  ];
+
+  // Модель сослалась на ID записи корпуса 1 → количество берётся ЕГО, а не сумма.
+  const byId = resolvePositions(normalizeVorMatch({
+    status: 'partial',
+    positions: [{ catalog_entry_id: 'vc_aaaaaaaaaa', position_no: '1', name: 'Устройство перегородок из ПГП' }],
+  }), entries);
+  assert.equal(byId[0].verified, true);
+  assert.equal(byId[0].quantity, 5000, 'объём корпуса 1, а не 12 000 «на весь тендер»');
+  assert.equal(byId[0].document_id, 'doc-k1');
+  assert.equal(byId[0].applicability, 'корпус 1');
+  assert.equal(byId[0].catalog_entry_id, 'vc_aaaaaaaaaa');
+
+  // Без ID: «позиция 1» есть в обоих корпусах, наименование одинаковое —
+  // связь неоднозначна и НЕ доказана ведомостью.
+  const noId = resolvePositions(normalizeVorMatch({
+    status: 'covered',
+    positions: [{ position_no: '1', name: 'Устройство перегородок из ПГП' }],
+  }), entries);
+  assert.equal(noId[0].verified, false, 'произвольный документ не подставлен');
+  assert.equal(noId[0].ambiguous, true);
+});
+
 test('matchKeyOf стабилен к пробелам/регистру — подтверждение инженера переживает прогоны', () => {
   assert.equal(
     matchKeyOf('Устройство перегородок,  усиление проёмов'),

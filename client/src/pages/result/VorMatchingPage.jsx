@@ -121,6 +121,7 @@ function MatchCard({ item, busy, onConfirm }) {
               <tr className="text-left text-gray-500 dark:text-gray-400">
                 <th className="pr-3 py-0.5">№</th>
                 <th className="pr-3 py-0.5">Позиция ВОР</th>
+                <th className="pr-3 py-0.5">Документ</th>
                 <th className="pr-3 py-0.5">Кол-во</th>
                 <th className="pr-3 py-0.5">Ед.</th>
                 <th className="py-0.5">Сверка с ведомостью</th>
@@ -131,6 +132,10 @@ function MatchCard({ item, busy, onConfirm }) {
                 <tr key={i} className="border-t border-gray-100 dark:border-gray-700">
                   <td className="pr-3 py-0.5">{p.position_no || '—'}</td>
                   <td className="pr-3 py-0.5">{p.name || '—'}</td>
+                  <td className="pr-3 py-0.5">
+                    {p.document_name || '—'}
+                    {p.applicability && <span className="text-gray-500 dark:text-gray-400 ml-1">({p.applicability})</span>}
+                  </td>
                   <td className="pr-3 py-0.5">{p.quantity ?? '—'}</td>
                   <td className="pr-3 py-0.5">
                     {p.unit || '—'}
@@ -139,7 +144,9 @@ function MatchCard({ item, busy, onConfirm }) {
                   <td className="py-0.5">
                     {p.verified
                       ? <span className="text-green-700 dark:text-green-300">позиция найдена в ведомости</span>
-                      : <span className="text-red-700 dark:text-red-300">в ведомости не найдена</span>}
+                      : p.ambiguous
+                        ? <span className="text-amber-700 dark:text-amber-300">номер есть в нескольких ВОР — документ не определён</span>
+                        : <span className="text-red-700 dark:text-red-300">в ведомости не найдена</span>}
                   </td>
                 </tr>
               ))}

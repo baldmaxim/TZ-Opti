@@ -64,13 +64,14 @@ function normalizeVorMatch(raw) {
     : null;
   const positions = (Array.isArray(raw.positions) ? raw.positions : [])
     .map((p) => ({
+      catalog_entry_id: asText(p && p.catalog_entry_id),
       position_no: asText(p && p.position_no),
       code: asText(p && p.code),
       name: asText(p && p.name),
       quantity: Number.isFinite(Number(p && p.quantity)) ? Number(p.quantity) : null,
       unit: asText(p && p.unit),
     }))
-    .filter((p) => p.position_no || p.code || p.name);
+    .filter((p) => p.catalog_entry_id || p.position_no || p.code || p.name);
   if (!status && !positions.length) return null;
   return {
     status: status || 'unclear',
@@ -84,37 +85,84 @@ function normalizeVorMatch(raw) {
 }
 
 // Детерминированная сверка заявленных позиций с КАТАЛОГОМ ведомости
-// (vorCatalog.buildCatalog: entries с name/name_key/unit/quantity/positions).
-// Количество и единица в карте — ФАКТ ведомости; заявленное моделью значение,
-// расходящееся с ведомостью, отмечается claimed_*. Не найденная в каталоге
-// позиция остаётся в карте с verified=false — инженер видит, что связь не
-// доказана ведомостью.
+// (vorCatalog.buildCatalog: entries с entry_id/document_*/name/unit/quantity/
+// positions). Количество и единица в карте — ФАКТ ведомости; заявленное моделью
+// значение, расходящееся с ведомостью, отмечается claimed_*. Не найденная в
+// каталоге позиция остаётся в карте с verified=false — инженер видит, что связь
+// не доказана ведомостью.
+//
+// Порядок разрешения: catalog_entry_id (стабильный ID записи каталога —
+// однозначен даже при нескольких ВОР) → номер позиции → наименование. Номер
+// позиции «1» существует в КАЖДОМ корпусе: при нескольких кандидатах без ID
+// запись выбирается только если наименование её однозначно выделяет, иначе
+// связь помечается ambiguous и НЕ приписывается произвольному документу.
 function resolvePositions(match, vorEntries) {
   const entries = Array.isArray(vorEntries) ? vorEntries : [];
+  const byId = new Map();
   const byNo = new Map();
   const byName = new Map();
   for (const e of entries) {
+    if (e.entry_id) byId.set(String(e.entry_id).trim().toLowerCase(), e);
     for (const no of (e.positions || [])) {
-      if (no != null && String(no).trim()) byNo.set(String(no).trim().toLowerCase(), e);
+      if (no == null || !String(no).trim()) continue;
+      const k = String(no).trim().toLowerCase();
+      if (!byNo.has(k)) byNo.set(k, []);
+      byNo.get(k).push(e);
     }
-    byName.set(normalize(e.name), e);
+    const nk = normalize(e.name);
+    if (!byName.has(nk)) byName.set(nk, []);
+    byName.get(nk).push(e);
   }
 
+  // Совпадение засчитывается только ЕДИНСТВЕННОЕ: два кандидата (одна работа в
+  // двух корпусах) — это неоднозначность, а не «берём первый попавшийся».
+  const uniqueOnly = (list) => (list && list.length === 1 ? list[0] : null);
+  const containsMatches = (nName, list) => {
+    if (!nName || nName.length < 10) return [];
+    return list.filter((e) => {
+      const en = normalize(e.name);
+      return en.includes(nName) || nName.includes(en);
+    });
+  };
+
   return (match.positions || []).map((p) => {
-    const noKey = p.position_no ? String(p.position_no).trim().toLowerCase() : null;
-    let entry = (noKey && byNo.get(noKey)) || byName.get(normalize(p.name)) || null;
-    if (!entry && p.name) {
-      const nName = normalize(p.name);
-      entry = entries.find((e) => {
-        const en = normalize(e.name);
-        return nName.length >= 10 && (en.includes(nName) || nName.includes(en));
-      }) || null;
+    const idKey = p.catalog_entry_id ? String(p.catalog_entry_id).trim().toLowerCase() : null;
+    const nName = normalize(p.name);
+    let entry = (idKey && byId.get(idKey)) || null;
+    let ambiguous = false;
+    if (!entry) {
+      const noKey = p.position_no ? String(p.position_no).trim().toLowerCase() : null;
+      const candidates = (noKey && byNo.get(noKey)) || [];
+      if (candidates.length === 1) {
+        entry = candidates[0];
+      } else if (candidates.length > 1) {
+        entry = uniqueOnly(candidates.filter((e) => normalize(e.name) === nName))
+          || uniqueOnly(containsMatches(nName, candidates));
+        ambiguous = !entry;
+      }
     }
-    if (!entry) return { ...p, verified: false, unit_mismatch: null };
+    if (!entry && !ambiguous) {
+      const exact = byName.get(nName) || [];
+      const contains = containsMatches(nName, entries);
+      entry = uniqueOnly(exact) || uniqueOnly(contains);
+      ambiguous = !entry && (exact.length > 1 || contains.length > 1);
+    }
+    if (!entry) {
+      const out = { ...p, verified: false, unit_mismatch: null };
+      // Позиция существует в нескольких документах ВОР, и ни ID, ни
+      // наименование не выделяют один из них — произвольный документ не
+      // подставляем, связь остаётся недоказанной.
+      if (ambiguous) out.ambiguous = true;
+      return out;
+    }
     const unitMismatch = Boolean(p.unit && entry.unit && normalize(p.unit) !== normalize(entry.unit));
     const quantityMismatch = p.quantity != null && entry.quantity != null
       && Math.abs(p.quantity - entry.quantity) > Math.abs(entry.quantity) * 0.005;
     return {
+      catalog_entry_id: entry.entry_id || null,
+      document_id: entry.document_id || null,
+      document_name: entry.document_name || null,
+      applicability: entry.applicability || null,
       position_no: p.position_no || (entry.positions && entry.positions[0]) || null,
       code: p.code || entry.code || null,
       name: entry.name,
@@ -166,9 +214,12 @@ function mergeMatchRows(rows) {
       prev.coverage_status = r.coverage_status;
       prev.problem_type = r.problem_type || prev.problem_type;
     }
-    const seen = new Set(prev.positions.map((p) => `${p.position_no || ''}|${normalize(p.name)}`));
+    // catalog_entry_id в ключе: одинаковые «позиция 1 / перегородки» из РАЗНЫХ
+    // документов ВОР — разные связи, их нельзя схлопывать в одну.
+    const posKey = (p) => `${p.catalog_entry_id || ''}|${p.position_no || ''}|${normalize(p.name)}`;
+    const seen = new Set(prev.positions.map(posKey));
     for (const p of r.positions) {
-      const k = `${p.position_no || ''}|${normalize(p.name)}`;
+      const k = posKey(p);
       if (!seen.has(k)) { prev.positions.push(p); seen.add(k); }
     }
     const uniq = (a, b) => [...new Set([...(a || []), ...(b || [])])];

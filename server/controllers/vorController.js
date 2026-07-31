@@ -53,7 +53,7 @@ exports.summary = async (req, res) => {
   await requireTender(tenderId);
   const docs = await activeVorDocuments(tenderId);
   const items = await loadVorItems(tenderId);
-  const entries = buildCatalog(items);
+  const entries = buildCatalog(items, { documents: docs });
   const brief = (d) => ({
     id: d.id, name: d.name, uploaded_at: d.uploaded_at, processing_status: d.processing_status,
     revision_label: d.revision_label || null, applicability: d.applicability || null,
@@ -104,7 +104,7 @@ exports.matching = async (req, res) => {
     'SELECT * FROM work_checklist_items WHERE tender_id = ?',
     tenderId,
   );
-  const entries = buildCatalog(items);
+  const entries = buildCatalog(items, { documents: await activeVorDocuments(tenderId) });
   const index = buildMatchIndex({ vorEntries: entries, checklist });
   const text = (req.query.text || '').toString();
   const batches = packCatalog(entries);
@@ -159,7 +159,7 @@ exports.preview = async (req, res) => {
   const tenderId = req.params.id;
   await requireTender(tenderId);
   const items = await loadVorItems(tenderId);
-  const entries = buildCatalog(items);
+  const entries = buildCatalog(items, { documents: await activeVorDocuments(tenderId) });
   const batches = packCatalog(entries);
   res.type('text/markdown; charset=utf-8').send(
     batches

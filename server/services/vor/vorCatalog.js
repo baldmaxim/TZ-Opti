@@ -5,10 +5,12 @@
 //
 // Раньше ВОР шёл в модель как «самая длинная ячейка каждой строки» и при
 // превышении лимита символов ВЫБРАСЫВАЛСЯ из анализа целиком («ВОР пропущен»).
-// Теперь: одинаковые позиции сворачиваются (объёмы суммируются), каталог
-// печатается таблицей с единицами и количествами, а если он не влезает в один
-// запрос — режется на ПАКЕТЫ, и стадия проходит по ним все до одного.
+// Теперь: одинаковые позиции сворачиваются (объёмы суммируются) — строго в
+// пределах ОДНОГО документа ВОР, — каталог печатается таблицей с единицами,
+// количествами и стабильным ID записи, а если он не влезает в один запрос —
+// режется на ПАКЕТЫ, и стадия проходит по ним все до одного.
 
+const crypto = require('crypto');
 const { estimateTokens } = require('../stageAnalysis/shared/segmentation');
 const { nameKey, normalizeText } = require('./vorNormalize');
 
@@ -19,20 +21,48 @@ function formatQuantity(q) {
   return String(rounded);
 }
 
-// Позиции с одинаковым наименованием И единицей — одна запись каталога:
-// количества суммируются, номера позиций и координаты сохраняются.
+// Стабильный идентификатор записи каталога: документ + лист + строка Excel
+// ПЕРВОГО вхождения. Переживает прогоны и пакетирование; модель ссылается на
+// позицию по нему (catalog_entry_id в vor_match), сервер детерминированно
+// находит запись при сверке (requirementMatchModel.resolvePositions).
+function catalogEntryId(documentId, sheetName, rowIndex) {
+  const raw = `${documentId || ''}|${sheetName || ''}|${rowIndex == null ? '' : rowIndex}`;
+  return `vc_${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 10)}`;
+}
+
+// Позиции с одинаковым наименованием И единицей — одна запись каталога,
+// НО только В ПРЕДЕЛАХ ОДНОГО ДОКУМЕНТА ВОР: в тендере живёт несколько
+// актуальных ведомостей (корпус 1, корпус 2, …), и «перегородки 5 000 м²»
+// корпуса 1 нельзя складывать с «перегородками 7 000 м²» корпуса 2 — требование
+// ТЗ может относиться только к одному корпусу. opts.documents
+// ([{id, name, revision_label, applicability}]) размечает записи метаданными
+// манифеста; агрегирование поверх документов — только как отдельная аналитика,
+// исходные связи не теряются.
 function buildCatalog(items, opts = {}) {
   const maxRefs = opts.maxRefs || 5;
+  const docs = new Map(
+    (Array.isArray(opts.documents) ? opts.documents : [])
+      .filter((d) => d && d.id)
+      .map((d) => [d.id, d]),
+  );
   const byKey = new Map();
   for (const it of Array.isArray(items) ? items : []) {
     const name = normalizeText(it.name);
     if (!name) continue;
     const unit = it.unit || '';
-    const key = `${it.name_key || nameKey(name)}|${unit}`;
+    const docId = it.document_id || null;
+    const key = `${docId || ''}|${it.name_key || nameKey(name)}|${unit}`;
     let entry = byKey.get(key);
     if (!entry) {
+      const doc = docId ? docs.get(docId) : null;
       entry = {
         key,
+        entry_id: catalogEntryId(docId, it.sheet_name, it.row_index),
+        document_id: docId,
+        document_name: (doc && doc.name) || '',
+        applicability: (doc && doc.applicability) || '',
+        revision_label: (doc && doc.revision_label) || '',
+        sheet: it.sheet_name || '',
         name,
         name_key: it.name_key || nameKey(name),
         unit,
@@ -75,7 +105,13 @@ function buildCatalogFromText(text, opts = {}) {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push({
-      key: `${key}|`,
+      key: `|${key}|`,
+      entry_id: catalogEntryId(null, 'text', key),
+      document_id: null,
+      document_name: '',
+      applicability: '',
+      revision_label: '',
+      sheet: '',
       name,
       name_key: key,
       unit: '',
@@ -92,21 +128,42 @@ function buildCatalogFromText(text, opts = {}) {
 }
 
 // ── Рендер ───────────────────────────────────────────────────────────────────
-const TABLE_HEADER = ['| № | Наименование работ (ВОР) | Ед. | Кол-во |', '|---|---|---|---|'];
+const TABLE_HEADER = ['| ID | № | Наименование работ (ВОР) | Ед. | Кол-во |', '|---|---|---|---|---|'];
 
 function entryRow(entry) {
   const pos = entry.positions.length ? entry.positions.join(', ') : '—';
   const name = entry.name.replace(/\|/g, '/');
-  return `| ${pos} | ${name} | ${entry.unit || '—'} | ${formatQuantity(entry.quantity) || '—'} |`;
+  return `| ${entry.entry_id || '—'} | ${pos} | ${name} | ${entry.unit || '—'} | ${formatQuantity(entry.quantity) || '—'} |`;
 }
 
-// Таблица каталога, сгруппированная по разделам ВОР (раздел печатается один
-// раз строкой-подзаголовком — это дешевле, чем колонка в каждой строке).
+function documentHeader(entry) {
+  const meta = [];
+  if (entry.applicability) meta.push(`применимость: ${entry.applicability}`);
+  if (entry.revision_label) meta.push(`редакция: ${entry.revision_label}`);
+  const suffix = meta.length ? ` (${meta.join('; ')})` : '';
+  return `**Документ ВОР: ${entry.document_name || 'без названия'}${suffix}**`;
+}
+
+// Таблица каталога: группировка по ДОКУМЕНТАМ ВОР (заголовок с применимостью и
+// редакцией — модель обязана понимать, к какому корпусу относится позиция),
+// внутри документа — по разделам (раздел печатается один раз
+// строкой-подзаголовком — это дешевле, чем колонка в каждой строке).
 function renderCatalog(entries) {
   const lines = [];
+  let docId;
+  let docStarted = false;
   let section = null;
   let opened = false;
   for (const e of entries) {
+    const d = e.document_id || '';
+    const hasDocMeta = Boolean(e.document_name || e.applicability || e.revision_label);
+    if (hasDocMeta && (!docStarted || d !== docId)) {
+      lines.push('', documentHeader(e));
+      docStarted = true;
+      section = null;
+      opened = false;
+    }
+    docId = d;
     const s = e.section || '';
     if (s !== section) {
       section = s;
@@ -187,11 +244,13 @@ function catalogStats(entries) {
     tokens: list.reduce((n, e) => n + entryTokens(e), 0),
     with_quantity: list.filter((e) => e.quantity !== null).length,
     units: [...new Set(list.map((e) => e.unit).filter(Boolean))],
+    documents: new Set(list.map((e) => e.document_id).filter(Boolean)).size,
   };
 }
 
 module.exports = {
   DEFAULT_BATCH_TOKENS,
+  catalogEntryId,
   buildCatalog,
   buildCatalogFromText,
   renderCatalog,

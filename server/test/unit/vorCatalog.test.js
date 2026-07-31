@@ -83,6 +83,48 @@ test('каталог: одинаковые позиции сворачивают
   assert.match(table, /Раздел ВОР: Каменные работы/);
 });
 
+test('каталог: одинаковые позиции РАЗНЫХ документов ВОР не сливаются, объёмы не складываются', () => {
+  const docs = [
+    { id: 'doc-k1', name: 'ВОР-К1.xlsx', applicability: 'корпус 1', revision_label: '1' },
+    { id: 'doc-k2', name: 'ВОР-К2.xlsx', applicability: 'корпус 2', revision_label: null },
+  ];
+  const items = [
+    item('Устройство перегородок из ПГП', 'м2', 5000, { document_id: 'doc-k1', position_no: '1' }),
+    item('Устройство перегородок из ПГП', 'м2', 7000, { document_id: 'doc-k2', position_no: '1' }),
+  ];
+  const entries = buildCatalog(items, { documents: docs });
+
+  assert.equal(entries.length, 2, 'позиции разных корпусов — разные записи каталога');
+  assert.deepEqual(entries.map((e) => e.quantity), [5000, 7000], '12 000 м² «на весь тендер» не появляется');
+  assert.equal(entries[0].document_id, 'doc-k1');
+  assert.equal(entries[0].applicability, 'корпус 1');
+  assert.equal(entries[1].document_name, 'ВОР-К2.xlsx');
+
+  // Стабильный ID: документ + лист + строка первого вхождения.
+  assert.match(entries[0].entry_id, /^vc_[0-9a-f]{10}$/);
+  assert.notEqual(entries[0].entry_id, entries[1].entry_id);
+  const again = buildCatalog(items, { documents: docs });
+  assert.equal(again[0].entry_id, entries[0].entry_id, 'entry_id стабилен между сборками каталога');
+
+  const table = renderCatalog(entries);
+  assert.match(table, /Документ ВОР: ВОР-К1\.xlsx \(применимость: корпус 1; редакция: 1\)/);
+  assert.match(table, /Документ ВОР: ВОР-К2\.xlsx \(применимость: корпус 2\)/);
+  assert.match(table, /\| ID \|/, 'в таблице есть колонка ID');
+  assert.match(table, new RegExp(entries[0].entry_id), 'ID записи уходит в промт');
+});
+
+test('каталог: агрегация внутри одного документа сохранена (та же работа дважды в одном ВОР)', () => {
+  const docs = [{ id: 'doc-k1', name: 'ВОР-К1.xlsx', applicability: 'корпус 1' }];
+  const items = [
+    item('Окраска стен', 'м2', 100, { document_id: 'doc-k1' }),
+    item('Окраска стен', 'м2', 200, { document_id: 'doc-k1' }),
+  ];
+  const entries = buildCatalog(items, { documents: docs });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].quantity, 300, 'внутри одного документа объёмы по-прежнему суммируются');
+  assert.equal(entries[0].count, 2);
+});
+
 test('каталог из текстового ВОР (не таблица): строки как есть, без выдумывания колонок', () => {
   const entries = buildCatalogFromText([
     'Ведомость объёмов работ',

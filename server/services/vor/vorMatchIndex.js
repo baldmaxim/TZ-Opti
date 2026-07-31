@@ -168,6 +168,10 @@ function crossReference(index, opts = {}) {
       in_calc: c.row.in_calc === null || c.row.in_calc === undefined ? null : Number(c.row.in_calc),
       vor: best
         ? {
+          catalog_entry_id: best.v.entry.entry_id || null,
+          document_id: best.v.entry.document_id || null,
+          document_name: best.v.entry.document_name || '',
+          applicability: best.v.entry.applicability || '',
           name: best.v.entry.name,
           unit: best.v.entry.unit,
           quantity: best.v.entry.quantity,

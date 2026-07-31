@@ -12,7 +12,7 @@
 // ведомость показывается ПАКЕТАМИ (несколько проходов на одну часть ТЗ), и
 // «работы нет в ВОР» принимается только по ПЕРЕСЕЧЕНИЮ всех пакетов.
 //
-// Контракт: (context{ sourceDocumentId, blocks, vorItems, vorText, checklist }) → Issue[]
+// Контракт: (context{ sourceDocumentId, blocks, vorItems, vorDocuments, vorText, checklist }) → Issue[]
 
 const { getModel } = require('./llm/openaiClient');
 const { buildSystemPrompt, resolveVariant } = require('./stage1Prompts');
@@ -80,11 +80,18 @@ const RESPONSE_SCHEMA = attachMateriality({
               status: { type: 'string', enum: ['covered', 'partial', 'not_covered', 'unclear'] },
               positions: {
                 type: 'array',
-                description: 'Позиции ВОР, покрывающие требование (номер/шифр/наименование ИЗ ведомости).',
+                description:
+                  'Позиции ВОР, покрывающие требование. Главное поле — catalog_entry_id (колонка ID '
+                  + 'таблицы ВОР, копируй точно): при нескольких документах ВОР только он однозначно '
+                  + 'указывает документ/корпус. Номер/шифр/наименование — ИЗ ведомости.',
                 items: {
                   type: 'object',
                   additionalProperties: true,
                   properties: {
+                    catalog_entry_id: {
+                      type: 'string',
+                      description: 'Значение колонки ID записи каталога ВОР (например vc_1a2b3c4d5e) — точно как в таблице.',
+                    },
                     position_no: { type: 'string' },
                     code: { type: 'string' },
                     name: { type: 'string' },
@@ -311,7 +318,13 @@ function intersectPasses(lists) {
 function prepareVorCatalog(ctx) {
   const items = Array.isArray(ctx.vorItems) ? ctx.vorItems : [];
   if (items.length) {
-    return { entries: buildCatalog(items), source: 'structured', sourceNote: null };
+    // vorDocuments (манифест) размечает записи каталога документом/применимостью/
+    // редакцией — одинаковые работы разных корпусов не сольются в одну запись.
+    return {
+      entries: buildCatalog(items, { documents: ctx.vorDocuments }),
+      source: 'structured',
+      sourceNote: null,
+    };
   }
   const text = ctx.vorText || '';
   if (text.trim()) {

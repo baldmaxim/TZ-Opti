@@ -11,6 +11,12 @@ const { dedupeExportDecisions } = require('../services/review/consolidation');
 const clusterReview = require('../services/review/clusterReviewService');
 const analysisRuns = require('../services/analysisRuns/analysisRunsService');
 const { pickPrimaryDocument } = require('../services/documents/manifestModel');
+const readiness = require('../services/review/reviewReadinessService');
+
+// Legacy issue-путь — ТОЛЬКО ЯВНО: ?source=issues (старый тендер без кластеров)
+// или пер-стадийная выгрузка ?stage=. Пустой массив кластерных решений legacy
+// больше НЕ включает — вместо этого срабатывает гейт готовности рецензии.
+const isExplicitLegacy = (query) => query.source === 'issues' || Boolean(query.stage);
 
 async function getTzOriginal(tenderId) {
   // Для экспорта в .docx нужен именно .docx-файл (не .md и не .pdf).
@@ -79,17 +85,20 @@ async function prepareDocxExport(tenderId, query) {
     };
   }
 
-  // Этап 6: основной путь — решения по кластерам (issue_clusters → review_decisions.cluster_id).
-  // Fallback на legacy issue-level решения, если кластерных решений нет (старый тендер /
-  // конвейер не собран). Явный ?source=issues принудительно включает legacy-путь.
+  // Этап 6: основной путь — решения по кластерам (issue_clusters →
+  // review_decisions.cluster_id) ПОСЛЕ гейта готовности рецензии: незавершённая
+  // рецензия не экспортируется (409 REVIEW_NOT_READY). Пустой список решений
+  // legacy-путь НЕ включает: «все замечания отклонены» — валидный завершённый
+  // итог (документ без правок). Legacy issue-путь — только явный (?source=issues
+  // или ?stage=), для старых тендеров без кластерного конвейера.
   let source = 'clusters';
-  let decisions = [];
-  if (query.source !== 'issues' && !stage) {
-    decisions = await clusterReview.loadClusterDecisions(tenderId);
-  }
-  if (!decisions.length) {
+  let decisions;
+  if (isExplicitLegacy(query)) {
     source = 'issues';
     decisions = await loadDecisions(tenderId, stage);
+  } else {
+    await readiness.assertReviewReady(tenderId, 'экспорт .docx');
+    decisions = await clusterReview.loadClusterDecisions(tenderId);
   }
 
   const author = (query.author || tender.owner || 'TZ-Opti').toString();
@@ -175,6 +184,7 @@ exports.docxReport = async (req, res) => {
 // CSV/JSON/summary — cluster-primary с issue-fallback (диспетчеры exportService);
 // фактический источник виден в X-Export-Source и имени файла.
 exports.csv = async (req, res) => {
+  if (!isExplicitLegacy(req.query)) await readiness.assertReviewReady(req.params.id, 'экспорт CSV');
   const { content, source } = await exportSvc.exportCsv(req.params.id, { source: req.query.source });
   const prefix = source === 'clusters' ? 'clusters' : 'issues';
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -184,6 +194,7 @@ exports.csv = async (req, res) => {
 };
 
 exports.json = async (req, res) => {
+  if (!isExplicitLegacy(req.query)) await readiness.assertReviewReady(req.params.id, 'экспорт JSON');
   const { content, source } = await exportSvc.exportJson(req.params.id, { source: req.query.source });
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="analysis_${req.params.id}.json"`);
@@ -192,6 +203,7 @@ exports.json = async (req, res) => {
 };
 
 exports.summary = async (req, res) => {
+  if (!isExplicitLegacy(req.query)) await readiness.assertReviewReady(req.params.id, 'экспорт summary.md');
   const { content, source } = await exportSvc.exportSummary(req.params.id, { source: req.query.source });
   res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="summary_${req.params.id}.md"`);
@@ -200,6 +212,7 @@ exports.summary = async (req, res) => {
 };
 
 exports.reviewMd = async (req, res) => {
+  if (!isExplicitLegacy(req.query)) await readiness.assertReviewReady(req.params.id, 'экспорт review.md');
   const stage = req.query.stage ? Number(req.query.stage) : null;
   const md = await renderReviewMd(req.params.id, { stage, source: req.query.source });
   const suffix = stage ? `_stage${stage}` : '';

@@ -507,7 +507,27 @@ DELETE+INSERT в уже выданном инженеру снимке. Тепе
 (`utils/analysisResult.js`) — после `failed`/`cancelled`/`interrupted` стадии `runAnalysis`
 production-сборку **не запускает вовсе**; debug-сборка — кнопка на debug-странице конвейера.
 
-**Этапы 6–7 — рецензия и ВСЕ выгрузки работают от кластеров.** Source of truth: `signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export`. Финальный шаг «Рецензия» (`ReviewPage`), экран «Итог» (`SummaryPage`), экспорт `.docx`, HTML-preview (`reviewHtmlService.js`), review.md (`mdReview/renderer.js`) и CSV/JSON/summary.md (`exportService.js`) основным путём идут от `issue_clusters` через `server/services/review/clusterReviewService.js` (`loadClusterDecisions` — решённые, `loadClusterReviewRows` — все кластеры): одно решение на кластер пишется в `review_decisions.cluster_id`, выгрузки собираются из primary draft_issue кластера (место локализуется по тексту `source_fragment` — `reviewDocx` не переписывался). **Каждый анализ — неизменяемый снимок с `analysis_run_id`** (`analysisRuns/analysisRunsService.js`): id кластера **run-scoped** (`clusterRunId` от `tenderId + analysis_run_id + cluster_key`), поэтому кластеры разных прогонов НЕ сталкиваются по id и решения прошлого прогона НЕ приклеиваются автоматически к новому — повторный запуск не смешивает старые и новые результаты. Перенос решений между прогонами — только ЯВНЫЙ (`listCarryOverProposals` предлагает по `cluster_key`/месту/тексту, `confirmCarryOvers` подтверждает). Эндпоинты: `POST/GET /api/tenders/:id/review/clusters[...]`. **Backward-compat (fallback):** issue-level путь (`review_decisions.issue_id`, `consolidation.js` `/review/consolidated`, пер-стадийная рецензия внутри стадий 1–4) сохранён; каждая выгрузка авто-падает на него, когда кластеров/кластерных решений нет, и принудительно по `?source=issues` (фактический источник — заголовок `X-Export-Source`). Старые `issues`/`review_decisions(issue_id)` не удалялись. Полное описание сущностей, source-of-truth и end-to-end — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+**Этапы 6–7 — рецензия и ВСЕ выгрузки работают от кластеров.** Source of truth: `signals → draft_issues → issue_reviews → issue_clusters → review_decisions(cluster_id) → export`. Финальный шаг «Рецензия» (`ReviewPage`), экран «Итог» (`SummaryPage`), экспорт `.docx`, HTML-preview (`reviewHtmlService.js`), review.md (`mdReview/renderer.js`) и CSV/JSON/summary.md (`exportService.js`) основным путём идут от `issue_clusters` через `server/services/review/clusterReviewService.js` (`loadClusterDecisions` — решённые, `loadClusterReviewRows` — все кластеры): одно решение на кластер пишется в `review_decisions.cluster_id`, выгрузки собираются из primary draft_issue кластера (место локализуется по тексту `source_fragment` — `reviewDocx` не переписывался). **Каждый анализ — неизменяемый снимок с `analysis_run_id`** (`analysisRuns/analysisRunsService.js`): id кластера **run-scoped** (`clusterRunId` от `tenderId + analysis_run_id + cluster_key`), поэтому кластеры разных прогонов НЕ сталкиваются по id и решения прошлого прогона НЕ приклеиваются автоматически к новому — повторный запуск не смешивает старые и новые результаты. Перенос решений между прогонами — только ЯВНЫЙ (`listCarryOverProposals` предлагает по `cluster_key`/месту/тексту, `confirmCarryOvers` подтверждает). Эндпоинты: `POST/GET /api/tenders/:id/review/clusters[...]`. **Backward-compat (fallback):** issue-level путь (`review_decisions.issue_id`, `consolidation.js` `/review/consolidated`, пер-стадийная рецензия внутри стадий 1–4) сохранён, но включается ТОЛЬКО ЯВНО — `?source=issues` (или пер-стадийный `?stage=`); авто-fallback «кластерных решений нет → issue-путь» УБРАН (пустой массив решений — не признак legacy-тендера). Фактический источник — заголовок `X-Export-Source`. Старые `issues`/`review_decisions(issue_id)` не удалялись. Полное описание сущностей, source-of-truth и end-to-end — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+**Экспорт незавершённой рецензии ЗАПРЕЩЁН — жёсткий серверный гейт.**
+`server/services/review/reviewReadinessService.js`: `getReadiness(tenderId)` →
+`{ pipeline_run_id, document_revision_id, total_clusters, decided_clusters,
+rejected_clusters, accepted_clusters, unresolved_clusters, carryovers_pending,
+pipeline_stale, export_allowed, reasons[] }` (чистое ядро `computeReadiness` —
+офлайн-тесты). «Готово» = есть активный pipeline-снимок, он не устарел (ревизия
+документов не менялась после сборки), у КАЖДОГО кластера рабочего списка
+(`show_to_engineer=1`) есть решение (в т.ч. reject — «отклонить всё» тоже
+завершённая рецензия), carry-over разобран. `assertReviewReady` (409
+`REVIEW_NOT_READY`, отчёт в `details`) ОБЯЗАТЕЛЬНО вызывают: docx-экспорт (и его
+dry-run отчёт), CSV/JSON/summary.md/review.md, `createAgreedVersion` и
+`activateVersion`. Исключения из гейта: экспорт от снимка согласованной версии
+(`?version_id=` — снимок создавался через тот же гейт), HTML-preview (просмотр,
+не выгрузка) и явный legacy (`?source=issues`/`?stage=`). API для UI —
+`GET /api/tenders/:id/review/readiness`; ExportPage показывает причины блокировки
+и дизейблит кнопки. Решения в readiness фильтруются и по `analysis_run_id`
+(cluster_id run-scoped, но фильтр защищает от коллизий id). Тесты —
+`server/test/unit/reviewReadiness.test.js`,
+`server/test/integration/reviewReadiness.integration.test.js`.
 
 ## Benchmark качества анализа
 

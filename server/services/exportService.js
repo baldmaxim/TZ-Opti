@@ -265,31 +265,28 @@ async function exportIssuesSummaryMd(tenderId) {
   return lines.join('\n');
 }
 
-// --- Диспетчеры: cluster-primary, issue-fallback --------------------------------
+// --- Диспетчеры: cluster-primary, legacy — только явно ---------------------------
 
-// source='issues' принудительно включает legacy; иначе issue-путь используется,
-// только когда кластеров нет (конвейер не собран).
-async function loadClusterRowsUnlessLegacy(tenderId, source) {
-  if (source === 'issues') return [];
-  return clusterReview.loadClusterReviewRows(tenderId, 'full');
-}
-
+// Legacy issue-путь включается ТОЛЬКО явным source='issues' (старый тендер без
+// кластерного конвейера). Пустой список кластеров legacy больше НЕ включает:
+// готовность рецензии проверяет гейт в контроллере (reviewReadinessService), а
+// «все замечания отклонены» — валидный завершённый итог с пустой выгрузкой.
 async function exportCsv(tenderId, { source = null } = {}) {
-  const rows = await loadClusterRowsUnlessLegacy(tenderId, source);
-  if (rows.length) return { content: clustersToCsv(rows), source: 'clusters' };
-  return { content: await exportIssuesCsv(tenderId), source: 'issues' };
+  if (source === 'issues') return { content: await exportIssuesCsv(tenderId), source: 'issues' };
+  const rows = await clusterReview.loadClusterReviewRows(tenderId, 'full');
+  return { content: clustersToCsv(rows), source: 'clusters' };
 }
 
 async function exportJson(tenderId, { source = null } = {}) {
-  const rows = await loadClusterRowsUnlessLegacy(tenderId, source);
-  if (rows.length) return { content: await exportClustersJson(tenderId, rows), source: 'clusters' };
-  return { content: await exportIssuesJson(tenderId), source: 'issues' };
+  if (source === 'issues') return { content: await exportIssuesJson(tenderId), source: 'issues' };
+  const rows = await clusterReview.loadClusterReviewRows(tenderId, 'full');
+  return { content: await exportClustersJson(tenderId, rows), source: 'clusters' };
 }
 
 async function exportSummary(tenderId, { source = null } = {}) {
-  const rows = await loadClusterRowsUnlessLegacy(tenderId, source);
-  if (rows.length) return { content: await exportClustersSummaryMd(tenderId, rows), source: 'clusters' };
-  return { content: await exportIssuesSummaryMd(tenderId), source: 'issues' };
+  if (source === 'issues') return { content: await exportIssuesSummaryMd(tenderId), source: 'issues' };
+  const rows = await clusterReview.loadClusterReviewRows(tenderId, 'full');
+  return { content: await exportClustersSummaryMd(tenderId, rows), source: 'clusters' };
 }
 
 // --- Общие хелперы ---------------------------------------------------------------

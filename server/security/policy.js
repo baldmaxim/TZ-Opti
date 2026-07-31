@@ -151,6 +151,7 @@ const RULES = [
   // --- рецензия и решения ------------------------------------------------
   r('POST', '/tenders/:tenderId/review/clusters/build', 'analysis.run', 'review.clusters.build', ANALYSIS, 'tender', 'cluster'),
   r('GET', '/tenders/:tenderId/review/clusters', 'tender.read', 'review.clusters.list', READ, 'tender', 'cluster'),
+  r('GET', '/tenders/:tenderId/review/readiness', 'tender.read', 'review.readiness', READ, 'tender', 'cluster'),
   r('GET', '/tenders/:tenderId/review/carryovers', 'tender.read', 'review.carryovers.list', READ, 'tender', 'cluster'),
   r('POST', '/tenders/:tenderId/review/carryovers/confirm', 'decision.write', 'review.carryovers.confirm', DECISION, 'tender', 'cluster'),
   r('GET', '/tenders/:tenderId/review/clusters/:clusterId', 'tender.read', 'review.cluster.get', READ, 'tender', 'cluster'),

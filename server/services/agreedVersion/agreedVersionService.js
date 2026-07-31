@@ -20,6 +20,7 @@ const { getTzMdDocument, computeRevisionId } = require('../tzActiveTextService')
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { buildAgreedText } = require('./agreedTextBuilder');
 const audit = require('../audit/auditService');
+const { assertReviewReady } = require('../review/reviewReadinessService');
 
 function parseJson(value, fallback) {
   if (value == null || value === '') return fallback;
@@ -144,6 +145,10 @@ async function loadDecisionsForBuild(tenderId) {
 // Создать версию (draft) из ТЕКУЩИХ решений активного прогона.
 // База — активная agreed version (цепочка), иначе оригинальный .md.
 async function createAgreedVersion(tenderId, { actor = null, requestId = null } = {}) {
+  // ЖЁСТКИЙ ГЕЙТ: версия материализует решения рецензии — из незавершённой
+  // рецензии (нерешённые кластеры / неразобранный carry-over / устаревший
+  // снимок) её строить нельзя (409 REVIEW_NOT_READY с отчётом готовности).
+  await assertReviewReady(tenderId, 'создание согласованной версии');
   const activeVersionRow = await getActiveAgreedVersion(tenderId, { withText: true });
   let baseText;
   let baseDocumentId = null;
@@ -289,6 +294,10 @@ async function activateVersion(tenderId, versionId, { actor = null, requestId = 
   );
   if (!row) throw notFound('Согласованная версия не найдена');
   if (row.status === 'active') return rowToVersion(row);
+  // Активация делает версию ВХОДОМ следующего раунда анализа — между созданием
+  // и активацией рецензия могла перезапуститься; активировать поверх
+  // незавершённой рецензии нельзя (тот же гейт, что у создания).
+  await assertReviewReady(tenderId, 'активацию согласованной версии');
 
   await db.transaction(async (tx) => {
     await tx.queryRun(

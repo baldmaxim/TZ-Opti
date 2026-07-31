@@ -27,6 +27,14 @@ export default function ExportPage() {
   const [reportErr, setReportErr] = useState(null);
   const [loadingReport, setLoadingReport] = useState(false);
 
+  // Готовность рецензии — жёсткий серверный гейт выгрузок (409 REVIEW_NOT_READY).
+  // Здесь то же состояние показывается ДО клика, с причинами.
+  const [readiness, setReadiness] = useState(null);
+  useEffect(() => {
+    if (!tenderId || exportStep?.status === 'locked') return;
+    api.getReviewReadiness(tenderId).then(setReadiness).catch(() => setReadiness(null));
+  }, [tenderId, exportStep?.status]);
+
   // Источник экспорта: снимок согласованной версии ТЗ или живые решения.
   // По умолчанию — активная версия (если есть): экспорт воспроизводим.
   const [agreedVersions, setAgreedVersions] = useState([]);
@@ -99,12 +107,34 @@ export default function ExportPage() {
 
   const summary = report?.summary;
   const problems = (report?.items || []).filter((it) => it.status !== 'applied');
+  // Выгрузка от снимка согласованной версии разрешена всегда (снимок создавался
+  // через тот же гейт); живые решения — только при завершённой рецензии.
+  const exportAllowed = readiness ? readiness.export_allowed : true;
+  const blockedLive = !exportAllowed && !versionId;
 
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-600 dark:text-gray-400">
-        Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Доступен после сборки анализа ТЗ; качество результата выше, когда принята рецензия по кластерам.
+        Главный экспорт — `.docx` с правками и комментариями в логике Word Review. Выгрузки
+        доступны только после ЗАВЕРШЁННОЙ рецензии: у каждого замечания рабочего списка есть
+        решение (в том числе «отклонить»), перенос решений разобран, снимок не устарел.
       </p>
+
+      {readiness && !readiness.export_allowed && (
+        <div className="card p-3 border-amber-300 bg-amber-50 dark:bg-amber-900/30 text-sm space-y-1">
+          <div className="font-semibold text-amber-900 dark:text-amber-200">
+            Экспорт заблокирован: рецензия не завершена
+          </div>
+          <div className="text-xs text-amber-800 dark:text-amber-300">
+            Решено {readiness.decided_clusters} из {readiness.total_clusters} замечаний
+            {readiness.carryovers_pending > 0 && <> · перенос решений не разобран: {readiness.carryovers_pending}</>}
+            {readiness.pipeline_stale && <> · снимок устарел (документы менялись после сборки)</>}
+          </div>
+          {(readiness.reasons || []).map((r, i) => (
+            <div key={i} className="text-xs text-amber-800 dark:text-amber-300">• {r}</div>
+          ))}
+        </div>
+      )}
 
       {agreedVersions.length > 0 && (
         <div className="card p-3 flex flex-wrap items-center gap-2 text-sm">
@@ -128,21 +158,28 @@ export default function ExportPage() {
           </span>
         </div>
       )}
-      {items.map((it) => (
-        <div key={it.title} className={`card p-4 flex items-center justify-between gap-3 ${it.primary ? 'border-brand-300 bg-brand-50/40' : ''}`}>
-          <div>
-            <div className="font-semibold">{it.title}</div>
-            <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">{it.desc}</div>
+      {items.map((it) => {
+        // HTML-preview — просмотр, не выгрузка (не блокируется). Docx от снимка
+        // согласованной версии тоже разрешён; остальное ждёт завершения рецензии.
+        const disabled = it.action !== 'Открыть' && (it.primary ? blockedLive : !exportAllowed);
+        return (
+          <div key={it.title} className={`card p-4 flex items-center justify-between gap-3 ${it.primary ? 'border-brand-300 bg-brand-50/40' : ''}`}>
+            <div>
+              <div className="font-semibold">{it.title}</div>
+              <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">{it.desc}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => it.get().catch((e) => alert(e.message))}
+              className={`btn ${it.primary ? 'btn-primary' : 'btn-secondary'}`}
+              disabled={disabled}
+              title={disabled ? 'Завершите рецензию: решение по каждому замечанию рабочего списка' : undefined}
+            >
+              {it.action || 'Скачать'}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => it.get().catch((e) => alert(e.message))}
-            className={`btn ${it.primary ? 'btn-primary' : 'btn-secondary'}`}
-          >
-            {it.action || 'Скачать'}
-          </button>
-        </div>
-      ))}
+        );
+      })}
 
       <div className="card p-4">
         <div className="flex items-center justify-between gap-3">

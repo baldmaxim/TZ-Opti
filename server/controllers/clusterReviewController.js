@@ -7,6 +7,7 @@ const db = require('../db/connection');
 const { notFound, badRequest } = require('../utils/errors');
 const svc = require('../services/review/clusterReviewService');
 const analysisRuns = require('../services/analysisRuns/analysisRunsService');
+const readiness = require('../services/review/reviewReadinessService');
 
 async function ensureTender(tenderId) {
   const t = await db.queryOne('SELECT id FROM tenders WHERE id = ?', tenderId);
@@ -31,6 +32,14 @@ exports.list = async (req, res) => {
   const items = await svc.listReviewClusters(req.params.id, mode);
   const decided = items.filter((c) => c.decision).length;
   res.json({ items, count: items.length, decided, pending: items.length - decided, mode });
+};
+
+// GET /api/tenders/:id/review/readiness — готовность рецензии: решённость
+// рабочего списка кластеров, хвост carry-over, свежесть снимка, export_allowed.
+// Тот же отчёт возвращает 409 REVIEW_NOT_READY заблокированных выгрузок.
+exports.readiness = async (req, res) => {
+  await ensureTender(req.params.id);
+  res.json(await readiness.getReadiness(req.params.id));
 };
 
 // GET /api/tenders/:id/review/clusters/:clusterId — один кластер, полная объяснимость.

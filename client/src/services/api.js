@@ -101,6 +101,9 @@ export const api = {
   // Извлечённый текст документа (для панели исходного ТЗ на рецензии).
   getDocumentText: (id) => request(`/documents/${id}/text`),
 
+  // Готовность рецензии (жёсткий гейт выгрузок и согласованной версии).
+  getReviewReadiness: (tenderId) => request(`/tenders/${tenderId}/review/readiness`),
+
   // Карта сопоставления «требование ТЗ ↔ позиции ВОР» (Стадия 1) + решение инженера.
   getVorRequirements: (tenderId) => request(`/tenders/${tenderId}/vor/requirements`),
   confirmVorRequirement: (tenderId, matchKey, patch) =>

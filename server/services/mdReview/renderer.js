@@ -119,15 +119,20 @@ async function renderReviewMd(tenderId, { stage = null, source = null } = {}) {
     return '# Review\n\n⚠ В тендер не загружен ТЗ (.md или .docx).\n';
   }
 
-  // 2. Решения: кластеры — основной путь; legacy issue-level — при фильтре стадии,
-  //    явном ?source=issues или когда кластерных решений нет.
-  let decisions = [];
-  let decisionsSource = 'issues';
-  if (!stage && source !== 'issues') {
+  // 2. Решения: кластеры — основной путь; legacy issue-level — ТОЛЬКО явно
+  //    (?source=issues или фильтр стадии). Пустой список кластерных решений
+  //    legacy больше не включает: готовность рецензии проверяет гейт в
+  //    контроллере (reviewReadinessService), а «все замечания отклонены» —
+  //    валидный итог без правок.
+  let decisions;
+  let decisionsSource;
+  if (stage || source === 'issues') {
+    decisionsSource = 'issues';
+    decisions = await loadDecisions(tenderId, stage);
+  } else {
+    decisionsSource = 'clusters';
     decisions = await loadClusterDecisionRows(tenderId);
-    if (decisions.length) decisionsSource = 'clusters';
   }
-  if (!decisions.length) decisions = await loadDecisions(tenderId, stage);
 
   // 3. Применяем длинные фрагменты первыми — они не должны попадать в подстроки коротких.
   const sorted = [...decisions].sort(

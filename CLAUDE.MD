@@ -253,7 +253,13 @@ included/missing, исключения, примечания по единица
 **Стадия 3 — не только противоречия, но и ПОКРЫТИЕ: отсутствие условия — тоже
 находка.** У каждого существенного условия и каждой темы покрытия — статус:
 `matches | contradicts | ambiguous | missing` (агент) + `other_document |
-check_contract | not_applicable` (инженер). Чистое ядро —
+check_contract | not_applicable | resolved_in_contract | risk_accepted`
+(инженер). Находку `условие_отсутствует` гасит ТОЛЬКО ЗАКРЫВАЮЩИЙ статус
+override (`CLOSING_STATUSES`: matches / other_document / not_applicable /
+resolved_in_contract / risk_accepted — хелперы `isTopicClosedByOverride`,
+`selectMissingTopics`); `check_contract` и примечание (note) тему НЕ
+закрывают — риск остаётся в реестре, `getCoverage` отдаёт вычисляемый флаг
+`closed` (по нему UI делит «Требуют внимания» / «Закрытые темы»). Чистое ядро —
 `stageAnalysis/conditionCoverage.js`: реестр 24 договорных тем покрытия
 (доп. работы, задержка РД, индексация при переносе, лимит ответственности,
 приёмка по молчанию, приоритет документов, ПНР и ввод, страхование СМР,

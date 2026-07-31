@@ -10,6 +10,11 @@ const assert = require('node:assert/strict');
 
 const {
   COVERAGE_TOPICS,
+  COVERAGE_STATUSES,
+  CLOSING_STATUSES,
+  isClosingStatus,
+  isTopicClosedByOverride,
+  selectMissingTopics,
   RESOLUTIONS,
   RESOLUTION_TO_REQUIRED_ACTION,
   RESOLUTION_TO_SUGGESTED_ACTION,
@@ -121,6 +126,55 @@ test('basis находки не срабатывает как «стандарт
     const text = `${f.basis} ${f.review_comment}`.toLowerCase();
     assert.equal(STANDARD_REQUIREMENT_RE.test(text), false, t.name);
   }
+});
+
+// --- Закрытие темы инженером ---------------------------------------------------
+
+test('закрывающие статусы — подмножество словаря, с ярлыками; check_contract и missing НЕ закрывают', () => {
+  for (const s of CLOSING_STATUSES) {
+    assert.ok(COVERAGE_STATUSES.includes(s), `«${s}» в словаре статусов`);
+    assert.ok(STATUS_LABELS[s], `у «${s}» есть ярлык`);
+  }
+  assert.ok(COVERAGE_STATUSES.includes('resolved_in_contract'));
+  assert.ok(COVERAGE_STATUSES.includes('risk_accepted'));
+  assert.equal(isClosingStatus('check_contract'), false, '«проверить договор» — действие, вопрос открыт');
+  assert.equal(isClosingStatus('missing'), false);
+  assert.equal(isClosingStatus('ambiguous'), false);
+  assert.equal(isClosingStatus('contradicts'), false);
+});
+
+test('isTopicClosedByOverride: примечание без статуса и открытые статусы находку не гасят', () => {
+  assert.equal(isTopicClosedByOverride(null), false, 'нет override — тема открыта');
+  assert.equal(isTopicClosedByOverride({ status: null, note: 'Обсудить с Заказчиком на переговорах' }), false,
+    'note без статуса не скрывает нерешённый риск');
+  assert.equal(isTopicClosedByOverride({ status: 'check_contract' }), false);
+  assert.equal(isTopicClosedByOverride({ status: 'missing' }), false,
+    'инженер явно подтвердил пробел — находка остаётся');
+  assert.equal(isTopicClosedByOverride({ status: 'resolved_in_contract' }), true);
+  assert.equal(isTopicClosedByOverride({ status: 'risk_accepted' }), true);
+  assert.equal(isTopicClosedByOverride({ status: 'not_applicable' }), true);
+  assert.equal(isTopicClosedByOverride({ status: 'other_document', note: 'п. 12.4 договора' }), true);
+});
+
+test('selectMissingTopics: гасит только закрывающий статус, note-only остаётся в emit', () => {
+  const list = topics();
+  const cov = aggregateCoverage(list, [
+    { name: 'Авансы', status: 'соответствует', fragment: 'аванс 20%', segment: 0 },
+  ]);
+  const overrides = new Map([
+    ['cond:12', { status: 'resolved_in_contract', note: 'гарантия в проекте договора' }],
+    ['topic:liability_cap', { status: null, note: 'вопрос юристам' }],
+    ['topic:silent_acceptance', { status: 'check_contract' }],
+  ]);
+  const { emit, suppressed } = selectMissingTopics(list, cov, overrides);
+  const emitKeys = emit.map((t) => t.topic_key);
+  const suppressedKeys = suppressed.map((t) => t.topic_key);
+
+  assert.deepEqual(suppressedKeys, ['cond:12'], 'закрыт только явный закрывающий статус');
+  assert.ok(!emitKeys.includes('cond:6'), 'затронутая тема не эмитится вовсе');
+  assert.ok(emitKeys.includes('topic:liability_cap'), 'note без статуса не закрывает тему');
+  assert.ok(emitKeys.includes('topic:silent_acceptance'), 'check_contract не закрывает тему');
+  assert.ok(emitKeys.includes('topic:rd_delay'), 'тема без override остаётся находкой');
 });
 
 // --- Согласованность словарей --------------------------------------------------

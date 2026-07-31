@@ -9,7 +9,12 @@
 //   • чтение идёт по актуальному прогону Стадии 3 (указатель), явный run_id —
 //     по конкретному прогону;
 //   • override инженера накладывается поверх снимка и переживает новый прогон;
-//   • кривые статус/действие отклоняются без записи.
+//   • кривые статус/действие отклоняются без записи;
+//   • флаг closed считается по эффективному статусу (CLOSING_STATUSES ядра),
+//     note-only override тему НЕ закрывает.
+// Подавление находки «условие_отсутствует» в Стадии 3 здесь не гоняется
+// (слой LLM) — оно покрыто офлайн через selectMissingTopics в
+// test/unit/conditionCoverage.test.js.
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -113,6 +118,48 @@ test('явный run_id читает снимок конкретного про�
   const cov = await coverageService.getCoverage(TENDER_ID, { runId: runs[0].id });
   assert.equal(cov.run_id, runs[0].id);
   assert.equal(cov.items.length, 2, 'снимок первого прогона на месте');
+});
+
+test('новые закрывающие статусы принимаются, closed считается по эффективному статусу', OPTS, async () => {
+  // resolved_in_contract закрывает тему.
+  let cov = await coverageService.setOverride(TENDER_ID, 'topic:liability_cap', {
+    status: 'resolved_in_contract', note: 'Лимит есть в проекте договора, п. 9.2',
+  }, { subject: 'engineer-1', tenantId: 't1' });
+  let row = cov.items.find((i) => i.topic_key === 'topic:liability_cap');
+  assert.equal(row.status, 'resolved_in_contract');
+  assert.equal(row.closed, true, 'закрывающий статус инженера закрывает тему');
+
+  // risk_accepted тоже валиден и закрывает.
+  cov = await coverageService.setOverride(TENDER_ID, 'topic:liability_cap', { status: 'risk_accepted' });
+  row = cov.items.find((i) => i.topic_key === 'topic:liability_cap');
+  assert.equal(row.closed, true);
+
+  // check_contract — открытый статус: тема остаётся в работе.
+  cov = await coverageService.setOverride(TENDER_ID, 'topic:liability_cap', { status: 'check_contract' });
+  row = cov.items.find((i) => i.topic_key === 'topic:liability_cap');
+  assert.equal(row.status, 'check_contract');
+  assert.equal(row.closed, false, '«проверить договор» — действие, не закрытие');
+
+  // matches без всякого override закрыт по статусу агента.
+  const matched = cov.items.find((i) => i.topic_key === 'cond:6');
+  assert.equal(matched.override, null);
+  assert.equal(matched.closed, true);
+
+  await coverageService.setOverride(TENDER_ID, 'topic:liability_cap', {});
+});
+
+test('note-only override: строка создана, агентский статус не подменён, тема открыта', OPTS, async () => {
+  const cov = await coverageService.setOverride(TENDER_ID, 'topic:liability_cap', {
+    note: 'Обсудить с Заказчиком на переговорах',
+  }, { subject: 'engineer-1', tenantId: 't1' });
+  const row = cov.items.find((i) => i.topic_key === 'topic:liability_cap');
+  assert.ok(row.override, 'строка override создана');
+  assert.equal(row.override.note, 'Обсудить с Заказчиком на переговорах');
+  assert.equal(row.override.status, null);
+  assert.equal(row.status, 'missing', 'эффективный статус остался агентским');
+  assert.equal(row.closed, false, 'примечание не скрывает нерешённый риск');
+
+  await coverageService.setOverride(TENDER_ID, 'topic:liability_cap', {});
 });
 
 test('кривой статус/действие отклоняются без записи', OPTS, async () => {

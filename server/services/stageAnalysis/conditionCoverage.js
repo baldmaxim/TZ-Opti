@@ -14,21 +14,38 @@
 // Разделение ролей:
 //   агент (Стадия 3) выставляет: matches | contradicts | ambiguous | missing;
 //   инженер (override) может дополнить знанием пакета: other_document |
-//   check_contract | not_applicable (и поменять действие).
+//   check_contract | not_applicable | resolved_in_contract | risk_accepted
+//   (и поменять действие). Находку «условие_отсутствует» гасит ТОЛЬКО
+//   закрывающий статус (CLOSING_STATUSES) — примечание или check_contract
+//   тему не закрывают, риск остаётся в реестре.
 
 // Статусы покрытия (полный словарь — агентские + инженерские).
 const COVERAGE_STATUSES = Object.freeze([
-  'matches', //         соответствует условию компании
-  'contradicts', //     противоречит (есть цитата — отдельная находка)
-  'missing', //         тема не обнаружена ни в ТЗ, ни в приложениях
-  'ambiguous', //       тема затронута, но сформулирована неоднозначно
-  'other_document', //  есть только в другом документе пакета (инженер)
-  'check_contract', //  требует проверки проекта договора (инженер)
-  'not_applicable', //  неприменимо к данному тендеру (инженер)
+  'matches', //              соответствует условию компании
+  'contradicts', //          противоречит (есть цитата — отдельная находка)
+  'missing', //              тема не обнаружена ни в ТЗ, ни в приложениях
+  'ambiguous', //            тема затронута, но сформулирована неоднозначно
+  'other_document', //       есть только в другом документе пакета (инженер, закрывает)
+  'check_contract', //       требует проверки проекта договора (инженер, НЕ закрывает)
+  'not_applicable', //       неприменимо к данному тендеру (инженер, закрывает)
+  'resolved_in_contract', // урегулировано в проекте договора (инженер, закрывает)
+  'risk_accepted', //        риск принят компанией осознанно (инженер, закрывает)
 ]);
 
 const AGENT_STATUSES = Object.freeze(['matches', 'contradicts', 'ambiguous', 'missing']);
-const ENGINEER_ONLY_STATUSES = Object.freeze(['other_document', 'check_contract', 'not_applicable']);
+const ENGINEER_ONLY_STATUSES = Object.freeze([
+  'other_document', 'check_contract', 'not_applicable', 'resolved_in_contract', 'risk_accepted',
+]);
+
+// ЗАКРЫВАЮЩИЕ статусы: тема действительно решена — находка «условие_отсутствует»
+// не эмитится. check_contract закрывающим НЕ является: это действие («надо
+// проверить»), вопрос ещё открыт. Строка override без статуса (только note)
+// тоже НЕ закрывает тему — примечание инженера не скрывает нерешённый риск.
+const CLOSING_STATUSES = Object.freeze([
+  'matches', 'other_document', 'not_applicable', 'resolved_in_contract', 'risk_accepted',
+]);
+const isClosingStatus = (status) => CLOSING_STATUSES.includes(status);
+const isTopicClosedByOverride = (override) => Boolean(override && isClosingStatus(override.status));
 
 // Правильное действие для отсутствующего условия — НЕ «удалить текст».
 const RESOLUTIONS = Object.freeze([
@@ -202,6 +219,23 @@ function aggregateCoverage(topics, records) {
   return out;
 }
 
+// Отбор тем для находки «условие_отсутствует»: missing по агрегату И не закрыта
+// ЯВНЫМ закрывающим статусом инженера. coverage — Map из aggregateCoverage,
+// overrides — Map topic_key → строка override (coverageService.getOverrides).
+// Примечание без статуса и открытые статусы (check_contract, missing, …)
+// находку НЕ гасят — риск остаётся в реестре замечаний.
+function selectMissingTopics(topics, coverage, overrides) {
+  const emit = [];
+  const suppressed = [];
+  for (const t of topics || []) {
+    const row = coverage.get(t.topic_key);
+    if (!row || row.status !== 'missing') continue;
+    if (isTopicClosedByOverride(overrides && overrides.get(t.topic_key))) suppressed.push(t);
+    else emit.push(t);
+  }
+  return { emit, suppressed };
+}
+
 const CRIT_TO_IMPACT = Object.freeze({ critical: 'critical', high: 'high', medium: 'medium', low: 'low' });
 
 // Находка «условие отсутствует» — БЕЗ якоря в ТЗ (fragment=null): её
@@ -242,6 +276,8 @@ const STATUS_LABELS = Object.freeze({
   other_document: 'Есть только в другом документе',
   check_contract: 'Требует проверки проекта договора',
   not_applicable: 'Неприменимо к данному тендеру',
+  resolved_in_contract: 'Урегулировано в договоре',
+  risk_accepted: 'Риск принят',
 });
 
 const RESOLUTION_LABELS = Object.freeze({
@@ -258,6 +294,10 @@ module.exports = {
   COVERAGE_STATUSES,
   AGENT_STATUSES,
   ENGINEER_ONLY_STATUSES,
+  CLOSING_STATUSES,
+  isClosingStatus,
+  isTopicClosedByOverride,
+  selectMissingTopics,
   RESOLUTIONS,
   RESOLUTION_TO_REQUIRED_ACTION,
   RESOLUTION_TO_SUGGESTED_ACTION,

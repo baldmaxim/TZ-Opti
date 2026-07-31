@@ -32,6 +32,7 @@ const {
   buildTopicList,
   aggregateCoverage,
   buildMissingFinding,
+  selectMissingTopics,
   normalizePartStatus,
   PART_STATUS,
 } = require('./conditionCoverage');
@@ -284,18 +285,16 @@ async function runStage3Llm(context) {
   if (context.planOnly) return issues;
 
   // Агрегация по всем частям: «отсутствует» — только если тема не затронута
-  // НИ В ОДНОЙ части. Инженерские override (не применимо / в другом документе /
-  // проверка договора) закрывают тему — находка по ней не эмитится.
+  // НИ В ОДНОЙ части. Находку гасит ТОЛЬКО явный ЗАКРЫВАЮЩИЙ статус инженера
+  // (matches / other_document / not_applicable / resolved_in_contract /
+  // risk_accepted): примечание без статуса или check_contract («надо
+  // проверить») тему не закрывают — риск остаётся в реестре замечаний.
   const coverage = aggregateCoverage(topics, coverageRecords);
   const overrides = await coverageService.getOverrides(tenderId).catch(() => new Map());
   const segmentsTotal = (issues.segmentation && issues.segmentation.segments) || 0;
 
-  let missingCount = 0;
-  for (const topic of topics) {
-    const row = coverage.get(topic.topic_key);
-    if (!row || row.status !== 'missing') continue;
-    if (overrides.has(topic.topic_key)) continue;
-    missingCount += 1;
+  const { emit: missingTopics, suppressed } = selectMissingTopics(topics, coverage, overrides);
+  for (const topic of missingTopics) {
     issues.push(
       buildIssue({
         sourceDocumentId: context.sourceDocumentId,
@@ -309,7 +308,7 @@ async function runStage3Llm(context) {
   // eslint-disable-next-line no-console
   console.log(
     `[stage3_llm] покрытие: тем ${topics.length}, записей модели ${coverageRecords.length}, ` +
-      `отсутствует ${missingCount} (override закрыл ${[...coverage.values()].filter((r) => r.status === 'missing').length - missingCount})`,
+      `отсутствует ${missingTopics.length} (закрыто статусом инженера ${suppressed.length})`,
   );
 
   // Матрица покрытия — снимок ЭТОГО прогона (analysis_run_id). Best-effort:

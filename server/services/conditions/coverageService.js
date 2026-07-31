@@ -8,9 +8,13 @@
 //     переписывается (история прогонов сохраняется, как у issues);
 //   condition_coverage_overrides — знание ИНЖЕНЕРА per tender (переживает
 //     прогоны): «есть только в другом документе», «требует проверки проекта
-//     договора», «неприменимо к данному тендеру» + выбранное действие.
+//     договора», «неприменимо», «урегулировано в договоре», «риск принят»
+//     + выбранное действие и примечание (note).
 // Чтение (getCoverage) отдаёт снимок актуального прогона Стадии 3 с наложенными
-// override: статус инженера главнее статуса агента.
+// override: статус инженера главнее статуса агента. Находку
+// «условие_отсутствует» гасит ТОЛЬКО закрывающий статус (CLOSING_STATUSES в
+// ядре conditionCoverage): note без статуса или check_contract тему не
+// закрывают — риск остаётся в реестре.
 
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
@@ -22,6 +26,7 @@ const {
   RESOLUTIONS,
   STATUS_LABELS,
   RESOLUTION_LABELS,
+  isClosingStatus,
 } = require('../stageAnalysis/conditionCoverage');
 
 // Снимок покрытия прогона: replace всей матрицы ЭТОГО прогона в одной
@@ -84,6 +89,9 @@ async function getCoverage(tenderId, { runId = null } = {}) {
       agent_status: r.status,
       status,
       status_label: STATUS_LABELS[status] || status,
+      // Закрыта ли тема — по ЭФФЕКТИВНОМУ статусу; клиент не дублирует набор
+      // закрывающих статусов (единый источник — CLOSING_STATUSES ядра).
+      closed: isClosingStatus(status),
       resolution: (ov && ov.resolution) || r.resolution || null,
       resolution_label: RESOLUTION_LABELS[(ov && ov.resolution) || r.resolution] || null,
       criticality: r.criticality || null,
@@ -147,7 +155,7 @@ async function setOverride(tenderId, topicKey, { status = null, resolution = nul
     tenderId,
     resourceType: 'conditions',
     resourceId: topicKey,
-    meta: { status: st, resolution: rs },
+    meta: { status: st, resolution: rs, has_note: Boolean(note) },
   }).catch(() => {});
 
   return getCoverage(tenderId);

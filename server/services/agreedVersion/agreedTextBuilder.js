@@ -22,6 +22,9 @@
 //     пересечения решаются «первое решение выигрывает» (второе — conflict),
 //     применение — справа налево: координатный дрейф исключён по построению.
 //   • Не нашли фрагмент — failed, текст НЕ трогается.
+//   • Цель найдена в области поиска БОЛЬШЕ ОДНОГО РАЗА — ambiguous_target:
+//     правка «по первому вхождению» была бы произволом, текст НЕ трогается
+//     (активация версии с ambiguous > 0 блокируется гейтом).
 
 const { resolveRedaction } = require('../review/decisionModel');
 
@@ -35,10 +38,12 @@ function normalizeForLocate(s) {
   return (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-// Точный поиск подстроки. Возвращает {start, end} в координатах haystack или null.
+// Точный поиск подстроки. Возвращает {start, end, ambiguous} в координатах
+// haystack или null. ambiguous — needle встречается больше одного раза.
 function findExact(haystack, needle) {
   const i = haystack.indexOf(needle);
-  return i === -1 ? null : { start: i, end: i + needle.length };
+  if (i === -1) return null;
+  return { start: i, end: i + needle.length, ambiguous: haystack.indexOf(needle, i + 1) !== -1 };
 }
 
 // Терпимый к пробелам поиск (включая NBSP/узкие пробелы и переводы строк):
@@ -52,9 +57,10 @@ function findTolerant(haystack, needle) {
     .map(escapeRegExp)
     .join('[\\s\\u00A0\\u202F]+');
   try {
-    const re = new RegExp(pattern);
+    const re = new RegExp(pattern, 'g');
     const m = re.exec(haystack);
-    return m ? { start: m.index, end: m.index + m[0].length } : null;
+    if (!m) return null;
+    return { start: m.index, end: m.index + m[0].length, ambiguous: re.exec(haystack) !== null };
   } catch (_e) {
     return null;
   }
@@ -92,7 +98,13 @@ function locateInRaw(rawMd, block, target, { exactOnly = false } = {}) {
     method = 'tolerant';
   }
   if (!hit) return null;
-  return { start: slice.start + hit.start, end: slice.start + hit.end, method, slice };
+  return {
+    start: slice.start + hit.start,
+    end: slice.start + hit.end,
+    ambiguous: Boolean(hit.ambiguous),
+    method,
+    slice,
+  };
 }
 
 // Дедупликация вхождений кластера: несколько draft_issues могут указывать на
@@ -140,6 +152,9 @@ function opForOccurrence(rawMd, blocks, decision, occ) {
     const exactOnly = Boolean(part) && !representative;
     const loc = locateInRaw(rawMd, block, target, { exactOnly });
     if (!loc) return { status: part ? 'skipped_occurrence' : 'failed', reason: 'фрагмент не найден в тексте' };
+    if (loc.ambiguous) {
+      return { status: 'ambiguous_target', reason: 'цель встречается в области поиска несколько раз — место правки неоднозначно' };
+    }
     return { status: 'applied', op: { start: loc.start, end: loc.end, replacement: '' }, method: loc.method };
   }
 
@@ -157,6 +172,9 @@ function opForOccurrence(rawMd, blocks, decision, occ) {
         status: representative ? 'failed' : 'skipped_occurrence',
         reason: 'целевой текст не найден дословно',
       };
+    }
+    if (loc.ambiguous) {
+      return { status: 'ambiguous_target', reason: 'цель встречается в области поиска несколько раз — место правки неоднозначно' };
     }
     return { status: 'applied', op: { start: loc.start, end: loc.end, replacement }, method: loc.method };
   }
@@ -216,7 +234,7 @@ function applyOps(rawMd, ops) {
 function buildAgreedText({ rawMd, blocks, decisions }) {
   const md = (rawMd || '').toString();
   const report = {
-    applied: 0, skipped: 0, failed: 0, conflicts: 0, noop: 0,
+    applied: 0, skipped: 0, failed: 0, conflicts: 0, ambiguous: 0, noop: 0,
     perDecision: [],
   };
   const flatEntries = [];
@@ -280,6 +298,7 @@ function buildAgreedText({ rawMd, blocks, decisions }) {
       if (occ.status === 'applied') report.applied += 1;
       else if (occ.status === 'skipped_occurrence') report.skipped += 1;
       else if (occ.status === 'conflict') report.conflicts += 1;
+      else if (occ.status === 'ambiguous_target') report.ambiguous += 1;
       else if (occ.status === 'failed') report.failed += 1;
       else if (occ.status === 'noop') report.noop += 1;
     }
@@ -290,6 +309,7 @@ function buildAgreedText({ rawMd, blocks, decisions }) {
 
 module.exports = {
   buildAgreedText,
+  TEXT_CHANGING,
   // для тестов
   findTolerant,
   uniqueOccurrences,

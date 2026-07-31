@@ -150,6 +150,34 @@ test('конфликт: пересекающиеся операции — выи
   assert.ok(!mdText.includes('силами заказчика'), 'конфликтующая правка не применена');
 });
 
+test('неоднозначная цель: фрагмент дважды в одном абзаце → ambiguous_target, текст цел', async () => {
+  const md = `# 1. Оплата
+
+Оплата производится по акту. Аванс не предусмотрен. Оплата производится по акту.
+`;
+  const { mdText, report } = await build([decision({
+    representative_fragment: 'Оплата производится по акту.',
+  })], md);
+  assert.equal(report.ambiguous, 1);
+  assert.equal(report.applied, 0);
+  assert.equal(mdText, md, 'правка «по первому вхождению» не применяется');
+});
+
+test('неоднозначная подчасть target_text → ambiguous_target', async () => {
+  const md = `# 1. Гарантия
+
+Гарантийный срок 10 лет на кровлю и 10 лет на фасад.
+`;
+  const { mdText, report } = await build([decision({
+    decision: 'edit',
+    representative_fragment: 'Гарантийный срок 10 лет на кровлю и 10 лет на фасад.',
+    target_text: '10 лет',
+    edited_redaction: '5 лет',
+  })], md);
+  assert.equal(report.ambiguous, 1);
+  assert.equal(mdText, md);
+});
+
 test('фрагмент не найден → failed, текст не изменён', async () => {
   const { mdText, report } = await build([decision({
     representative_fragment: 'Такого текста в ТЗ нет вообще.',

@@ -39,9 +39,19 @@ exports.get = async (req, res) => {
 
 // POST /api/tenders/:id/agreed-versions/:versionId/activate — сделать версию
 // активной (вход следующего раунда анализа). Прежняя active уходит в archived.
+// Жёсткий гейт инвариантов → 409 AGREED_ACTIVATION_BLOCKED. Тело (опционально):
+//   { confirm_skipped: true }        — инженер подтверждает пропущенные вхождения;
+//   { force: true, reason: '...' }   — активация с отклонением от инвариантов
+//                                      (основание обязательно, отдельный аудит).
 exports.activate = async (req, res) => {
   await ensureTender(req.params.id);
-  const version = await svc.activateVersion(req.params.id, req.params.versionId, actorOpts(req));
+  const body = req.body || {};
+  const version = await svc.activateVersion(req.params.id, req.params.versionId, {
+    ...actorOpts(req),
+    force: body.force === true,
+    reason: typeof body.reason === 'string' ? body.reason : null,
+    confirmSkipped: body.confirm_skipped === true,
+  });
   res.json(version);
 };
 

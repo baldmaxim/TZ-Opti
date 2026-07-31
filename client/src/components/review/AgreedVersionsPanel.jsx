@@ -20,6 +20,7 @@ function reportSummary(report) {
   if (report.skipped) parts.push(`пропущено: ${report.skipped}`);
   if (report.failed) parts.push(`не найдено: ${report.failed}`);
   if (report.conflicts) parts.push(`конфликтов: ${report.conflicts}`);
+  if (report.ambiguous) parts.push(`неоднозначных: ${report.ambiguous}`);
   return parts.join(', ') || 'правок нет';
 }
 
@@ -29,6 +30,10 @@ export default function AgreedVersionsPanel({ tenderId, decidedCount = 0, onChan
   const [busy, setBusy] = useState(false);
   const [impact, setImpact] = useState(null);
   const [impactBusy, setImpactBusy] = useState(false);
+  // Активация заблокирована гейтом инвариантов: { versionId, violations[] }.
+  const [blocked, setBlocked] = useState(null);
+  const [forceReason, setForceReason] = useState('');
+  const [confirmSkipped, setConfirmSkipped] = useState(false);
 
   const load = async () => {
     if (!tenderId) return;
@@ -56,17 +61,33 @@ export default function AgreedVersionsPanel({ tenderId, decidedCount = 0, onChan
     setBusy(false);
   };
 
-  const activate = async (versionId) => {
+  const activate = async (versionId, opts) => {
     setBusy(true);
     try {
-      const v = await api.activateAgreedVersion(tenderId, versionId);
+      const v = await api.activateAgreedVersion(tenderId, versionId, opts);
       toastSuccess(`Версия ${v.version_no} активна: следующий анализ пойдёт по ней`);
       setImpact(null); // вход изменился — прежняя карта неактуальна
+      setBlocked(null);
+      setForceReason('');
+      setConfirmSkipped(false);
       await load();
       if (onChanged) await onChanged();
-    } catch (err) { toastError(err.message); }
+    } catch (err) {
+      if (err.code === 'AGREED_ACTIVATION_BLOCKED') {
+        // Гейт инвариантов: показываем нарушения и форс-режим вместо тоста.
+        setBlocked({ versionId, violations: err.details?.violations || [] });
+        toastWarning('Активация заблокирована — см. нарушения инвариантов ниже');
+      } else {
+        toastError(err.message);
+      }
+    }
     setBusy(false);
   };
+
+  // Нарушения, которые снимает подтверждение пропущенных вхождений (без форса).
+  const onlySkipped = blocked
+    && blocked.violations.length > 0
+    && blocked.violations.every((v) => v.code === 'skipped_unconfirmed');
 
   const loadImpact = async () => {
     setImpactBusy(true);
@@ -173,6 +194,60 @@ export default function AgreedVersionsPanel({ tenderId, decidedCount = 0, onChan
               </div>
             );
           })}
+        </div>
+      )}
+
+      {blocked && (
+        <div className="p-3 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 space-y-2">
+          <div className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+            Активация заблокирована: нарушены инварианты
+          </div>
+          <ul className="text-xs list-disc pl-4 space-y-0.5 text-amber-800 dark:text-amber-200">
+            {blocked.violations.map((v) => <li key={v.code}>{v.message}</li>)}
+          </ul>
+          {onlySkipped ? (
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={confirmSkipped}
+                  onChange={(e) => setConfirmSkipped(e.target.checked)}
+                />
+                Подтверждаю: пропущенные вхождения проверены, активировать без них
+              </label>
+              <button
+                className="btn text-xs"
+                disabled={busy || !confirmSkipped}
+                onClick={() => activate(blocked.versionId, { confirm_skipped: true })}
+              >
+                Активировать с подтверждением
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="text-xs text-amber-800 dark:text-amber-200">
+                Активировать неполную версию можно только с отклонением от
+                инвариантов: укажите основание — оно уйдёт в журнал аудита.
+              </div>
+              <textarea
+                className="input w-full text-xs"
+                rows={2}
+                placeholder="Основание отклонения от инвариантов (обязательно)"
+                value={forceReason}
+                onChange={(e) => setForceReason(e.target.value)}
+              />
+              <button
+                className="btn text-xs"
+                disabled={busy || !forceReason.trim()}
+                onClick={() => activate(blocked.versionId, { force: true, reason: forceReason.trim() })}
+              >
+                Активировать с отклонением от инвариантов
+              </button>
+            </div>
+          )}
+          <button className="btn text-xs" disabled={busy} onClick={() => setBlocked(null)}>
+            Отмена
+          </button>
         </div>
       )}
     </div>

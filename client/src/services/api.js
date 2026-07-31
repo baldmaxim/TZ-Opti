@@ -19,6 +19,7 @@ async function toError(res) {
   const err = new Error(requestId ? `${message} (запрос ${requestId})` : message);
   err.status = res.status;
   err.code = data?.code;
+  err.details = data?.details || null; // контракт доменных 409 (readiness, гейт активации)
   err.requestId = requestId;
   if (res.status === 401) notifyUnauthorized(err.code);
   return err;
@@ -295,8 +296,13 @@ export const api = {
   listAgreedVersions: (tenderId) => request(`/tenders/${tenderId}/agreed-versions`),
   getAgreedVersion: (tenderId, versionId) =>
     request(`/tenders/${tenderId}/agreed-versions/${versionId}`),
-  activateAgreedVersion: (tenderId, versionId) =>
-    request(`/tenders/${tenderId}/agreed-versions/${versionId}/activate`, { method: 'POST' }),
+  // opts: { confirm_skipped } — подтверждение пропущенных вхождений;
+  // { force, reason } — активация с отклонением от инвариантов (нужен reason).
+  activateAgreedVersion: (tenderId, versionId, opts) =>
+    request(`/tenders/${tenderId}/agreed-versions/${versionId}/activate`, {
+      method: 'POST',
+      ...(opts ? { body: opts } : {}),
+    }),
   archiveAgreedVersion: (tenderId, versionId) =>
     request(`/tenders/${tenderId}/agreed-versions/${versionId}/archive`, { method: 'POST' }),
   // Карта затронутого (dry-run): какие части каких стадий пересчитаются при

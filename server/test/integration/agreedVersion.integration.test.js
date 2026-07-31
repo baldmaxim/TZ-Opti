@@ -4,12 +4,15 @@
 //
 // Что защищаем:
 //   • createAgreedVersion строит версию из решений АКТИВНОГО pipeline-прогона:
-//     delete-фрагмент вырезан из md_text, снимок applied_decisions сохранён;
+//     delete-фрагмент вырезан из md_text, снимок applied_decisions ПОЛНЫЙ
+//     (включая reject — доказательство рассмотрения каждого кластера);
 //   • активация версии меняет currentDocumentsRevision (вход следующего раунда),
 //     getTzText отдаёт текст версии с её собственной ревизией;
 //   • снимок неизменяем: смена живых решений после создания версию не трогает;
 //   • архив активной версии возвращает анализ на оригинальный .md;
-//   • одна active на тендер: активация второй архивирует первую.
+//   • одна active на тендер: активация второй архивирует первую;
+//   • гейт активации: build_report.failed > 0 → 409 AGREED_ACTIVATION_BLOCKED,
+//     форс-режим требует основание и пишет agreed_version.activate_forced.
 //
 //   npm run test:integration    — без TEST_DATABASE_URL тесты SKIP
 //   npm run verify:integration  — без TEST_DATABASE_URL тесты ПАДАЮТ
@@ -46,26 +49,30 @@ async function seedTenderWithDoc(db) {
   );
 }
 
-async function seedPipelineWithDecision(db, {
-  clusterId = 'agr-cluster-1', decisionKind = 'delete', fragment = 'за свой счёт',
-} = {}) {
+// clusters: [{ clusterId, decisionKind, fragment }] — каждый кластер получает
+// решение (рецензия ЗАВЕРШЕНА: readiness-гейт создания версии проходит).
+async function seedPipelineWithDecisions(db, clusters) {
   const runId = await analysisRuns.beginCandidateRun(TENDER_ID, { reason: 'agreed-version-test' });
-  await db.queryRun(
-    `INSERT INTO issue_clusters (id, tender_id, analysis_run_id, tz_clause, cluster_title,
-       merged_basis, merged_recommendation, overall_criticality, show_to_engineer,
-       final_problem_type, semantic_bucket, cluster_key, item_count, paragraph_index, created_at,
-       representative_fragment, evidence_fragments, occurrence_count)
-     VALUES (?, ?, ?, 'п. 1.1', 'Кластер', 'основание', 'рекомендация', 'high', 1,
-       'не_учтено_в_кп', 'price|modify', 'k1', 1, 1, ?, ?, ?, 1)`,
-    clusterId, TENDER_ID, runId, nowIso(), fragment,
-    JSON.stringify([{ paragraph_index: 1, fragment }]),
-  );
-  await db.queryRun(
-    `INSERT INTO review_decisions (id, issue_id, cluster_id, analysis_run_id, cluster_key,
-       decision, final_comment, decided_at)
-     VALUES (?, NULL, ?, ?, 'k1', ?, 'решение инженера', ?)`,
-    `agr-dec-${clusterId}`, clusterId, runId, decisionKind, nowIso(),
-  );
+  for (const { clusterId, decisionKind = 'delete', fragment = 'за свой счёт' } of clusters) {
+    // eslint-disable-next-line no-await-in-loop
+    await db.queryRun(
+      `INSERT INTO issue_clusters (id, tender_id, analysis_run_id, tz_clause, cluster_title,
+         merged_basis, merged_recommendation, overall_criticality, show_to_engineer,
+         final_problem_type, semantic_bucket, cluster_key, item_count, paragraph_index, created_at,
+         representative_fragment, evidence_fragments, occurrence_count)
+       VALUES (?, ?, ?, 'п. 1.1', 'Кластер', 'основание', 'рекомендация', 'high', 1,
+         'не_учтено_в_кп', 'price|modify', ?, 1, 1, ?, ?, ?, 1)`,
+      clusterId, TENDER_ID, runId, `key-${clusterId}`, nowIso(), fragment,
+      JSON.stringify([{ paragraph_index: 1, fragment }]),
+    );
+    // eslint-disable-next-line no-await-in-loop
+    await db.queryRun(
+      `INSERT INTO review_decisions (id, issue_id, cluster_id, analysis_run_id, cluster_key,
+         decision, final_comment, decided_at)
+       VALUES (?, NULL, ?, ?, ?, ?, 'решение инженера', ?)`,
+      `agr-dec-${clusterId}`, clusterId, runId, `key-${clusterId}`, decisionKind, nowIso(),
+    );
+  }
   await analysisRuns.activateRun(TENDER_ID, analysisRuns.SCOPE_PIPELINE, runId, {});
   return runId;
 }
@@ -100,18 +107,27 @@ after(async () => {
 
 test('полный круг: создать → активировать → новая ревизия входа → архив', OPTS, async () => {
   const db = getDb();
-  await seedPipelineWithDecision(db);
+  await seedPipelineWithDecisions(db, [
+    { clusterId: 'agr-cluster-1', decisionKind: 'delete', fragment: 'за свой счёт' },
+    // Отклонённый кластер: текст не меняет, но ОБЯЗАН попасть в снимок —
+    // снимок доказывает, что инженер рассмотрел каждый кластер.
+    { clusterId: 'agr-cluster-rej', decisionKind: 'reject', fragment: 'Гарантийный срок' },
+  ]);
 
   const baseRevision = await analysisRuns.currentDocumentsRevision(TENDER_ID);
 
-  // 1. Создание: delete-фрагмент вырезан, снимок решений сохранён.
+  // 1. Создание: delete-фрагмент вырезан, снимок решений ПОЛНЫЙ (включая reject).
   const version = await agreed.createAgreedVersion(TENDER_ID, {});
   assert.equal(version.status, 'draft');
   assert.equal(version.version_no, 1);
-  assert.equal(version.applied_decisions.length, 1);
+  assert.equal(version.applied_decisions.length, 2, 'снимок содержит ВСЕ решения, включая reject');
+  const rejectSnap = version.applied_decisions.find((d) => d.decision === 'reject');
+  assert.ok(rejectSnap, 'reject-решение сохранено в снимке');
   assert.equal(version.build_report.applied, 1);
+  assert.ok(version.build_report.noop >= 1, 'reject учтён как noop — текст им не менялся');
   const full = await agreed.getVersion(TENDER_ID, version.id, { withText: true });
   assert.ok(!full.md_text.includes('за свой счёт'), 'фрагмент решения delete вырезан');
+  assert.ok(full.md_text.includes('Гарантийный срок'), 'reject текст не меняет');
   assert.ok(full.md_text.includes('# 1. Объём работ'), 'md-разметка сохранена');
 
   // Draft не влияет на вход анализа.
@@ -135,7 +151,8 @@ test('полный круг: создать → активировать → н�
     `UPDATE review_decisions SET decision = 'accept' WHERE cluster_id = 'agr-cluster-1'`,
   );
   const reread = await agreed.getVersion(TENDER_ID, version.id);
-  assert.equal(reread.applied_decisions[0].decision, 'delete', 'снимок фиксирует решение на момент создания');
+  const snapCluster1 = reread.applied_decisions.find((d) => d.cluster_id === 'agr-cluster-1');
+  assert.equal(snapCluster1.decision, 'delete', 'снимок фиксирует решение на момент создания');
 
   // 4. Архив: вход анализа возвращается на оригинал.
   await agreed.archiveVersion(TENDER_ID, version.id, {});
@@ -158,9 +175,9 @@ test('одна active на тендер: активация второй вер�
 
   // Второй раунд: новый прогон с решением по другому месту.
   await db.queryRun('DELETE FROM analysis_active_runs WHERE tender_id = ? AND scope = ?', TENDER_ID, analysisRuns.SCOPE_PIPELINE);
-  await seedPipelineWithDecision(db, {
-    clusterId: 'agr-cluster-2', decisionKind: 'delete', fragment: '10 лет',
-  });
+  await seedPipelineWithDecisions(db, [
+    { clusterId: 'agr-cluster-2', decisionKind: 'delete', fragment: '10 лет' },
+  ]);
   const v2 = await agreed.createAgreedVersion(TENDER_ID, {});
   assert.equal(v2.version_no, v1.version_no + 1);
   assert.equal(v2.base_agreed_version_id, v1.id, 'вторая версия строится ОТ первой');
@@ -179,4 +196,56 @@ test('одна active на тендер: активация второй вер�
 
   const text = await tz.getTzText(TENDER_ID);
   assert.equal(text.document.agreed_version_id, v2.id);
+});
+
+test('гейт активации: failed-правка → 409, форс требует основание и пишет отдельный аудит', OPTS, async () => {
+  const db = getDb();
+
+  // Третий раунд: рецензия завершена, но правка решения не найдётся в тексте —
+  // build_report.failed = 1. Создание разрешено (отчёт честный), активация — нет.
+  await db.queryRun('DELETE FROM analysis_active_runs WHERE tender_id = ? AND scope = ?', TENDER_ID, analysisRuns.SCOPE_PIPELINE);
+  await seedPipelineWithDecisions(db, [
+    { clusterId: 'agr-cluster-3', decisionKind: 'delete', fragment: 'этого фрагмента в документе не существует' },
+  ]);
+
+  const v3 = await agreed.createAgreedVersion(TENDER_ID, {});
+  assert.equal(v3.build_report.failed, 1);
+
+  await assert.rejects(
+    () => agreed.activateVersion(TENDER_ID, v3.id, {}),
+    (err) => {
+      assert.equal(err.status, 409);
+      assert.equal(err.code, 'AGREED_ACTIVATION_BLOCKED');
+      assert.ok(
+        (err.details.violations || []).some((v) => v.code === 'failed_edits'),
+        'нарушение failed_edits названо в details',
+      );
+      return true;
+    },
+  );
+  const still = await agreed.getVersion(TENDER_ID, v3.id);
+  assert.equal(still.status, 'draft', 'заблокированная версия осталась draft');
+
+  // Форс без основания — 400: отклонение от инвариантов не бывает безымянным.
+  await assert.rejects(
+    () => agreed.activateVersion(TENDER_ID, v3.id, { force: true }),
+    (err) => err.status === 400,
+  );
+
+  // Форс с основанием: активирует и пишет ОТДЕЛЬНОЕ событие аудита с причиной.
+  const activated = await agreed.activateVersion(TENDER_ID, v3.id, {
+    force: true, reason: 'тендер закрывается сегодня, правка будет внесена вручную',
+  });
+  assert.equal(activated.status, 'active');
+
+  const auditRow = await db.queryOne(
+    `SELECT meta FROM audit_log
+      WHERE tender_id = ? AND action = 'agreed_version.activate_forced'
+      ORDER BY ts DESC LIMIT 1`,
+    TENDER_ID,
+  );
+  assert.ok(auditRow, 'событие agreed_version.activate_forced записано');
+  const meta = JSON.parse(auditRow.meta);
+  assert.ok(meta.reason.includes('вручную'), 'основание сохранено в аудите');
+  assert.ok(meta.violations.some((v) => v.code === 'failed_edits'), 'нарушенные инварианты сохранены в аудите');
 });

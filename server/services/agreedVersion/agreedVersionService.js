@@ -8,19 +8,28 @@
 // становится ВХОДОМ следующего раунда анализа через getTzSourceDocument и
 // участвует в currentDocumentsRevision) → archiveVersion.
 //
-// Снимок applied_decisions НЕИЗМЕНЯЕМ: он фиксирует, какие решения (и в каком
-// виде) легли в версию. Экспорт конкретной версии идёт от снимка, а не от
+// Снимок applied_decisions НЕИЗМЕНЯЕМ и ПОЛНЫЙ: он фиксирует ВСЕ решения
+// рецензии (включая reject) — доказательство, что инженер рассмотрел каждый
+// кластер рабочего списка. К тексту применяются только текст-меняющие решения
+// (билдер), экспорт версии идёт от снимка (reject не экспортируется), а не от
 // живых review_decisions.
+//
+// Активация — жёсткий гейт (activationGate.assessActivation): рецензия
+// завершена, снимок не устарел, failed/conflicts/ambiguous = 0, skipped только
+// с явным подтверждением, база версии совпадает с текущей базой тендера.
+// Отклонение от инвариантов — только форс-режим с основанием (reason) и
+// отдельным событием аудита agreed_version.activate_forced.
 
 const db = require('../../db/connection');
 const { newId, nowIso } = require('../../utils/ids');
-const { badRequest, notFound } = require('../../utils/errors');
+const { badRequest, notFound, conflict } = require('../../utils/errors');
 const { parseMdToBlocks } = require('../mdParser');
 const { getTzMdDocument, computeRevisionId } = require('../tzActiveTextService');
 const analysisRuns = require('../analysisRuns/analysisRunsService');
 const { buildAgreedText } = require('./agreedTextBuilder');
+const { assessActivation } = require('./activationGate');
 const audit = require('../audit/auditService');
-const { assertReviewReady } = require('../review/reviewReadinessService');
+const { assertReviewReady, getReadiness } = require('../review/reviewReadinessService');
 
 function parseJson(value, fallback) {
   if (value == null || value === '') return fallback;
@@ -101,8 +110,10 @@ async function loadPrimaryDrafts(clusterIds) {
   return map;
 }
 
-// Решения активного pipeline-прогона в формате снимка версии: полный контекст
-// для билдера (вхождения) + всё, что нужно экспорту (issue-поля primary).
+// ВСЕ решения активного pipeline-прогона в формате снимка версии (включая
+// reject: снимок — доказательство полноты рецензии; к тексту reject не
+// применяется, в экспорт не попадает). Полный контекст для билдера
+// (вхождения) + всё, что нужно экспорту (issue-поля primary).
 async function loadDecisionsForBuild(tenderId) {
   const rid = await analysisRuns.getActivePipelineRunId(tenderId);
   if (!rid) return { runId: null, decisions: [] };
@@ -113,7 +124,7 @@ async function loadDecisionsForBuild(tenderId) {
             rd.decision, rd.edited_redaction, rd.final_comment, rd.target_text
        FROM issue_clusters c
        JOIN review_decisions rd ON rd.cluster_id = c.id
-      WHERE c.tender_id = ? AND c.analysis_run_id = ? AND rd.decision <> 'reject'
+      WHERE c.tender_id = ? AND c.analysis_run_id = ?
       ORDER BY c.paragraph_index ASC NULLS LAST, c.created_at ASC`,
     tenderId, rid,
   );
@@ -170,7 +181,7 @@ async function createAgreedVersion(tenderId, { actor = null, requestId = null } 
 
   const { runId, decisions } = await loadDecisionsForBuild(tenderId);
   if (!runId) throw badRequest('Нет актуального итога анализа — сформируйте кластеры (шаг «Рецензия»).');
-  if (!decisions.length) throw badRequest('Нет ни одного решения инженера — согласованная версия не отличалась бы от базы.');
+  if (!decisions.length) throw badRequest('Нет ни одного решения инженера — снимок версии был бы пуст.');
 
   const blocks = await parseMdToBlocks(baseText);
   const { mdText, report } = buildAgreedText({ rawMd: baseText, blocks, decisions });
@@ -208,7 +219,9 @@ async function createAgreedVersion(tenderId, { actor = null, requestId = null } 
     meta: {
       version_no: Number(row.version_no), analysis_run_id: runId,
       decisions: decisions.length,
-      applied: report.applied, skipped: report.skipped, failed: report.failed, conflicts: report.conflicts,
+      rejected: decisions.filter((d) => d.decision === 'reject').length,
+      applied: report.applied, skipped: report.skipped, failed: report.failed,
+      conflicts: report.conflicts, ambiguous: report.ambiguous,
     },
   }).catch(() => {});
 
@@ -218,6 +231,7 @@ async function createAgreedVersion(tenderId, { actor = null, requestId = null } 
 // Снимок решений → строки экспорта (формат loadClusterDecisions:
 // { issue, decision_kind, final_comment, edited_redaction, target_text }).
 // Чистая функция: экспорт версии идёт от СНИМКА, а не от живых решений.
+// Снимок полный (включая reject), но reject не экспортируется.
 function snapshotToExportRows(applied) {
   return (applied || [])
     .filter((d) => d && d.decision && d.decision !== 'reject')
@@ -285,19 +299,73 @@ async function listVersions(tenderId) {
   return rows.map((r) => rowToVersion(r));
 }
 
+// Текущая база тендера для сверки с базой версии: активная согласованная
+// версия (id + её ревизия), иначе — оригинальный .md (его ревизия).
+async function resolveCurrentBase(tenderId) {
+  const active = await getActiveAgreedVersion(tenderId, { withText: true });
+  if (active) return { agreed_version_id: active.id, revision_id: active.revision_id };
+  const doc = await getTzMdDocument(tenderId);
+  if (!doc) return { agreed_version_id: null, revision_id: null };
+  return { agreed_version_id: null, revision_id: computeRevisionId(doc) };
+}
+
 // Активация: одна active на тендер — прежняя уходит в archived в той же транзакции.
 // Активная версия меняет currentDocumentsRevision → следующая production-сборка
 // и стадии пойдут против новой ревизии (manifest это словит штатно).
-async function activateVersion(tenderId, versionId, { actor = null, requestId = null } = {}) {
+//
+// ЖЁСТКИЙ ГЕЙТ (activationGate.assessActivation): рецензия завершена и не
+// устарела, failed = conflicts = ambiguous = 0, skipped только с явным
+// подтверждением (confirmSkipped), база версии совпадает с текущей базой.
+// Нарушения → 409 AGREED_ACTIVATION_BLOCKED (список в details.violations).
+// Отклонение от инвариантов — ТОЛЬКО force: true с непустым reason; такая
+// активация пишет ОТДЕЛЬНОЕ событие аудита agreed_version.activate_forced
+// с основанием и полным списком нарушенных инвариантов.
+async function activateVersion(tenderId, versionId, {
+  actor = null, requestId = null, force = false, reason = null, confirmSkipped = false,
+} = {}) {
   const row = await db.queryOne(
     'SELECT * FROM tz_agreed_versions WHERE id = ? AND tender_id = ?', versionId, tenderId,
   );
   if (!row) throw notFound('Согласованная версия не найдена');
   if (row.status === 'active') return rowToVersion(row);
-  // Активация делает версию ВХОДОМ следующего раунда анализа — между созданием
-  // и активацией рецензия могла перезапуститься; активировать поверх
-  // незавершённой рецензии нельзя (тот же гейт, что у создания).
-  await assertReviewReady(tenderId, 'активацию согласованной версии');
+
+  const readiness = await getReadiness(tenderId);
+  const currentBase = await resolveCurrentBase(tenderId);
+  const assessment = assessActivation({
+    readiness,
+    buildReport: parseJson(row.build_report, null),
+    versionBase: {
+      base_agreed_version_id: row.base_agreed_version_id,
+      base_revision_id: row.base_revision_id,
+    },
+    currentBase,
+    confirmSkipped,
+  });
+
+  const forced = !assessment.ok && force;
+  if (!assessment.ok && !force) {
+    await audit.record({
+      requestId,
+      tenantId: actor && actor.tenantId,
+      actorSub: actor && actor.subject,
+      action: 'agreed_version.activate', category: 'decision', outcome: 'denied',
+      tenderId, resourceType: 'agreed_version', resourceId: versionId,
+      meta: { version_no: Number(row.version_no), violations: assessment.violations },
+    }).catch(() => {});
+    const err = conflict(
+      `Активация заблокирована: ${assessment.violations.map((v) => v.message).join('; ')}.`,
+      { violations: assessment.violations, readiness },
+    );
+    err.code = 'AGREED_ACTIVATION_BLOCKED';
+    throw err;
+  }
+  const trimmedReason = (reason || '').trim();
+  if (forced && !trimmedReason) {
+    throw badRequest(
+      'Активация с отклонением от инвариантов требует основание (reason).',
+      { violations: assessment.violations },
+    );
+  }
 
   await db.transaction(async (tx) => {
     await tx.queryRun(
@@ -309,13 +377,20 @@ async function activateVersion(tenderId, versionId, { actor = null, requestId = 
     );
   });
 
+  const meta = { version_no: Number(row.version_no) };
+  if (assessment.confirmed_skips) meta.confirmed_skips = assessment.confirmed_skips;
+  if (forced) {
+    meta.reason = trimmedReason;
+    meta.violations = assessment.violations;
+  }
   await audit.record({
     requestId,
     tenantId: actor && actor.tenantId,
     actorSub: actor && actor.subject,
-    action: 'agreed_version.activate', category: 'decision', outcome: 'allowed',
+    action: forced ? 'agreed_version.activate_forced' : 'agreed_version.activate',
+    category: 'decision', outcome: 'allowed',
     tenderId, resourceType: 'agreed_version', resourceId: versionId,
-    meta: { version_no: Number(row.version_no) },
+    meta,
   }).catch(() => {});
 
   return getVersion(tenderId, versionId);

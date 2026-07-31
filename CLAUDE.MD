@@ -310,12 +310,27 @@ clustering): пропуск становится ОБЫЧНЫМ замечани
 вхождениям кластера (`evidence_fragments`), `edit` — ко всем при дословном совпадении
 цели (иначе только representative, остальные в отчёт `skipped_occurrence`),
 `accept`/`reject` текст не меняют; операции сливаются и применяются справа налево
-(дрейф координат исключён), конфликты и ненайденные фрагменты — в `build_report`.
+(дрейф координат исключён), конфликты и ненайденные фрагменты — в `build_report`;
+цель, найденная в области поиска больше одного раза, НЕ правится «по первому
+вхождению» — `ambiguous_target` (счётчик `ambiguous`).
 Версия создаётся draft (`POST /api/tenders/:id/agreed-versions`), активация
 (`…/activate`, одна active на тендер) делает её ВХОДОМ следующего раунда анализа:
 `getTzSourceDocument` отдаёт синтетический документ версии, `currentDocumentsRevision`
 включает её в ревизию набора — manifest/кэш/carry-over реагируют штатной механикой
-ревизий. Снимок `applied_decisions` неизменяем; цепочка версий — `base_agreed_version_id`.
+ревизий. **Активация — жёсткий гейт инвариантов** (`agreedVersion/activationGate.js`,
+чистое ядро `assessActivation`): рецензия завершена и не устарела
+(`unresolved_clusters=0`, `carryovers_pending=0`, `pipeline_stale=false`),
+`failed=conflicts=ambiguous=0`, `skipped` только с явным подтверждением инженера
+(`confirm_skipped`), база версии совпадает с текущей базой тендера
+(`base_agreed_version_id`+`base_revision_id`); нарушение → 409
+`AGREED_ACTIVATION_BLOCKED` (список в `details.violations`, отказ идёт в аудит).
+Отклонение от инвариантов — ТОЛЬКО форс-режим `{force:true, reason}` (основание
+обязательно) с ОТДЕЛЬНЫМ событием аудита `agreed_version.activate_forced`
+(reason + нарушенные инварианты); UI панели версий показывает нарушения и
+форс-форму. Снимок `applied_decisions` неизменяем и ПОЛНЫЙ — хранит ВСЕ решения
+рецензии, ВКЛЮЧАЯ `reject` (доказательство, что инженер рассмотрел каждый
+кластер); к тексту применяются только текст-меняющие, в экспорт `reject` не
+попадает (`snapshotToExportRows`). Цепочка версий — `base_agreed_version_id`.
 Экспорт конкретной версии — `?version_id=` в `/export/docx[/report]` (решения из
 снимка ВСЕЙ цепочки, заголовок `X-Agreed-Version`; правки «по правкам» прошлого
 раунда в оригинальном .docx ложатся fallback-комментарием). UI: панель версий на
@@ -519,8 +534,10 @@ pipeline_stale, export_allowed, reasons[] }` (чистое ядро `computeRead
 (`show_to_engineer=1`) есть решение (в т.ч. reject — «отклонить всё» тоже
 завершённая рецензия), carry-over разобран. `assertReviewReady` (409
 `REVIEW_NOT_READY`, отчёт в `details`) ОБЯЗАТЕЛЬНО вызывают: docx-экспорт (и его
-dry-run отчёт), CSV/JSON/summary.md/review.md, `createAgreedVersion` и
-`activateVersion`. Исключения из гейта: экспорт от снимка согласованной версии
+dry-run отчёт), CSV/JSON/summary.md/review.md и `createAgreedVersion`;
+`activateVersion` идёт через БОЛЕЕ СТРОГИЙ гейт `agreedVersion/activationGate.js`
+(включает те же readiness-проверки + инварианты сборки и базы, см. блок
+«Согласованная версия ТЗ»). Исключения из гейта: экспорт от снимка согласованной версии
 (`?version_id=` — снимок создавался через тот же гейт), HTML-preview (просмотр,
 не выгрузка) и явный legacy (`?source=issues`/`?stage=`). API для UI —
 `GET /api/tenders/:id/review/readiness`; ExportPage показывает причины блокировки
